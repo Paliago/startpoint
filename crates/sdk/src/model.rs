@@ -86,9 +86,28 @@ pub struct Game {
     pub favourite: bool,
     pub available: bool,
     pub last_launched: Option<u64>,
+    #[serde(default)]
+    pub collections: BTreeSet<String>,
+    #[serde(default)]
+    pub completed: bool,
     pub artwork: BTreeMap<ArtworkKind, ArtworkAsset>,
     pub artwork_history: Vec<ArtworkAsset>,
     pub artwork_game_ids: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActivityDay {
+    pub date: String,
+    pub launches: u32,
+    pub games: BTreeMap<GameId, u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JournalEntry {
+    pub id: String,
+    pub game_id: GameId,
+    pub created_at: u64,
+    pub text: String,
 }
 
 impl Game {
@@ -189,6 +208,7 @@ pub enum StartScreen {
     #[default]
     Library,
     Recents,
+    Activity,
 }
 
 impl StartScreen {
@@ -196,6 +216,7 @@ impl StartScreen {
         match self {
             Self::Library => "Library",
             Self::Recents => "Recents",
+            Self::Activity => "Activity",
         }
     }
 }
@@ -209,6 +230,9 @@ pub struct AppearanceSettings {
     pub start_screen: StartScreen,
     pub dither_recents: bool,
     pub fade_recents: bool,
+    pub recents_activity: bool,
+    pub recents_progress: bool,
+    pub recents_journal: bool,
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
 }
@@ -222,6 +246,9 @@ impl Default for AppearanceSettings {
             start_screen: StartScreen::Library,
             dither_recents: false,
             fade_recents: false,
+            recents_activity: false,
+            recents_progress: false,
+            recents_journal: false,
             sidebar_visible: false,
             sidebar_width: 216.,
         }
@@ -294,6 +321,8 @@ pub struct JobStatus {
 pub struct Snapshot {
     pub ready: bool,
     pub games: Arc<Vec<Game>>,
+    pub activity: Arc<Vec<ActivityDay>>,
+    pub journal: Arc<Vec<JournalEntry>>,
     pub jobs: Vec<JobStatus>,
     pub settings: SettingsSnapshot,
     pub paths: ApplicationPaths,
@@ -319,6 +348,20 @@ pub enum Command {
     SetFavourite {
         game_id: GameId,
         favourite: bool,
+    },
+    SetGameProgress {
+        game_id: GameId,
+        collections: BTreeSet<String>,
+        completed: bool,
+    },
+    SaveJournalEntry {
+        game_id: GameId,
+        entry_id: Option<String>,
+        text: String,
+    },
+    DeleteJournalEntry {
+        game_id: GameId,
+        entry_id: String,
     },
     SetLaunchOverride {
         game_id: GameId,
@@ -392,6 +435,9 @@ impl Command {
             Self::RemoveManualGame { .. } => "Removing game",
             Self::UpdateMetadata { .. } => "Saving metadata",
             Self::SetFavourite { .. } => "Saving favourite",
+            Self::SetGameProgress { .. } => "Saving collections and completion",
+            Self::SaveJournalEntry { .. } => "Saving journal entry",
+            Self::DeleteJournalEntry { .. } => "Deleting journal entry",
             Self::SetLaunchOverride { .. } => "Saving launch configuration",
             Self::LaunchGame { .. } => "Launching game",
             Self::SetArtworkCredential { .. } => "Saving artwork provider credentials",

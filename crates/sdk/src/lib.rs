@@ -10,7 +10,7 @@ use async_channel::Receiver;
 use std::sync::Arc;
 
 /// The major version of the application contract, not a Rust dynamic-library ABI.
-pub const API_VERSION: u32 = 1;
+pub const API_VERSION: u32 = 2;
 
 /// Every desktop operation goes through this interface. Submissions never wait for I/O.
 pub trait ApplicationApi: Send + Sync {

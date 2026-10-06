@@ -57,6 +57,8 @@ impl LauncherBuilder {
         let snapshot = Snapshot {
             ready: false,
             games: Arc::new(Vec::new()),
+            activity: Arc::new(Vec::new()),
+            journal: Arc::new(Vec::new()),
             jobs: Vec::new(),
             settings: SettingsSnapshot::default(),
             paths,
@@ -297,6 +299,8 @@ impl Shared {
         let paths = self.snapshot().paths;
         let store = Store::open(&paths)?;
         let games = store.games()?;
+        let activity = store.activity()?;
+        let journal = store.journal()?;
         let steam_directory = store.setting("steam_directory")?.flatten();
         let configured_credentials: BTreeSet<String> =
             store.setting("configured_credentials")?.unwrap_or_default();
@@ -348,6 +352,8 @@ impl Shared {
             appearance,
         };
         state.snapshot.ready = true;
+        state.snapshot.activity = Arc::new(activity);
+        state.snapshot.journal = Arc::new(journal);
         rebuild_library(&mut state);
         drop(state);
         self.publish(AppEvent::LibraryChanged);
@@ -631,6 +637,8 @@ impl Shared {
                     favourite: false,
                     available: true,
                     last_launched: None,
+                    collections: BTreeSet::new(),
+                    completed: false,
                     artwork: BTreeMap::new(),
                     artwork_history: Vec::new(),
                     artwork_game_ids: BTreeMap::new(),
@@ -659,6 +667,8 @@ impl Shared {
                     store.remove_game(&game_id.0)?;
                     let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
                     state.games.remove(&game_id);
+                    state.snapshot.journal = Arc::new(store.journal()?);
+                    state.snapshot.activity = Arc::new(store.activity()?);
                     rebuild_library(&mut state);
                     Ok(())
                 })?;
@@ -700,6 +710,78 @@ impl Shared {
                 game.favourite = favourite;
                 Ok(())
             }),
+            Command::SetGameProgress {
+                game_id,
+                collections,
+                completed,
+            } => {
+                if collections.len() > 32
+                    || collections.iter().any(|name| {
+                        name.trim().is_empty()
+                            || name.len() > 80
+                            || name.chars().any(char::is_control)
+                    })
+                {
+                    return Err(ApiError::Validation(
+                        "Use at most 32 collection names of 1–80 bytes without control characters"
+                            .into(),
+                    ));
+                }
+                self.update_game(&game_id, |game| {
+                    game.collections = collections
+                        .into_iter()
+                        .map(|name| name.trim().to_string())
+                        .collect();
+                    game.completed = completed;
+                    Ok(())
+                })
+            }
+            Command::SaveJournalEntry {
+                game_id,
+                entry_id,
+                text,
+            } => {
+                self.game(&game_id)?;
+                let text = text.trim().to_string();
+                if text.is_empty() || text.len() > 10_000 || text.contains('\0') {
+                    return Err(ApiError::Validation(
+                        "Journal entries must contain 1–10,000 bytes without NUL characters".into(),
+                    ));
+                }
+                self.store(|store| {
+                    let existing = entry_id.is_some();
+                    let entry = JournalEntry {
+                        id: entry_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                        game_id,
+                        created_at: now(),
+                        text,
+                    };
+                    store.save_journal_entry(&entry, existing)?;
+                    let journal = store.journal()?;
+                    self.state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .snapshot
+                        .journal = Arc::new(journal);
+                    Ok(())
+                })?;
+                self.publish(AppEvent::LibraryChanged);
+                Ok(())
+            }
+            Command::DeleteJournalEntry { game_id, entry_id } => {
+                self.store(|store| {
+                    store.delete_journal_entry(&game_id, &entry_id)?;
+                    let journal = store.journal()?;
+                    self.state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .snapshot
+                        .journal = Arc::new(journal);
+                    Ok(())
+                })?;
+                self.publish(AppEvent::LibraryChanged);
+                Ok(())
+            }
             Command::SetLaunchOverride { game_id, launch } => {
                 if let Some(launch) = &launch {
                     platform::validate_launch(launch)?;
@@ -716,10 +798,7 @@ impl Shared {
                         "Example launch · {} · no program started",
                         game.title()
                     ));
-                    return self.update_game(&game_id, |game| {
-                        game.last_launched = Some(now());
-                        Ok(())
-                    });
+                    return self.record_launch(&game_id);
                 }
                 if !game.available && game.launch_override.is_none() {
                     return Err(ApiError::Validation(
@@ -733,10 +812,7 @@ impl Shared {
                     .map(|provider| provider.uri_schemes())
                     .unwrap_or_default();
                 platform::launch(game.effective_launch(), &schemes)?;
-                self.update_game(&game_id, |game| {
-                    game.last_launched = Some(now());
-                    Ok(())
-                })
+                self.record_launch(&game_id)
             }
             Command::SetArtworkCredential {
                 provider_id,
@@ -1105,6 +1181,8 @@ impl Shared {
                                 catalogue_metadata: UserMetadata::default(),
                                 favourite: false,
                                 available: true,
+                                collections: BTreeSet::new(),
+                                completed: false,
                                 last_launched: if descriptor.id == "example" {
                                     Some(now().saturating_sub(
                                         (u64::try_from(index).unwrap_or_default() + 1) * 86_400,
@@ -1215,6 +1293,22 @@ impl Shared {
         } else {
             context.report("Installed games are up to date");
         }
+        Ok(())
+    }
+
+    fn record_launch(&self, game_id: &GameId) -> Result<(), ApiError> {
+        self.store(|store| {
+            let mut game = self.game(game_id)?;
+            let timestamp = now();
+            game.last_launched = Some(timestamp);
+            let activity = store.record_launch(&game, timestamp)?;
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.games.insert(game_id.clone(), game);
+            state.snapshot.activity = Arc::new(activity);
+            rebuild_library(&mut state);
+            Ok(())
+        })?;
+        self.publish(AppEvent::LibraryChanged);
         Ok(())
     }
 
@@ -1433,6 +1527,11 @@ mod tests {
         assert_eq!(previous_settings.start_screen, StartScreen::Library);
         assert!(!previous_settings.dither_recents);
         assert!(!previous_settings.fade_recents);
+        assert!(
+            !previous_settings.recents_activity
+                && !previous_settings.recents_progress
+                && !previous_settings.recents_journal
+        );
         assert!(!previous_settings.sidebar_visible);
         assert_eq!(previous_settings.sidebar_width, 216.);
         assert_eq!(previous_settings.theme, "Startpoint");
@@ -1443,12 +1542,17 @@ mod tests {
             data_directory: directory.join("data"),
             cache_directory: directory.join("cache"),
         };
+        std::fs::create_dir_all(&paths.data_directory).expect("legacy data directory");
+        let legacy = rusqlite::Connection::open(paths.data_directory.join("library.sqlite3"))
+            .expect("legacy database");
+        legacy.execute_batch("CREATE TABLE games (id TEXT PRIMARY KEY, document TEXT NOT NULL); CREATE TABLE settings (name TEXT PRIMARY KEY, document TEXT NOT NULL); CREATE TABLE metadata_cache (id TEXT PRIMARY KEY, document TEXT NOT NULL, updated INTEGER NOT NULL); PRAGMA user_version=1;").expect("legacy schema");
+        drop(legacy);
         let api = LauncherBuilder::new()
             .build(paths.clone())
             .expect("application");
         let events = api.subscribe();
         let executable = std::env::current_exe().expect("test executable");
-        for step in 0..15 {
+        for step in 0..23 {
             let game_id = api
                 .snapshot()
                 .games
@@ -1493,6 +1597,9 @@ mod tests {
                         start_screen: StartScreen::Recents,
                         dither_recents: true,
                         fade_recents: true,
+                        recents_activity: true,
+                        recents_progress: true,
+                        recents_journal: true,
                         sidebar_visible: true,
                         sidebar_width: 320.,
                     },
@@ -1504,7 +1611,7 @@ mod tests {
                         ..AppearanceSettings::default()
                     },
                 },
-                _ => Command::SetAppearance {
+                11..=14 => Command::SetAppearance {
                     settings: AppearanceSettings {
                         theme: [
                             String::new(),
@@ -1516,6 +1623,47 @@ mod tests {
                         ..AppearanceSettings::default()
                     },
                 },
+                15 => Command::SetGameProgress {
+                    game_id,
+                    collections: BTreeSet::from([
+                        "Role playing".into(),
+                        "  Completed games  ".into(),
+                    ]),
+                    completed: true,
+                },
+                16 | 22 => Command::SaveJournalEntry {
+                    game_id,
+                    entry_id: None,
+                    text: "  Finished the first chapter.  ".into(),
+                },
+                17..=19 => Command::SaveJournalEntry {
+                    game_id: if step == 19 {
+                        GameId("missing:game".into())
+                    } else {
+                        game_id
+                    },
+                    entry_id: api.snapshot().journal.first().map(|entry| entry.id.clone()),
+                    text: if step == 18 {
+                        " ".into()
+                    } else {
+                        "Updated journal note.".into()
+                    },
+                },
+                20 => Command::SetGameProgress {
+                    game_id,
+                    collections: BTreeSet::from(["Invalid\ncollection".into()]),
+                    completed: false,
+                },
+                _ => Command::DeleteJournalEntry {
+                    game_id,
+                    entry_id: api
+                        .snapshot()
+                        .journal
+                        .first()
+                        .expect("saved journal note")
+                        .id
+                        .clone(),
+                },
             };
             let job_id = api.submit(command).expect("queued command");
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -1525,7 +1673,7 @@ mod tests {
                     Ok(AppEvent::JobChanged(job)) if job.id == job_id && !job.state.active() => {
                         assert_eq!(
                             job.state,
-                            if step < 7 {
+                            if step < 7 || matches!(step, 15..=17 | 21..=22) {
                                 JobState::Completed
                             } else {
                                 JobState::Failed
@@ -1564,11 +1712,36 @@ mod tests {
             .as_object_mut()
             .expect("game object")
             .remove("catalogue_metadata");
+        for field in ["collections", "completed"] {
+            previous_document
+                .as_object_mut()
+                .expect("game object")
+                .remove(field);
+        }
         let previous_game: Game =
             serde_json::from_value(previous_document).expect("previous game document");
         assert_eq!(previous_game.title(), "Edited title");
         assert!(previous_game.catalogue_metadata.developer.is_none());
+        assert!(previous_game.collections.is_empty() && !previous_game.completed);
         assert!(saved.favourite && saved.available && saved.last_launched.is_some());
+        assert!(saved.completed);
+        assert_eq!(
+            saved.collections,
+            BTreeSet::from(["Role playing".into(), "Completed games".into()])
+        );
+        assert_eq!(
+            api.snapshot()
+                .activity
+                .iter()
+                .map(|day| day.launches)
+                .sum::<u32>(),
+            1
+        );
+        assert_eq!(api.snapshot().journal.len(), 1);
+        assert_eq!(
+            api.snapshot().journal[0].text,
+            "Finished the first chapter."
+        );
         assert_eq!(
             saved
                 .launch_override
@@ -1579,7 +1752,7 @@ mod tests {
         );
         drop(api);
         let reopened = LauncherBuilder::new()
-            .build(paths)
+            .build(paths.clone())
             .expect("reopened application");
         let deadline = Instant::now() + Duration::from_secs(10);
         while !reopened.snapshot().ready {
@@ -1599,6 +1772,20 @@ mod tests {
             Some("Local description")
         );
         assert!(loaded.favourite && loaded.launch_override.is_some());
+        assert!(loaded.completed && loaded.collections == saved.collections);
+        assert_eq!(
+            reopened
+                .snapshot()
+                .activity
+                .iter()
+                .map(|day| day.launches)
+                .sum::<u32>(),
+            1
+        );
+        assert_eq!(
+            reopened.snapshot().journal[0].text,
+            "Finished the first chapter."
+        );
         assert_eq!(
             reopened.snapshot().settings.appearance,
             AppearanceSettings {
@@ -1608,9 +1795,71 @@ mod tests {
                 start_screen: StartScreen::Recents,
                 dither_recents: true,
                 fade_recents: true,
+                recents_activity: true,
+                recents_progress: true,
+                recents_journal: true,
                 sidebar_visible: true,
                 sidebar_width: 320.,
             }
+        );
+        let mut store = Store::open(&paths).expect("migrated store");
+        let mut other = saved.clone();
+        other.id = GameId("manual:other".into());
+        store
+            .save_games(std::slice::from_ref(&other))
+            .expect("another game");
+        let note = store.journal().expect("journal")[0].clone();
+        let invalid_owner = JournalEntry {
+            game_id: other.id.clone(),
+            text: "Should not replace the note".into(),
+            ..note.clone()
+        };
+        assert!(matches!(
+            store.save_journal_entry(&invalid_owner, true),
+            Err(ApiError::NotFound)
+        ));
+        assert!(matches!(
+            store.delete_journal_entry(&other.id, &note.id),
+            Err(ApiError::NotFound)
+        ));
+        assert_eq!(store.journal().expect("preserved note")[0], note);
+        other.last_launched = Some(0);
+        store.record_launch(&other, 0).expect("epoch launch");
+        other.last_launched = Some(86_400);
+        store
+            .record_launch(&other, 86_400)
+            .expect("following day launch");
+        let activity = store.activity().expect("grouped activity");
+        assert_eq!(activity.iter().map(|day| day.launches).sum::<u32>(), 3);
+        assert_eq!(
+            activity
+                .iter()
+                .flat_map(|day| day.games.values())
+                .sum::<u32>(),
+            3
+        );
+        store.remove_game(&saved.id.0).expect("remove manual game");
+        assert!(store.journal().expect("cascade journal removal").is_empty());
+        assert_eq!(
+            store
+                .activity()
+                .expect("cascade launch removal")
+                .iter()
+                .map(|day| day.launches)
+                .sum::<u32>(),
+            2
+        );
+        store.remove_game(&other.id.0).expect("remove second game");
+        assert!(store.activity().expect("removed activity").is_empty());
+        assert!(matches!(
+            store.record_launch(&other, now()),
+            Err(ApiError::NotFound)
+        ));
+        assert!(
+            store
+                .activity()
+                .expect("failed launch not recorded")
+                .is_empty()
         );
     }
 }

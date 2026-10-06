@@ -12,6 +12,7 @@ runtime-shaders = ["gpui/runtime_shaders"]
 startpoint-sdk.workspace = true
 startpoint-core.workspace = true
 serde_json.workspace = true
+chrono = "0.4"
 gpui = "=0.2.2"
 gpui-component = "=0.5.1"
 gpui-component-assets = "=0.5.1"

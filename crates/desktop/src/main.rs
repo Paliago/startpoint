@@ -4,6 +4,7 @@ mod appearance;
 mod image_cache;
 mod interface;
 mod theme;
+mod theme_editor;
 
 use gpui::{prelude::*, *};
 use gpui_component::Root;

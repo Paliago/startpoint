@@ -1,13 +1,22 @@
 use gpui::{Global, SharedString};
 use gpui_component::{ThemeConfig, ThemeMode, ThemeSet};
 use serde_json::Value;
-use std::{fs, io::Read, path::Path, rc::Rc};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{Read, Write},
+    path::{Path, PathBuf},
+    rc::Rc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 const DEFAULT_THEME: &str = include_str!("../assets/themes/startpoint.json");
 
+#[derive(Clone)]
 pub(crate) struct Catalog {
     pub themes: Vec<ThemeSet>,
     pub warnings: Vec<String>,
+    pub files: BTreeMap<String, PathBuf>,
 }
 
 impl Global for Catalog {}
@@ -29,6 +38,7 @@ impl Default for Catalog {
             )
             .collect(),
             warnings: Vec::new(),
+            files: BTreeMap::new(),
         }
     }
 }
@@ -78,7 +88,10 @@ impl Catalog {
                     path.display(),
                     theme.name
                 )),
-                Ok(theme) => catalog.themes.push(theme),
+                Ok(theme) => {
+                    catalog.files.insert(theme.name.to_lowercase(), path);
+                    catalog.themes.push(theme);
+                }
                 Err(error) => catalog
                     .warnings
                     .push(format!("{}: {error}", path.display())),
@@ -109,9 +122,62 @@ impl Catalog {
                 .clone(),
         )
     }
+
+    pub fn save(
+        &self,
+        directory: &Path,
+        source: &str,
+        original_name: &str,
+    ) -> Result<String, String> {
+        let theme = parse(source)?;
+        let key = theme.name.to_lowercase();
+        if self.contains(&theme.name)
+            && (!self.files.contains_key(&key) || !theme.name.eq_ignore_ascii_case(original_name))
+        {
+            return Err("Choose a new name; another theme already uses this name".into());
+        }
+        fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| error.to_string())?;
+        let path = self.files.get(&key).cloned().unwrap_or_else(|| {
+            directory.join(format!(
+                "theme-{}-{:09}.json",
+                timestamp.as_secs(),
+                timestamp.subsec_nanos()
+            ))
+        });
+        let temporary = path.with_extension(format!("{}.temporary", timestamp.subsec_nanos()));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| error.to_string())?;
+        let result = file
+            .write_all(source.as_bytes())
+            .and_then(|_| file.sync_all());
+        drop(file);
+        if let Err(error) = result.and_then(|_| fs::rename(&temporary, &path)) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error.to_string());
+        }
+        Ok(theme.name.to_string())
+    }
 }
 
-fn parse(source: &str) -> Result<ThemeSet, String> {
+pub(crate) fn source(theme: &ThemeSet) -> Result<String, String> {
+    let mut document = serde_json::to_value(theme).map_err(|error| error.to_string())?;
+    if let Some(variants) = document.get_mut("themes").and_then(Value::as_array_mut) {
+        for variant in variants {
+            if let Some(colors) = variant.get_mut("colors").and_then(Value::as_object_mut) {
+                colors.retain(|_, value| !value.is_null());
+            }
+        }
+    }
+    serde_json::to_string_pretty(&document).map_err(|error| error.to_string())
+}
+
+pub(crate) fn parse(source: &str) -> Result<ThemeSet, String> {
     if source.len() > 256 * 1024 {
         return Err("Theme files must not exceed 256 KiB".into());
     }
@@ -201,6 +267,27 @@ fn parse(source: &str) -> Result<ThemeSet, String> {
     serde_json::from_value(document).map_err(|error| error.to_string())
 }
 
+pub(crate) fn contrast(background: gpui::Hsla, foreground: gpui::Hsla) -> f32 {
+    let luminance = |color: gpui::Hsla| {
+        let color = color.to_rgb();
+        [color.r, color.g, color.b]
+            .into_iter()
+            .zip([0.2126, 0.7152, 0.0722])
+            .map(|(channel, weight)| {
+                weight
+                    * if channel <= 0.04045 {
+                        channel / 12.92
+                    } else {
+                        ((channel + 0.055) / 1.055).powf(2.4)
+                    }
+            })
+            .sum::<f32>()
+    };
+    let first = luminance(background);
+    let second = luminance(foreground);
+    (first.max(second) + 0.05) / (first.min(second) + 0.05)
+}
+
 #[cfg(test)]
 #[test]
 fn custom_themes_inherit_defaults_and_validate_colors() {
@@ -220,21 +307,6 @@ fn custom_themes_inherit_defaults_and_validate_colors() {
             .name,
         "Startpoint Light"
     );
-    let luminance = |color: gpui::Hsla| {
-        let color = color.to_rgb();
-        [color.r, color.g, color.b]
-            .into_iter()
-            .zip([0.2126, 0.7152, 0.0722])
-            .map(|(channel, weight)| {
-                weight
-                    * if channel <= 0.04045 {
-                        channel / 12.92
-                    } else {
-                        ((channel + 0.055) / 1.055).powf(2.4)
-                    }
-            })
-            .sum::<f32>()
-    };
     let catalog = Catalog::default();
     for theme in &catalog.themes {
         for mode in [ThemeMode::Light, ThemeMode::Dark] {
@@ -248,10 +320,8 @@ fn custom_themes_inherit_defaults_and_validate_colors() {
                 (applied.secondary, applied.secondary_foreground),
                 (applied.accent, applied.accent_foreground),
             ] {
-                let first = luminance(background);
-                let second = luminance(foreground);
                 assert!(
-                    (first.max(second) + 0.05) / (first.min(second) + 0.05) >= 4.5,
+                    contrast(background, foreground) >= 4.5,
                     "{} {} has insufficient text contrast",
                     theme.name,
                     mode.name()
@@ -274,4 +344,55 @@ fn custom_themes_inherit_defaults_and_validate_colors() {
     ] {
         assert!(parse(invalid).is_err(), "accepted {invalid}");
     }
+    let directory = std::env::temp_dir().join(format!(
+        "startpoint-theme-editor-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let mut edited = theme.clone();
+    edited.name = "Edited theme".into();
+    edited.themes[1].font_size = Some(18.);
+    edited.themes[1].radius = Some(0);
+    let document = source(&edited).expect("editor serialization");
+    assert_eq!(
+        catalog
+            .save(&directory, &document, "Startpoint")
+            .expect("save copy"),
+        "Edited theme"
+    );
+    let loaded = Catalog::load(&directory);
+    assert!(loaded.warnings.is_empty());
+    assert_eq!(
+        loaded
+            .configuration("Edited theme", ThemeMode::Dark)
+            .font_size,
+        Some(18.)
+    );
+    assert_eq!(
+        loaded.configuration("Edited theme", ThemeMode::Dark).radius,
+        Some(0)
+    );
+    assert!(loaded.save(&directory, &document, "Other theme").is_err());
+    edited.themes[1].font_size = Some(20.);
+    loaded
+        .save(
+            &directory,
+            &source(&edited).expect("serialize edit"),
+            "Edited theme",
+        )
+        .expect("update saved theme");
+    assert_eq!(
+        Catalog::load(&directory)
+            .configuration("Edited theme", ThemeMode::Dark)
+            .font_size,
+        Some(20.)
+    );
+    assert!(
+        catalog
+            .save(&directory, DEFAULT_THEME, "Startpoint")
+            .is_err()
+    );
+    fs::remove_dir_all(&directory).expect("remove test theme directory");
 }

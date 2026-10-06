@@ -1,4 +1,10 @@
-use crate::{appearance, image_cache::ThumbnailCache, theme};
+use crate::{
+    appearance,
+    image_cache::ThumbnailCache,
+    theme,
+    theme_editor::{Editor, EditorEvent},
+};
+use chrono::{Datelike, Local, Months, NaiveDate, TimeZone};
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, ThemeColor, TitleBar,
@@ -64,6 +70,7 @@ enum DetailTab {
     Metadata,
     Launch,
     Artwork,
+    Journal,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -87,6 +94,7 @@ enum LauncherCommand {
     DitherRecents,
     DitherArtwork,
     Activity,
+    CustomizeRecents,
 }
 
 #[derive(Clone)]
@@ -116,12 +124,16 @@ pub struct LauncherView {
     visible: Vec<Game>,
     selected: Option<GameId>,
     source_filter: Option<String>,
+    collection_filter: Option<String>,
     library_filter: LibraryFilter,
     sort_recent: bool,
     appearance: AppearanceSettings,
     appearance_loaded: bool,
     appearance_job: Option<JobId>,
     themes_loading: bool,
+    customization_open: bool,
+    theme_editor: Option<Entity<Editor>>,
+    theme_subscription: Option<Subscription>,
     sidebar_transition: Option<(f32, Instant)>,
     sidebar_resize_focus: FocusHandle,
     sidebar_save: Option<Task<()>>,
@@ -146,6 +158,14 @@ pub struct LauncherView {
     developer: Entity<InputState>,
     genres: Entity<InputState>,
     metadata_baseline: UserMetadata,
+    collections: Entity<InputState>,
+    completed: bool,
+    journal_text: Entity<InputState>,
+    journal_entry: Option<String>,
+    journal_delete: Option<String>,
+    journal_job: Option<(JobId, GameId, String)>,
+    activity_month: NaiveDate,
+    activity_day: NaiveDate,
     executable: Entity<InputState>,
     arguments: Entity<InputState>,
     working_directory: Entity<InputState>,
@@ -181,7 +201,7 @@ impl LauncherView {
             let _ = launcher.update(cx, |view, cx| view.intercept_key(event, window, cx));
         });
         let appearance_subscription = cx.observe_window_appearance(window, |view, window, cx| {
-            appearance::apply(&view.appearance, Some(window), cx);
+            view.apply_appearance(window, cx);
         });
         let appearance_settings = snapshot.settings.appearance.clone();
         let appearance_loaded = snapshot.ready;
@@ -198,12 +218,16 @@ impl LauncherView {
             visible: Vec::new(),
             selected: None,
             source_filter: None,
+            collection_filter: None,
             library_filter: LibraryFilter::Installed,
             sort_recent: true,
             appearance: appearance_settings,
             appearance_loaded,
             appearance_job: None,
             themes_loading: false,
+            customization_open: false,
+            theme_editor: None,
+            theme_subscription: None,
             sidebar_transition: None,
             sidebar_resize_focus: cx.focus_handle(),
             sidebar_save: None,
@@ -228,6 +252,17 @@ impl LauncherView {
             developer: text_input("Developer", false, window, cx),
             genres: text_input("Action, Adventure…", false, window, cx),
             metadata_baseline: UserMetadata::default(),
+            collections: text_input("One collection name per line", true, window, cx),
+            completed: false,
+            journal_text: text_input("What happened? What will you do next?", true, window, cx),
+            journal_entry: None,
+            journal_delete: None,
+            journal_job: None,
+            activity_month: Local::now()
+                .date_naive()
+                .with_day(1)
+                .unwrap_or_else(|| Local::now().date_naive()),
+            activity_day: Local::now().date_naive(),
             executable: text_input("Default launcher", false, window, cx),
             arguments: text_input("One argument per line", true, window, cx),
             working_directory: text_input("Executable directory", false, window, cx),
@@ -312,7 +347,7 @@ impl LauncherView {
             }
             self.appearance_loaded = self.snapshot.ready;
             self.appearance = self.snapshot.settings.appearance.clone();
-            appearance::apply(&self.appearance, Some(window), cx);
+            self.apply_appearance(window, cx);
         }
         match event {
             AppEvent::LibraryChanged => {
@@ -377,8 +412,21 @@ impl LauncherView {
                     self.appearance_job = None;
                     if job.state != JobState::Completed {
                         self.appearance = self.snapshot.settings.appearance.clone();
-                        appearance::apply(&self.appearance, Some(window), cx);
+                        self.apply_appearance(window, cx);
                     }
+                }
+                if self
+                    .journal_job
+                    .as_ref()
+                    .is_some_and(|(id, _, _)| *id == job.id)
+                    && !job.state.active()
+                    && let Some((_, game_id, text)) = self.journal_job.take()
+                    && job.state == JobState::Completed
+                    && self.selected.as_ref() == Some(&game_id)
+                    && self.journal_text.read(cx).value() == text
+                {
+                    self.journal_entry = None;
+                    set_value(&self.journal_text, "", window, cx);
                 }
                 if let Some(error) = job.error {
                     self.notice = Some(error);
@@ -471,6 +519,10 @@ impl LauncherView {
                     .source_filter
                     .as_ref()
                     .is_none_or(|source| source == &game.provider_id)
+                    && self
+                        .collection_filter
+                        .as_ref()
+                        .is_none_or(|collection| game.collections.contains(collection))
             })
             .cloned()
             .collect();
@@ -489,7 +541,7 @@ impl LauncherView {
 
     fn displayed_games(&self) -> Vec<&Game> {
         match self.screen {
-            StartScreen::Library => self.visible.iter().collect(),
+            StartScreen::Library | StartScreen::Activity => self.visible.iter().collect(),
             StartScreen::Recents => self.recent_games(),
         }
     }
@@ -518,6 +570,11 @@ impl LauncherView {
     }
 
     fn select_game(&mut self, id: GameId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected.as_ref() != Some(&id) {
+            self.journal_entry = None;
+            self.journal_delete = None;
+            set_value(&self.journal_text, "", window, cx);
+        }
         self.carousel_elapsed = Duration::ZERO;
         self.carousel_tick = None;
         self.carousel_transition = None;
@@ -543,6 +600,18 @@ impl LauncherView {
 
     fn populate_game_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(game) = self.selected_game() {
+            set_value(
+                &self.collections,
+                &game
+                    .collections
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                window,
+                cx,
+            );
+            self.completed = game.completed;
             let metadata = game.effective_metadata();
             set_value(&self.title, game.title(), window, cx);
             set_value(
@@ -830,6 +899,62 @@ impl LauncherView {
         }
     }
 
+    fn save_progress(&mut self, cx: &mut Context<Self>) {
+        if let Some(game_id) = self.selected.clone() {
+            let collections = self
+                .collections
+                .read(cx)
+                .value()
+                .lines()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(String::from)
+                .collect();
+            self.submit(
+                Command::SetGameProgress {
+                    game_id,
+                    collections,
+                    completed: self.completed,
+                },
+                cx,
+            );
+        }
+    }
+
+    fn remove_manual_game(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(game) = self.selected_game() else {
+            return;
+        };
+        let confirmation = window.prompt(PromptLevel::Warning, &format!("Remove {} from the library?", game.title()), Some("Its journal notes and Startpoint launch history will also be removed. The game files are not deleted."), &["Cancel", "Remove game"], cx);
+        cx.spawn_in(window, async move |view, cx| {
+            if confirmation.await == Ok(1) {
+                let _ = view.update_in(cx, |view, _, cx| {
+                    view.submit(Command::RemoveManualGame { game_id: game.id }, cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn save_journal(&mut self, cx: &mut Context<Self>) {
+        if self.journal_job.is_some() {
+            return;
+        }
+        if let Some(game_id) = self.selected.clone() {
+            let text = self.journal_text.read(cx).value().to_string();
+            if let Some(id) = self.submit(
+                Command::SaveJournalEntry {
+                    game_id: game_id.clone(),
+                    entry_id: self.journal_entry.clone(),
+                    text: text.clone(),
+                },
+                cx,
+            ) {
+                self.journal_job = Some((id, game_id, text));
+            }
+        }
+    }
+
     fn focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
         self.open_command_bar(CommandMode::Games, window, cx);
     }
@@ -981,6 +1106,11 @@ impl LauncherView {
                     LauncherCommand::Details(DetailTab::Launch),
                 ),
                 (
+                    "Open game journal".into(),
+                    IconName::BookOpen.into(),
+                    LauncherCommand::Details(DetailTab::Journal),
+                ),
+                (
                     (if game.favourite {
                         "Remove from favourites"
                     } else {
@@ -1002,6 +1132,16 @@ impl LauncherView {
                 "Show Recents".into(),
                 IconName::GalleryVerticalEnd.into(),
                 LauncherCommand::Screen(StartScreen::Recents),
+            ),
+            (
+                "Show activity calendar and collection progress".into(),
+                IconName::Calendar.into(),
+                LauncherCommand::Screen(StartScreen::Activity),
+            ),
+            (
+                "Customize Recents".into(),
+                IconName::Palette.into(),
+                LauncherCommand::CustomizeRecents,
             ),
             (
                 "Add a game…".into(),
@@ -1088,6 +1228,7 @@ impl LauncherView {
             LauncherCommand::SelectGame(id) => {
                 self.library_filter = LibraryFilter::All;
                 self.source_filter = None;
+                self.collection_filter = None;
                 self.filter(cx);
                 self.switch_screen(StartScreen::Library, window, cx);
                 self.select_game(id, window, cx);
@@ -1145,6 +1286,10 @@ impl LauncherView {
             LauncherCommand::Activity => {
                 self.jobs_open = true;
             }
+            LauncherCommand::CustomizeRecents => {
+                self.switch_screen(StartScreen::Recents, window, cx);
+                self.customization_open = true;
+            }
         }
         cx.notify();
     }
@@ -1159,6 +1304,11 @@ impl LauncherView {
         }
         if self.jobs_open {
             self.jobs_open = false;
+        } else if self.theme_editor.is_some() {
+            self.close_theme_editor(window, cx);
+            return;
+        } else if self.customization_open {
+            self.customization_open = false;
         } else if self.settings_open {
             self.settings_open = false;
         } else if self.detail_tab != DetailTab::Overview {
@@ -1178,6 +1328,8 @@ impl LauncherView {
             self.close_command_bar(window, cx);
         }
         self.settings_open = !self.settings_open;
+        self.customization_open = false;
+        self.close_theme_editor(window, cx);
         self.jobs_open = false;
         if !self.settings_open {
             self.ensure_selection(window, cx);
@@ -1190,6 +1342,9 @@ impl LauncherView {
         if self.command_mode.is_none()
             && !self.settings_open
             && !self.jobs_open
+            && !self.customization_open
+            && self.theme_editor.is_none()
+            && self.screen != StartScreen::Activity
             && self.detail_tab == DetailTab::Overview
             && let Some(game_id) = self.selected.clone()
         {
@@ -1209,6 +1364,9 @@ impl LauncherView {
         if self.command_mode.is_some()
             || self.settings_open
             || self.jobs_open
+            || self.customization_open
+            || self.theme_editor.is_some()
+            || self.screen == StartScreen::Activity
             || self.detail_tab != DetailTab::Overview
         {
             return;
@@ -1248,6 +1406,8 @@ impl LauncherView {
         self.screen = screen;
         self.settings_open = false;
         self.jobs_open = false;
+        self.customization_open = false;
+        self.close_theme_editor(window, cx);
         self.detail_tab = DetailTab::Overview;
         self.detail_return_screen = None;
         self.cancel_artwork();
@@ -1271,7 +1431,7 @@ impl LauncherView {
             return;
         }
         let previous = self.screen;
-        if self.screen == StartScreen::Recents {
+        if self.screen != StartScreen::Library {
             self.switch_screen(StartScreen::Library, window, cx);
         }
         if self.detail_tab == DetailTab::Overview {
@@ -1361,7 +1521,7 @@ impl LauncherView {
                 self.cancel_artwork();
             }
             self.appearance = settings;
-            appearance::apply(&self.appearance, Some(window), cx);
+            self.apply_appearance(window, cx);
             cx.notify();
         }
     }
@@ -1380,11 +1540,71 @@ impl LauncherView {
             let _ = view.update_in(cx, |view, window, cx| {
                 cx.set_global(themes);
                 view.themes_loading = false;
-                appearance::apply(&view.appearance, Some(window), cx);
+                view.apply_appearance(window, cx);
                 cx.notify();
             });
         })
         .detach();
+        cx.notify();
+    }
+
+    fn apply_appearance(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = &self.theme_editor {
+            let (draft, mode) = editor.read(cx).preview_theme();
+            appearance::preview(&draft, mode, window, cx);
+        } else {
+            appearance::apply(&self.appearance, Some(window), cx);
+        }
+    }
+
+    fn close_theme_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .theme_editor
+            .as_ref()
+            .is_some_and(|editor| editor.read(cx).is_saving())
+        {
+            return;
+        }
+        if self.theme_editor.take().is_some() {
+            self.theme_subscription = None;
+            self.apply_appearance(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn open_theme_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.theme_editor.is_some() || self.themes_loading {
+            return;
+        }
+        self.settings_open = false;
+        self.screen = StartScreen::Recents;
+        self.customization_open = true;
+        self.ensure_selection(window, cx);
+        let selected = self.appearance.theme.clone();
+        let directory = self.snapshot.paths.data_directory.join("themes");
+        let editor = cx.new(|cx| Editor::new(&selected, directory, window, cx));
+        self.theme_subscription =
+            Some(
+                cx.subscribe_in(&editor, window, |view, _, event, window, cx| {
+                    match event {
+                        EditorEvent::Saved(name) => {
+                            view.theme_editor = None;
+                            view.theme_subscription = None;
+                            view.set_appearance(
+                                AppearanceSettings {
+                                    theme: name.clone(),
+                                    ..view.appearance.clone()
+                                },
+                                window,
+                                cx,
+                            );
+                        }
+                        EditorEvent::Closed => view.close_theme_editor(window, cx),
+                    }
+                    cx.notify();
+                }),
+            );
+        self.theme_editor = Some(editor);
         cx.notify();
     }
 
@@ -1407,9 +1627,11 @@ impl LauncherView {
             *sources.entry(game.provider_id.clone()).or_insert(0) += 1;
         }
         div()
+            .id("sidebar-content")
             .w(px(self.appearance.sidebar_width))
             .flex_shrink_0()
             .h_full()
+            .overflow_y_scroll()
             .bg(cx.theme().sidebar)
             .flex()
             .flex_col()
@@ -1425,6 +1647,7 @@ impl LauncherView {
                     .selected(
                         self.library_filter == LibraryFilter::Installed
                             && self.source_filter.is_none()
+                            && self.collection_filter.is_none()
                             && !self.settings_open,
                     )
                     .border_0()
@@ -1432,6 +1655,7 @@ impl LauncherView {
                     .on_click(cx.listener(|view, _, window, cx| {
                         view.library_filter = LibraryFilter::Installed;
                         view.source_filter = None;
+                        view.collection_filter = None;
                         view.settings_open = false;
                         view.filter(cx);
                         view.ensure_selection(window, cx);
@@ -1448,6 +1672,7 @@ impl LauncherView {
                     .on_click(cx.listener(|view, _, window, cx| {
                         view.library_filter = LibraryFilter::Favourites;
                         view.source_filter = None;
+                        view.collection_filter = None;
                         view.settings_open = false;
                         view.filter(cx);
                         view.ensure_selection(window, cx);
@@ -1477,6 +1702,7 @@ impl LauncherView {
                     .w_full()
                     .on_click(cx.listener(move |view, _, window, cx| {
                         view.source_filter = Some(source.clone());
+                        view.collection_filter = None;
                         view.library_filter = LibraryFilter::Installed;
                         view.settings_open = false;
                         view.filter(cx);
@@ -1495,12 +1721,35 @@ impl LauncherView {
                         .on_click(cx.listener(|view, _, window, cx| {
                             view.library_filter = LibraryFilter::All;
                             view.source_filter = None;
+                            view.collection_filter = None;
                             view.settings_open = false;
                             view.filter(cx);
                             view.ensure_selection(window, cx);
                             cx.notify();
                         })),
                 )
+            })
+            .when(!self.collection_totals().is_empty(), |sidebar| {
+                sidebar
+                    .child(div().mt_6().child(eyebrow("COLLECTIONS")))
+                    .children(self.collection_totals().into_iter().map(
+                        |(name, (completed, total))| {
+                            Button::new(SharedString::from(format!("collection-{name}")))
+                                .ghost()
+                                .w_full()
+                                .border_0()
+                                .label(format!("{name}   {completed}/{total}"))
+                                .tooltip(name.clone())
+                                .selected(self.collection_filter.as_ref() == Some(&name))
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    view.collection_filter = Some(name.clone());
+                                    view.source_filter = None;
+                                    view.library_filter = LibraryFilter::All;
+                                    view.filter(cx);
+                                    view.switch_screen(StartScreen::Library, window, cx);
+                                }))
+                        },
+                    ))
             })
             .child(div().flex_1())
             .child(
@@ -1737,6 +1986,7 @@ impl LauncherView {
                                         .on_click(cx.listener(move |view, _, window, cx| {
                                             view.library_filter = filter;
                                             view.source_filter = None;
+                                            view.collection_filter = None;
                                             view.filter(cx);
                                             view.ensure_selection(window, cx);
                                             cx.notify();
@@ -1761,6 +2011,9 @@ impl LauncherView {
             .when_some(self.source_filter.clone(), |library, source| {
                 library.child(hint(&format!("Source: {source}")))
             })
+            .when_some(self.collection_filter.clone(), |library, collection| {
+                library.child(hint(&format!("Collection: {collection}")))
+            })
             .child(content)
             .into_any_element()
     }
@@ -1784,20 +2037,24 @@ impl LauncherView {
             .gap_2()
             .child(
                 div().flex().gap_1().children(
-                    [StartScreen::Recents, StartScreen::Library]
-                        .into_iter()
-                        .map(|screen| {
-                            Button::new(SharedString::from(format!("view-{}", screen.label())))
-                                .ghost()
-                                .small()
-                                .label(screen.label())
-                                .selected(self.screen == screen)
-                                .border_0()
-                                .when(self.screen == screen, |button| button.bg(cx.theme().muted))
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.switch_screen(screen, window, cx)
-                                }))
-                        }),
+                    [
+                        StartScreen::Recents,
+                        StartScreen::Library,
+                        StartScreen::Activity,
+                    ]
+                    .into_iter()
+                    .map(|screen| {
+                        Button::new(SharedString::from(format!("view-{}", screen.label())))
+                            .ghost()
+                            .small()
+                            .label(screen.label())
+                            .selected(self.screen == screen)
+                            .border_0()
+                            .when(self.screen == screen, |button| button.bg(cx.theme().muted))
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                view.switch_screen(screen, window, cx)
+                            }))
+                    }),
                 ),
             )
             .when(self.screen == StartScreen::Recents, |bar| {
@@ -1822,6 +2079,7 @@ impl LauncherView {
                                             let _ = view.update(cx, |view, cx| {
                                                 view.library_filter = filter;
                                                 view.source_filter = None;
+                                                view.collection_filter = None;
                                                 view.filter(cx);
                                                 view.ensure_selection(window, cx);
                                                 view.focus.focus(window);
@@ -1927,6 +2185,8 @@ impl LauncherView {
             || self.settings_open
             || self.jobs_open
             || self.command_mode.is_some()
+            || self.customization_open
+            || self.theme_editor.is_some()
             || self.detail_tab != DetailTab::Overview
             || self.carousel_is_paused(window, cx)
             || !window.is_window_active()
@@ -2035,7 +2295,8 @@ impl LauncherView {
                 self.appearance.dither_recents && artwork.is_some(),
                 |view| view.child(self.artwork_texture(window)),
             )
-            .child(div().flex_1().min_h(px(HEADER_HEIGHT + 12.)))
+            .child(div().id("recents-content").size_full().overflow_y_scroll().flex().flex_col()
+            .child(div().flex_1().min_h(px(if self.appearance.recents_activity || self.appearance.recents_progress || self.appearance.recents_journal { 220. } else { HEADER_HEIGHT + 12. })))
             .child(
                 div()
                     .id("recents-information")
@@ -2045,6 +2306,7 @@ impl LauncherView {
                     .flex()
                     .flex_col()
                     .track_focus(&self.carousel_focus)
+                    .child(div().relative().w_full().flex().flex_col()
                     .when(self.appearance.fade_recents, |information| {
                         information.child(
                             div()
@@ -2330,8 +2592,15 @@ impl LauncherView {
                                         .map(|game| self.recent_card(game, window, cx)),
                                 ),
                             ),
-                    ),
-            )
+                    ))
+                    .when(self.appearance.recents_activity || self.appearance.recents_progress || self.appearance.recents_journal, |information| {
+                        information.child(div().relative().w_full().px(px(32.)).pb_5().flex().flex_wrap().items_start().gap_4()
+                            .when(self.appearance.fade_recents, |widgets| widgets.bg(background))
+                            .when(self.appearance.recents_activity, |widgets| widgets.child(widget_surface(cx).child(self.activity_calendar(cx))))
+                            .when(self.appearance.recents_progress, |widgets| widgets.child(widget_surface(cx).child(self.collection_progress(cx))))
+                            .when(self.appearance.recents_journal, |widgets| widgets.child(widget_surface(cx).child(self.journal_widget(cx)))))
+                    }),
+            ))
             .into_any_element()
     }
 
@@ -2497,6 +2766,8 @@ impl LauncherView {
                                                 .disabled(
                                                     self.command_mode.is_some()
                                                         || (!self.settings_open
+                                                            && !self.customization_open
+                                                            && self.theme_editor.is_none()
                                                             && self.detail_tab
                                                                 == DetailTab::Overview),
                                                 )
@@ -2557,6 +2828,34 @@ impl LauncherView {
                                         cx.stop_propagation()
                                     })
                                     .on_click(|_, _, cx| cx.stop_propagation())
+                                    .when(
+                                        self.screen == StartScreen::Recents && !self.settings_open,
+                                        |controls| {
+                                            controls.child(
+                                                self.toolbar_button(
+                                                    "customize-recents",
+                                                    IconName::Palette,
+                                                    "Customize Recents",
+                                                )
+                                                .selected(self.customization_open)
+                                                .disabled(
+                                                    !self.snapshot.ready
+                                                        || self.command_mode.is_some(),
+                                                )
+                                                .on_click(cx.listener(|view, _, window, cx| {
+                                                    if view.theme_editor.is_some() {
+                                                        view.close_theme_editor(window, cx);
+                                                    } else {
+                                                        view.customization_open =
+                                                            !view.customization_open;
+                                                    }
+                                                    view.jobs_open = false;
+                                                    view.focus.focus(window);
+                                                    cx.notify();
+                                                })),
+                                            )
+                                        },
+                                    )
                                     .child(
                                         self.toolbar_button(
                                             "refresh-library",
@@ -2794,10 +3093,13 @@ impl LauncherView {
             DetailTab::Metadata => div().w_full().flex().flex_col().gap_4()
                 .child(field("Title", &self.title, cx)).child(field("Description", &self.description, cx)).child(field("Developer", &self.developer, cx)).child(field("Genres", &self.genres, cx))
                 .child(Button::new("save-metadata").primary().label("Save metadata").on_click(cx.listener(|view, _, _, cx| view.save_metadata(cx))))
+                .child(div().mt_3().child(eyebrow("COLLECTIONS & PROGRESS")))
+                .child(field("Collections — one per line", &self.collections, cx))
+                .child(Switch::new("game-completed").checked(self.completed).label("Completed")
+                    .on_click(cx.listener(|view, completed, _, cx| { view.completed = *completed; cx.notify(); })))
+                .child(Button::new("save-game-progress").label("Save collections and progress").on_click(cx.listener(|view, _, _, cx| view.save_progress(cx))))
                 .when(game.provider_id == "manual", |content| content.child(Button::new("remove-manual-game").ghost().label("Remove from library")
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        if let Some(game_id) = view.selected.take() { view.submit(Command::RemoveManualGame { game_id }, cx); }
-                    }))))
+                    .on_click(cx.listener(|view, _, window, cx| view.remove_manual_game(window, cx)))))
                 .into_any_element(),
             DetailTab::Launch => div().w_full().flex().flex_col().gap_4()
                 .child(hint(&format!("{}\n{}", source_name(&game.provider_id), game.install_directory.display())))
@@ -2813,6 +3115,7 @@ impl LauncherView {
                     }
                 }))).into_any_element(),
             DetailTab::Artwork => self.artwork_picker(game, cx),
+            DetailTab::Journal => self.game_journal(game, cx),
         };
         div()
             .w(px(380.))
@@ -2858,12 +3161,13 @@ impl LauncherView {
                     ),
             )
             .child(
-                div().w_full().flex().gap_1().children(
+                div().w_full().flex().flex_wrap().gap_1().children(
                     [
                         (DetailTab::Overview, "Overview"),
                         (DetailTab::Metadata, "Metadata"),
                         (DetailTab::Artwork, "Images"),
                         (DetailTab::Launch, "Launch"),
+                        (DetailTab::Journal, "Journal"),
                     ]
                     .into_iter()
                     .map(|(tab, label)| {
@@ -3131,6 +3435,657 @@ impl LauncherView {
             .into_any_element()
     }
 
+    fn theme_selector(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let names = cx
+            .global::<theme::Catalog>()
+            .themes
+            .iter()
+            .map(|theme| theme.name.clone())
+            .collect::<Vec<_>>();
+        let selected = self.appearance.theme.clone();
+        let view = cx.weak_entity();
+        Button::new("select-theme")
+            .label(selected.clone())
+            .min_w(px(160.))
+            .dropdown_caret(true)
+            .disabled(!self.snapshot.ready || self.themes_loading)
+            .dropdown_menu(move |mut menu, _, _| {
+                for name in &names {
+                    let view = view.clone();
+                    let name = name.to_string();
+                    menu = menu.item(
+                        PopupMenuItem::new(name.clone())
+                            .checked(name.eq_ignore_ascii_case(&selected))
+                            .on_click(move |_, window, cx| {
+                                let _ = view.update(cx, |view, cx| {
+                                    view.set_appearance(
+                                        AppearanceSettings {
+                                            theme: name.clone(),
+                                            ..view.appearance.clone()
+                                        },
+                                        window,
+                                        cx,
+                                    );
+                                    view.focus.focus(window);
+                                });
+                            }),
+                    );
+                }
+                menu
+            })
+    }
+
+    fn customization(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let saving = self
+            .theme_editor
+            .as_ref()
+            .is_some_and(|editor| editor.read(cx).is_saving());
+        let mut panel = div()
+            .id("recents-customization")
+            .absolute()
+            .top(px(HEADER_HEIGHT + 8.))
+            .right(px(12.))
+            .w(px(320.))
+            .max_h(window.viewport_size().height - px(HEADER_HEIGHT + 24.))
+            .overflow_y_scroll()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .rounded(cx.theme().radius_lg)
+            .bg(cx.theme().popover)
+            .shadow_lg()
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(eyebrow("CUSTOMIZE RECENTS"))
+                    .child(
+                        Button::new("close-customization")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Close)
+                            .tooltip("Close customization")
+                            .disabled(saving)
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.close_theme_editor(window, cx);
+                                view.customization_open = false;
+                                view.focus.focus(window);
+                                cx.notify();
+                            })),
+                    ),
+            );
+        if let Some(editor) = &self.theme_editor {
+            panel = panel.child(editor.clone());
+        } else {
+            panel = panel.child(self.theme_selector(cx))
+                .child(div().flex().gap_1().children([AppearanceMode::System, AppearanceMode::Light, AppearanceMode::Dark].into_iter().map(|mode| {
+                    Button::new(mode.label()).small().label(mode.label()).selected(self.appearance.mode == mode).border_0()
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            view.set_appearance(AppearanceSettings { mode, ..view.appearance.clone() }, window, cx);
+                        }))
+                })))
+                .child(Button::new("edit-theme").ghost().small().icon(IconName::Palette).label("Edit theme…")
+                    .disabled(self.themes_loading).on_click(cx.listener(|view, _, window, cx| view.open_theme_editor(window, cx))))
+                .child(eyebrow("ARTWORK"))
+                .child(Switch::new("recents-dithering").checked(self.appearance.dither_recents).label("Dithering")
+                    .on_click(cx.listener(|view, enabled, window, cx| {
+                        view.set_appearance(AppearanceSettings { dither_recents: *enabled, ..view.appearance.clone() }, window, cx);
+                    })))
+                .child(Switch::new("recents-background-fade").checked(self.appearance.fade_recents).label("Background fade")
+                    .on_click(cx.listener(|view, enabled, window, cx| {
+                        view.set_appearance(AppearanceSettings { fade_recents: *enabled, ..view.appearance.clone() }, window, cx);
+                    })))
+                .child(div().mt_2().child(eyebrow("OPTIONAL WIDGETS")))
+                .child(hint("Off by default. Calendar and progress are also available on the Activity page."))
+                .child(Switch::new("recents-calendar-widget").checked(self.appearance.recents_activity).label("Activity calendar")
+                    .on_click(cx.listener(|view, enabled, window, cx| {
+                        view.set_appearance(AppearanceSettings { recents_activity: *enabled, ..view.appearance.clone() }, window, cx);
+                    })))
+                .child(Switch::new("recents-progress-widget").checked(self.appearance.recents_progress).label("Collection progress")
+                    .on_click(cx.listener(|view, enabled, window, cx| {
+                        view.set_appearance(AppearanceSettings { recents_progress: *enabled, ..view.appearance.clone() }, window, cx);
+                    })))
+                .child(Switch::new("recents-journal-widget").checked(self.appearance.recents_journal).label("Game journal")
+                    .on_click(cx.listener(|view, enabled, window, cx| {
+                        view.set_appearance(AppearanceSettings { recents_journal: *enabled, ..view.appearance.clone() }, window, cx);
+                    })))
+                .child(hint("Changes are saved immediately. Theme drafts are saved only when you choose Save theme."));
+        }
+        panel.into_any_element()
+    }
+
+    fn collection_totals(&self) -> BTreeMap<String, (u32, u32)> {
+        let mut totals = BTreeMap::new();
+        for game in self.snapshot.games.iter() {
+            for name in &game.collections {
+                let (completed, total) = totals.entry(name.clone()).or_insert((0, 0));
+                *total += 1;
+                *completed += u32::from(game.completed);
+            }
+        }
+        totals
+    }
+
+    fn collection_progress(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut totals = self
+            .collection_totals()
+            .into_iter()
+            .map(|(name, counts)| (Some(name), counts))
+            .collect::<Vec<_>>();
+        totals.insert(
+            0,
+            (
+                None,
+                (
+                    u32::try_from(
+                        self.snapshot
+                            .games
+                            .iter()
+                            .filter(|game| game.completed)
+                            .count(),
+                    )
+                    .unwrap_or(u32::MAX),
+                    u32::try_from(self.snapshot.games.len()).unwrap_or(u32::MAX),
+                ),
+            ),
+        );
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Collection progress"),
+            )
+            .child(hint("Completion is marked by you, never inferred."))
+            .child(
+                div()
+                    .id("collection-progress-list")
+                    .max_h(px(220.))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .children(totals.into_iter().enumerate().map(
+                        |(index, (name, (completed, total)))| {
+                            let label = name.clone().unwrap_or_else(|| "All saved games".into());
+                            let progress = if total == 0 {
+                                0
+                            } else {
+                                u16::try_from(u64::from(completed) * 1000 / u64::from(total))
+                                    .unwrap_or(1000)
+                            };
+                            div()
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    Button::new(("collection-progress", index))
+                                        .ghost()
+                                        .small()
+                                        .w_full()
+                                        .border_0()
+                                        .label(format!("{label} · {completed} / {total}"))
+                                        .tooltip(format!("Open {label}"))
+                                        .on_click(cx.listener(move |view, _, window, cx| {
+                                            view.collection_filter = name.clone();
+                                            view.source_filter = None;
+                                            view.library_filter = LibraryFilter::All;
+                                            view.filter(cx);
+                                            view.switch_screen(StartScreen::Library, window, cx);
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .h(px(4.))
+                                        .rounded_full()
+                                        .overflow_hidden()
+                                        .bg(cx.theme().muted)
+                                        .child(
+                                            div()
+                                                .h_full()
+                                                .w(relative(f32::from(progress) / 1000.))
+                                                .bg(cx.theme().primary),
+                                        ),
+                                )
+                        },
+                    )),
+            )
+            .when(self.collection_totals().is_empty(), |panel| {
+                panel.child(hint(
+                    "Add collections in a game's Metadata tab to track groups here.",
+                ))
+            })
+            .into_any_element()
+    }
+
+    fn open_game_journal(&mut self, game_id: GameId, window: &mut Window, cx: &mut Context<Self>) {
+        let previous = self.screen;
+        self.collection_filter = None;
+        self.source_filter = None;
+        self.library_filter = LibraryFilter::All;
+        self.filter(cx);
+        self.switch_screen(StartScreen::Library, window, cx);
+        self.select_game(game_id, window, cx);
+        self.open_details(DetailTab::Journal, window, cx);
+        self.detail_return_screen = Some(previous);
+    }
+
+    fn activity_calendar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let leading = self.activity_month.weekday().num_days_from_monday();
+        let start = self
+            .activity_month
+            .checked_sub_days(chrono::Days::new(u64::from(leading)))
+            .unwrap_or(self.activity_month);
+        let days = self
+            .snapshot
+            .activity
+            .iter()
+            .map(|day| (day.date.clone(), day))
+            .collect::<BTreeMap<_, _>>();
+        let month_prefix = self.activity_month.format("%Y-%m-").to_string();
+        let month_launches = self
+            .snapshot
+            .activity
+            .iter()
+            .filter(|day| day.date.starts_with(&month_prefix))
+            .map(|day| day.launches)
+            .sum::<u32>();
+        let selected = self.activity_day.format("%Y-%m-%d").to_string();
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Activity calendar"),
+                    )
+                    .child(div().flex().gap_1().children([false, true].into_iter().map(
+                        |forward| {
+                            Button::new(if forward {
+                                "activity-next-month"
+                            } else {
+                                "activity-previous-month"
+                            })
+                            .ghost()
+                            .small()
+                            .icon(if forward {
+                                IconName::ChevronRight
+                            } else {
+                                IconName::ChevronLeft
+                            })
+                            .tooltip(if forward {
+                                "Next month"
+                            } else {
+                                "Previous month"
+                            })
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| {
+                                    let month = if forward {
+                                        view.activity_month.checked_add_months(Months::new(1))
+                                    } else {
+                                        view.activity_month.checked_sub_months(Months::new(1))
+                                    };
+                                    if let Some(month) = month {
+                                        view.activity_month = month;
+                                        view.activity_day = month;
+                                    }
+                                    cx.notify();
+                                },
+                            ))
+                        },
+                    ))),
+            )
+            .child(div().text_sm().child(format!(
+                "{} · {}",
+                self.activity_month.format("%B %Y"),
+                launch_count(month_launches)
+            )))
+            .child(div().flex().gap_1().children(
+                ["M", "T", "W", "T", "F", "S", "S"].into_iter().map(|day| {
+                    div()
+                        .flex_1()
+                        .text_xs()
+                        .text_center()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(day)
+                }),
+            ))
+            .children((0u32..6).map(|week| {
+                div()
+                    .flex()
+                    .gap_1()
+                    .children((0u32..7).filter_map(|weekday| {
+                        let date = start
+                            .checked_add_days(chrono::Days::new(u64::from(week * 7 + weekday)))?;
+                        let key = date.format("%Y-%m-%d").to_string();
+                        let launches = days.get(&key).map(|day| day.launches).unwrap_or(0);
+                        let enabled = date.month() == self.activity_month.month();
+                        Some(
+                            Button::new(SharedString::from(format!("activity-day-{key}")))
+                                .ghost()
+                                .small()
+                                .border_0()
+                                .flex_1()
+                                .min_w_0()
+                                .h(px(28.))
+                                .p_0()
+                                .label(date.day().to_string())
+                                .tooltip(format!("{key} · {}", launch_count(launches)))
+                                .bg(if launches == 0 {
+                                    cx.theme().muted
+                                } else if launches < 3 {
+                                    cx.theme().primary.opacity(0.25)
+                                } else {
+                                    cx.theme().primary
+                                })
+                                .text_color(if launches >= 3 {
+                                    cx.theme().primary_foreground
+                                } else {
+                                    cx.theme().foreground
+                                })
+                                .when(date == self.activity_day, |button| {
+                                    button
+                                        .bg(cx.theme().accent)
+                                        .text_color(cx.theme().accent_foreground)
+                                })
+                                .disabled(!enabled)
+                                .when(!enabled, |button| button.opacity(0.35))
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    view.activity_day = date;
+                                    cx.notify();
+                                })),
+                        )
+                    }))
+            }))
+            .child(hint(&format!(
+                "{} · {}",
+                self.activity_day.format("%e %b"),
+                launch_count(days.get(&selected).map(|day| day.launches).unwrap_or(0))
+            )))
+            .when_some(days.get(&selected), |panel, day| {
+                panel.child(
+                    div()
+                        .id("activity-day-games")
+                        .max_h(px(128.))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .children(day.games.iter().filter_map(|(game_id, count)| {
+                            let game = self
+                                .snapshot
+                                .games
+                                .iter()
+                                .find(|game| &game.id == game_id)?;
+                            let id = game_id.clone();
+                            Some(
+                                Button::new(SharedString::from(format!(
+                                    "activity-game-{}",
+                                    game_id.0
+                                )))
+                                .ghost()
+                                .small()
+                                .w_full()
+                                .label(format!("{} · {count}", game.title()))
+                                .on_click(cx.listener(
+                                    move |view, _, window, cx| {
+                                        view.open_game_journal(id.clone(), window, cx)
+                                    },
+                                )),
+                            )
+                        })),
+                )
+            })
+            .when(month_launches == 0, |panel| {
+                panel.child(hint(
+                    "Launch a game through Startpoint to begin your history.",
+                ))
+            })
+            .into_any_element()
+    }
+
+    fn journal_widget(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Game journal"),
+                    )
+                    .child(
+                        Button::new("write-journal-note")
+                            .ghost()
+                            .small()
+                            .icon(IconName::Plus)
+                            .tooltip("Write a game note")
+                            .disabled(self.selected.is_none())
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.open_details(DetailTab::Journal, window, cx)
+                            })),
+                    ),
+            )
+            .when(self.snapshot.journal.is_empty(), |panel| {
+                panel.child(hint(
+                    "Keep a note of milestones, new characters, or what to do next.",
+                ))
+            })
+            .children(self.snapshot.journal.iter().take(3).filter_map(|entry| {
+                let game = self
+                    .snapshot
+                    .games
+                    .iter()
+                    .find(|game| game.id == entry.game_id)?;
+                let id = game.id.clone();
+                Some(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            Button::new(SharedString::from(format!("journal-widget-{}", entry.id)))
+                                .ghost()
+                                .small()
+                                .w_full()
+                                .border_0()
+                                .label(game.title().to_string())
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    view.open_game_journal(id.clone(), window, cx)
+                                })),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(timestamp_label(entry.created_at)),
+                        )
+                        .child(div().text_sm().line_clamp(2).child(entry.text.clone())),
+                )
+            }))
+            .into_any_element()
+    }
+
+    fn game_journal(&self, game: &Game, cx: &mut Context<Self>) -> AnyElement {
+        let entries = self
+            .snapshot
+            .journal
+            .iter()
+            .filter(|entry| entry.game_id == game.id)
+            .collect::<Vec<_>>();
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(field(
+                if self.journal_entry.is_some() {
+                    "Edit note"
+                } else {
+                    "New note"
+                },
+                &self.journal_text,
+                cx,
+            ))
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        Button::new("save-journal-note")
+                            .primary()
+                            .small()
+                            .label(if self.journal_entry.is_some() {
+                                "Save changes"
+                            } else {
+                                "Add note"
+                            })
+                            .disabled(self.journal_job.is_some())
+                            .on_click(cx.listener(|view, _, _, cx| view.save_journal(cx))),
+                    )
+                    .when(self.journal_entry.is_some(), |row| {
+                        row.child(
+                            Button::new("cancel-journal-edit")
+                                .ghost()
+                                .small()
+                                .label("Cancel edit")
+                                .disabled(self.journal_job.is_some())
+                                .on_click(cx.listener(|view, _, window, cx| {
+                                    view.journal_entry = None;
+                                    set_value(&view.journal_text, "", window, cx);
+                                    cx.notify();
+                                })),
+                        )
+                    }),
+            )
+            .when(entries.is_empty(), |panel| {
+                panel.child(hint("No notes yet. Your journal stays on this computer."))
+            })
+            .children(entries.into_iter().map(|entry| {
+                let saved = entry.clone();
+                let delete_id = entry.id.clone();
+                let game_id = game.id.clone();
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .p_3()
+                    .rounded(cx.theme().radius)
+                    .bg(cx.theme().background)
+                    .child(hint(&timestamp_label(entry.created_at)))
+                    .child(div().text_sm().child(entry.text.clone()))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .child(
+                                Button::new(SharedString::from(format!("edit-note-{}", entry.id)))
+                                    .ghost()
+                                    .small()
+                                    .label("Edit")
+                                    .disabled(self.journal_job.is_some())
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.journal_entry = Some(saved.id.clone());
+                                        set_value(&view.journal_text, &saved.text, window, cx);
+                                        view.journal_text
+                                            .update(cx, |field, cx| field.focus(window, cx));
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "delete-note-{}",
+                                    entry.id
+                                )))
+                                .ghost()
+                                .small()
+                                .label(if self.journal_delete.as_ref() == Some(&entry.id) {
+                                    "Confirm delete"
+                                } else {
+                                    "Delete"
+                                })
+                                .disabled(
+                                    self.journal_entry.as_ref() == Some(&entry.id)
+                                        || self.journal_job.is_some(),
+                                )
+                                .on_click(cx.listener(
+                                    move |view, _, _, cx| {
+                                        if view.journal_delete.as_ref() == Some(&delete_id) {
+                                            view.submit(
+                                                Command::DeleteJournalEntry {
+                                                    game_id: game_id.clone(),
+                                                    entry_id: delete_id.clone(),
+                                                },
+                                                cx,
+                                            );
+                                            view.journal_delete = None;
+                                        } else {
+                                            view.journal_delete = Some(delete_id.clone());
+                                        }
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .when(self.journal_delete.as_ref() == Some(&entry.id), |row| {
+                                row.child(
+                                    Button::new(SharedString::from(format!(
+                                        "cancel-delete-note-{}",
+                                        entry.id
+                                    )))
+                                    .ghost()
+                                    .small()
+                                    .label("Keep note")
+                                    .on_click(cx.listener(|view, _, _, cx| {
+                                        view.journal_delete = None;
+                                        cx.notify();
+                                    })),
+                                )
+                            }),
+                    )
+            }))
+            .into_any_element()
+    }
+
+    fn activity_overview(&self, cx: &mut Context<Self>) -> AnyElement {
+        div().id("library-activity").size_full().overflow_y_scroll().px_8().pb_8()
+            .child(div().w_full().max_w(px(1100.)).mx_auto().flex().flex_col().gap_5()
+                .child(div().text_3xl().child("Your activity"))
+                .child(hint("Launches recorded through Startpoint, not playtime. Existing last-played dates are not retroactively counted."))
+                .child(div().w_full().flex().flex_wrap().items_start().gap_4()
+                    .child(widget_surface(cx).child(self.activity_calendar(cx)))
+                    .child(widget_surface(cx).child(self.collection_progress(cx))))
+                .child(widget_surface(cx).w_full().child(self.journal_widget(cx))))
+            .into_any_element()
+    }
+
     fn settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let key_configured = self
             .snapshot
@@ -3141,15 +4096,8 @@ impl LauncherView {
         let cache_directory = self.snapshot.paths.cache_directory.clone();
         let theme_directory = data_directory.join("themes");
         let catalog = cx.global::<theme::Catalog>();
-        let theme_names = catalog
-            .themes
-            .iter()
-            .map(|theme| theme.name.clone())
-            .collect::<Vec<_>>();
         let theme_warnings = catalog.warnings.clone();
         let theme_missing = !catalog.contains(&self.appearance.theme);
-        let selected_theme = self.appearance.theme.clone();
-        let view = cx.weak_entity();
         div()
             .id("settings-content")
             .w_full()
@@ -3195,75 +4143,32 @@ impl LauncherView {
                         ),
                     )
                     .child(
-                        Switch::new("recents-dithering")
-                            .checked(self.appearance.dither_recents)
-                            .label("Dither Recents artwork")
+                        Button::new("customize-recents-from-settings")
+                            .ghost()
+                            .label("Customize Recents…")
+                            .icon(IconName::Palette)
                             .disabled(!self.snapshot.ready)
-                            .on_click(cx.listener(|view, enabled, window, cx| {
-                                view.set_appearance(
-                                    AppearanceSettings {
-                                        dither_recents: *enabled,
-                                        ..view.appearance.clone()
-                                    },
-                                    window,
-                                    cx,
-                                );
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.switch_screen(StartScreen::Recents, window, cx);
+                                view.customization_open = true;
+                                cx.notify();
                             })),
                     )
                     .child(div().mt_3().child(eyebrow("APPEARANCE")))
-                    .child(
-                        Switch::new("recents-background-fade")
-                            .checked(self.appearance.fade_recents)
-                            .label("Fade Recents background")
-                            .disabled(!self.snapshot.ready)
-                            .on_click(cx.listener(|view, enabled, window, cx| {
-                                view.set_appearance(
-                                    AppearanceSettings {
-                                        fade_recents: *enabled,
-                                        ..view.appearance.clone()
-                                    },
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    )
                     .child(
                         div()
                             .flex()
                             .flex_wrap()
                             .gap_2()
+                            .child(self.theme_selector(cx))
                             .child(
-                                Button::new("select-theme")
-                                    .label(self.appearance.theme.clone())
-                                    .min_w(px(180.))
-                                    .dropdown_caret(true)
+                                Button::new("edit-theme-from-settings")
+                                    .label("Edit theme…")
+                                    .icon(IconName::Palette)
                                     .disabled(!self.snapshot.ready || self.themes_loading)
-                                    .dropdown_menu(move |mut menu, _, _| {
-                                        for name in &theme_names {
-                                            let view = view.clone();
-                                            let name = name.to_string();
-                                            menu = menu.item(
-                                                PopupMenuItem::new(name.clone())
-                                                    .checked(
-                                                        name.eq_ignore_ascii_case(&selected_theme),
-                                                    )
-                                                    .on_click(move |_, window, cx| {
-                                                        let _ = view.update(cx, |view, cx| {
-                                                            view.set_appearance(
-                                                                AppearanceSettings {
-                                                                    theme: name.clone(),
-                                                                    ..view.appearance.clone()
-                                                                },
-                                                                window,
-                                                                cx,
-                                                            );
-                                                            view.focus.focus(window);
-                                                        });
-                                                    }),
-                                            );
-                                        }
-                                        menu
-                                    }),
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.open_theme_editor(window, cx)
+                                    })),
                             )
                             .child(
                                 Button::new("open-themes")
@@ -3795,6 +4700,8 @@ impl Render for LauncherView {
             self.settings(cx)
         } else if self.screen == StartScreen::Recents {
             self.recents(window, cx)
+        } else if self.screen == StartScreen::Activity {
+            self.activity_overview(cx)
         } else {
             let mut content = div()
                 .flex()
@@ -3911,6 +4818,9 @@ impl Render for LauncherView {
                     ),
             )
             .child(self.toolbar(sidebar, window, cx))
+            .when(self.customization_open, |view| {
+                view.child(self.customization(window, cx))
+            })
             .when(self.jobs_open, |view| view.child(self.activity(cx)))
             .when(self.command_mode.is_some(), |view| {
                 view.child(self.command_bar(cx))
@@ -3959,6 +4869,27 @@ fn field(label: &str, state: &Entity<InputState>, cx: &App) -> Div {
                 .flex_shrink_0()
                 .bg(cx.theme().secondary),
         )
+}
+
+fn widget_surface(cx: &App) -> Div {
+    div()
+        .flex_1()
+        .min_w(px(280.))
+        .p_4()
+        .rounded(cx.theme().radius_lg)
+        .bg(cx.theme().background.alpha(0.96))
+}
+
+fn timestamp_label(timestamp: u64) -> String {
+    i64::try_from(timestamp)
+        .ok()
+        .and_then(|timestamp| Local.timestamp_opt(timestamp, 0).single())
+        .map(|date| date.format("%e %b %Y · %H:%M").to_string())
+        .unwrap_or_else(|| "Date unavailable".into())
+}
+
+fn launch_count(count: u32) -> String {
+    format!("{count} launch{}", if count == 1 { "" } else { "es" })
 }
 
 fn eyebrow(label: &str) -> impl IntoElement {

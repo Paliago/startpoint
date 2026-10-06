@@ -1,8 +1,9 @@
 use gpui::{App, Hsla, Window, WindowAppearance, WindowBackgroundAppearance};
-use gpui_component::{ActiveTheme, Theme, ThemeMode};
+use gpui_component::{ActiveTheme, Theme, ThemeConfig, ThemeMode, ThemeSet};
 use startpoint_sdk::{AppearanceMode, AppearanceSettings};
+use std::rc::Rc;
 
-pub(crate) fn apply(settings: &AppearanceSettings, mut window: Option<&mut Window>, cx: &mut App) {
+pub(crate) fn apply(settings: &AppearanceSettings, window: Option<&mut Window>, cx: &mut App) {
     let mode = settings.mode;
     sync_native_appearance(mode);
     let system = window
@@ -20,6 +21,41 @@ pub(crate) fn apply(settings: &AppearanceSettings, mut window: Option<&mut Windo
     let themes = cx.global::<crate::theme::Catalog>();
     let light = themes.configuration(&settings.theme, ThemeMode::Light);
     let dark = themes.configuration(&settings.theme, ThemeMode::Dark);
+    apply_configurations(light, dark, resolved, window, cx);
+}
+
+pub(crate) fn preview(theme: &ThemeSet, mode: ThemeMode, window: &mut Window, cx: &mut App) {
+    sync_native_appearance(if mode.is_dark() {
+        AppearanceMode::Dark
+    } else {
+        AppearanceMode::Light
+    });
+    let light = theme
+        .themes
+        .iter()
+        .find(|variant| variant.mode == ThemeMode::Light);
+    let dark = theme
+        .themes
+        .iter()
+        .find(|variant| variant.mode == ThemeMode::Dark);
+    if let (Some(light), Some(dark)) = (light, dark) {
+        apply_configurations(
+            Rc::new(light.clone()),
+            Rc::new(dark.clone()),
+            mode,
+            Some(window),
+            cx,
+        );
+    }
+}
+
+fn apply_configurations(
+    light: Rc<ThemeConfig>,
+    dark: Rc<ThemeConfig>,
+    resolved: ThemeMode,
+    mut window: Option<&mut Window>,
+    cx: &mut App,
+) {
     let native_font = if resolved.is_dark() {
         dark.font_family.is_none()
     } else {
