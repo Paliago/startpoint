@@ -1,0 +1,461 @@
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    sync::Arc,
+};
+
+pub type JobId = u64;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct GameId(pub String);
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExecutableLaunch {
+    pub executable: PathBuf,
+    pub arguments: Vec<String>,
+    pub working_directory: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum LaunchTarget {
+    Uri(String),
+    Executable(ExecutableLaunch),
+    ApplicationBundle(ExecutableLaunch),
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct UserMetadata {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub developer: Option<String>,
+    pub genres: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum ArtworkKind {
+    Cover,
+    Background,
+    Logo,
+    Icon,
+}
+
+impl ArtworkKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cover => "Cover",
+            Self::Background => "Background",
+            Self::Logo => "Logo",
+            Self::Icon => "Icon",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ArtworkAsset {
+    pub id: String,
+    pub kind: ArtworkKind,
+    pub image_path: PathBuf,
+    pub thumbnail_path: PathBuf,
+    pub provider_id: String,
+    pub source_url: Option<String>,
+    pub author: String,
+}
+
+impl ArtworkAsset {
+    /// Disposable ordered-dither artwork, regenerated alongside the thumbnail.
+    pub fn dithered_path(&self) -> PathBuf {
+        self.thumbnail_path.with_extension("dither-v2.png")
+    }
+
+    /// Disposable full-resolution banner with a smooth alpha fade.
+    pub fn recents_path(&self) -> PathBuf {
+        self.thumbnail_path.with_extension("recents-v3.png")
+    }
+
+    /// The same banner fade with fine, deterministic stippling.
+    pub fn recents_dithered_path(&self) -> PathBuf {
+        self.thumbnail_path.with_extension("recents-dither-v3.png")
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DiscoveredGame {
+    pub source_game_id: String,
+    pub title: String,
+    pub install_directory: PathBuf,
+    pub launch_target: LaunchTarget,
+    pub local_cover: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Game {
+    pub id: GameId,
+    pub provider_id: String,
+    pub source_game_id: String,
+    pub discovered_title: String,
+    pub install_directory: PathBuf,
+    pub default_launch: LaunchTarget,
+    pub launch_override: Option<ExecutableLaunch>,
+    pub metadata: UserMetadata,
+    #[serde(default)]
+    pub catalogue_metadata: UserMetadata,
+    pub favourite: bool,
+    pub available: bool,
+    pub last_launched: Option<u64>,
+    pub artwork: BTreeMap<ArtworkKind, ArtworkAsset>,
+    pub artwork_history: Vec<ArtworkAsset>,
+    pub artwork_game_ids: BTreeMap<String, String>,
+}
+
+impl Game {
+    pub fn title(&self) -> &str {
+        self.metadata
+            .title
+            .as_deref()
+            .or(self.catalogue_metadata.title.as_deref())
+            .unwrap_or(&self.discovered_title)
+    }
+
+    pub fn effective_metadata(&self) -> UserMetadata {
+        UserMetadata {
+            title: self
+                .metadata
+                .title
+                .clone()
+                .or_else(|| self.catalogue_metadata.title.clone()),
+            description: self
+                .metadata
+                .description
+                .clone()
+                .or_else(|| self.catalogue_metadata.description.clone()),
+            developer: self
+                .metadata
+                .developer
+                .clone()
+                .or_else(|| self.catalogue_metadata.developer.clone()),
+            genres: self
+                .metadata
+                .genres
+                .clone()
+                .or_else(|| self.catalogue_metadata.genres.clone()),
+        }
+    }
+
+    pub fn effective_launch(&self) -> LaunchTarget {
+        match &self.launch_override {
+            Some(launch)
+                if launch
+                    .executable
+                    .extension()
+                    .is_some_and(|value| value == "app") =>
+            {
+                LaunchTarget::ApplicationBundle(launch.clone())
+            }
+            Some(launch) => LaunchTarget::Executable(launch.clone()),
+            None => self.default_launch.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ArtworkGame {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ArtworkCandidate {
+    pub id: String,
+    pub provider_id: String,
+    pub kind: ArtworkKind,
+    pub image_url: String,
+    pub thumbnail_url: String,
+    pub author: String,
+    pub preview_path: Option<PathBuf>,
+    #[serde(default)]
+    pub score: i32,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppearanceMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl AppearanceMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::System => "System",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StartScreen {
+    #[default]
+    Library,
+    Recents,
+}
+
+impl StartScreen {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Library => "Library",
+            Self::Recents => "Recents",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AppearanceSettings {
+    pub mode: AppearanceMode,
+    pub dither_artwork: bool,
+    pub start_screen: StartScreen,
+    pub dither_recents: bool,
+}
+
+impl Default for AppearanceSettings {
+    fn default() -> Self {
+        Self {
+            mode: AppearanceMode::System,
+            dither_artwork: true,
+            start_screen: StartScreen::Library,
+            dither_recents: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SettingsSnapshot {
+    pub configured_credentials: BTreeSet<String>,
+    pub credential_status: BTreeMap<String, CredentialStatus>,
+    pub steam_directory: Option<PathBuf>,
+    pub appearance: AppearanceSettings,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CredentialStatus {
+    Missing,
+    Stored,
+    Checking,
+    Verified,
+    Invalid,
+    Unavailable(String),
+}
+
+impl CredentialStatus {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Missing => "No API key supplied",
+            Self::Stored => "API key saved · not checked yet",
+            Self::Checking => "API key saved · checking connection…",
+            Self::Verified => "Connected · API key saved and working",
+            Self::Invalid => "API key saved · rejected by SteamGridDB",
+            Self::Unavailable(_) => "Credential verification unavailable",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ApplicationPaths {
+    pub data_directory: PathBuf,
+    pub cache_directory: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobState {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl JobState {
+    pub fn active(self) -> bool {
+        matches!(self, Self::Queued | Self::Running)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct JobStatus {
+    pub id: JobId,
+    pub label: String,
+    pub state: JobState,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Snapshot {
+    pub ready: bool,
+    pub games: Arc<Vec<Game>>,
+    pub jobs: Vec<JobStatus>,
+    pub settings: SettingsSnapshot,
+    pub paths: ApplicationPaths,
+    pub initialization_error: Option<String>,
+    pub providers: Vec<crate::ProviderDescriptor>,
+}
+
+/// Arguments are individual values, not a shell command. Credentials are never logged.
+#[derive(Clone)]
+pub enum Command {
+    RefreshLibrary,
+    AddManualGame {
+        title: String,
+        launch: ExecutableLaunch,
+    },
+    RemoveManualGame {
+        game_id: GameId,
+    },
+    UpdateMetadata {
+        game_id: GameId,
+        metadata: UserMetadata,
+    },
+    SetFavourite {
+        game_id: GameId,
+        favourite: bool,
+    },
+    SetLaunchOverride {
+        game_id: GameId,
+        launch: Option<ExecutableLaunch>,
+    },
+    LaunchGame {
+        game_id: GameId,
+    },
+    SetArtworkCredential {
+        provider_id: String,
+        credential: Option<String>,
+    },
+    VerifyArtworkCredential {
+        provider_id: String,
+    },
+    SetArtworkGame {
+        provider_id: String,
+        game_id: GameId,
+        remote_game_id: String,
+    },
+    SetSteamDirectory {
+        directory: Option<PathBuf>,
+    },
+    SetAppearance {
+        settings: AppearanceSettings,
+    },
+    SearchArtworkGames {
+        provider_id: String,
+        game_id: GameId,
+        query: String,
+    },
+    ListArtwork {
+        provider_id: String,
+        game_id: GameId,
+        remote_game_id: Option<String>,
+        kind: ArtworkKind,
+    },
+    SelectArtwork {
+        game_id: GameId,
+        candidate: ArtworkCandidate,
+    },
+    ImportArtwork {
+        game_id: GameId,
+        kind: ArtworkKind,
+        path: PathBuf,
+    },
+    SelectLocalArtwork {
+        game_id: GameId,
+        asset_id: String,
+    },
+}
+
+impl Command {
+    pub fn background(&self) -> bool {
+        matches!(
+            self,
+            Self::RefreshLibrary
+                | Self::SetArtworkCredential { .. }
+                | Self::VerifyArtworkCredential { .. }
+                | Self::SearchArtworkGames { .. }
+                | Self::ListArtwork { .. }
+                | Self::SelectArtwork { .. }
+                | Self::ImportArtwork { .. }
+        )
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::RefreshLibrary => "Refreshing installed games",
+            Self::AddManualGame { .. } => "Adding game",
+            Self::RemoveManualGame { .. } => "Removing game",
+            Self::UpdateMetadata { .. } => "Saving metadata",
+            Self::SetFavourite { .. } => "Saving favourite",
+            Self::SetLaunchOverride { .. } => "Saving launch configuration",
+            Self::LaunchGame { .. } => "Launching game",
+            Self::SetArtworkCredential { .. } => "Saving artwork provider credentials",
+            Self::VerifyArtworkCredential { .. } => "Checking artwork provider connection",
+            Self::SetArtworkGame { .. } => "Saving artwork game match",
+            Self::SetSteamDirectory { .. } => "Saving Steam directory",
+            Self::SetAppearance { .. } => "Saving appearance",
+            Self::SearchArtworkGames { .. } => "Searching SteamGridDB",
+            Self::ListArtwork { .. } => "Loading artwork choices",
+            Self::SelectArtwork { .. } => "Downloading selected artwork",
+            Self::ImportArtwork { .. } => "Importing artwork",
+            Self::SelectLocalArtwork { .. } => "Selecting saved artwork",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum AppEvent {
+    LibraryChanged,
+    ArtworkCacheChanged,
+    SettingsChanged,
+    JobChanged(JobStatus),
+    GameAdded {
+        job_id: JobId,
+        game_id: GameId,
+    },
+    ArtworkGamesFound {
+        job_id: JobId,
+        game_id: GameId,
+        games: Vec<ArtworkGame>,
+    },
+    ArtworkFound {
+        job_id: JobId,
+        game_id: GameId,
+        kind: ArtworkKind,
+        images: Vec<ArtworkCandidate>,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ApiError {
+    #[error("{0}")]
+    Validation(String),
+    #[error("Storage error: {0}")]
+    Storage(String),
+    #[error("{0}")]
+    Provider(String),
+    #[error("{0}")]
+    InvalidCredential(String),
+    #[error("File or launch error: {0}")]
+    Io(String),
+    #[error("Game or asset not found")]
+    NotFound,
+    #[error("No matching game or artwork was found on this provider")]
+    NoArtwork,
+    #[error("The work queue is full; try again shortly")]
+    Busy,
+    #[error("Operation cancelled")]
+    Cancelled,
+}
