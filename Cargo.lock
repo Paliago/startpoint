@@ -5713,8 +5713,11 @@ dependencies = [
  "gpui-component-assets",
  "objc2",
  "objc2-app-kit",
+ "objc2-foundation",
+ "raw-window-handle",
  "startpoint-core",
  "startpoint-sdk",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5728,6 +5731,7 @@ dependencies = [
  "open",
  "reqwest",
  "rusqlite",
+ "security-framework 3.7.0",
  "serde",
  "serde_json",
  "sha2 0.10.9",

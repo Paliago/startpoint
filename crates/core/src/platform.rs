@@ -2,7 +2,11 @@ use startpoint_sdk::{ApiError, ApplicationPaths, ExecutableLaunch, LaunchTarget}
 use std::{
     path::Path,
     process::{Command, Stdio},
+    sync::Mutex,
 };
+
+// Keychain's interaction setting is process-wide, so reads and writes must not overlap it.
+static CREDENTIAL_ACCESS: Mutex<()> = Mutex::new(());
 
 pub fn application_paths() -> Result<ApplicationPaths, ApiError> {
     let directories = directories::ProjectDirs::from("", "", "Startpoint").ok_or_else(|| {
@@ -115,7 +119,26 @@ fn detach(mut command: Command) -> Result<(), ApiError> {
     Ok(())
 }
 
-pub(crate) fn read_api_key(provider_id: &str) -> Result<Option<String>, ApiError> {
+pub(crate) fn read_api_key(
+    provider_id: &str,
+    allow_interaction: bool,
+) -> Result<Option<String>, ApiError> {
+    let _access = CREDENTIAL_ACCESS
+        .lock()
+        .map_err(|_| ApiError::Provider("The credential store worker failed".into()))?;
+    #[cfg(target_os = "macos")]
+    let _interaction = if allow_interaction {
+        None
+    } else {
+        Some(
+            security_framework::os::macos::keychain::SecKeychain::disable_user_interaction()
+                .map_err(|error| {
+                    ApiError::Provider(format!("Keychain access is unavailable: {error}"))
+                })?,
+        )
+    };
+    #[cfg(not(target_os = "macos"))]
+    let _ = allow_interaction;
     let entry = keyring::Entry::new("Startpoint", provider_id).map_err(credential_error)?;
     match entry.get_password() {
         Ok(key) => Ok(Some(key)),
@@ -125,6 +148,9 @@ pub(crate) fn read_api_key(provider_id: &str) -> Result<Option<String>, ApiError
 }
 
 pub(crate) fn write_api_key(provider_id: &str, key: Option<&str>) -> Result<(), ApiError> {
+    let _access = CREDENTIAL_ACCESS
+        .lock()
+        .map_err(|_| ApiError::Provider("The credential store worker failed".into()))?;
     let entry = keyring::Entry::new("Startpoint", provider_id).map_err(credential_error)?;
     match key {
         Some(key) => entry.set_password(key).map_err(credential_error),
@@ -136,6 +162,14 @@ pub(crate) fn write_api_key(provider_id: &str, key: Option<&str>) -> Result<(), 
 }
 
 fn credential_error(error: keyring::Error) -> ApiError {
+    #[cfg(target_os = "macos")]
+    if let keyring::Error::PlatformFailure(cause) = &error
+        && cause
+            .downcast_ref::<security_framework::base::Error>()
+            .is_some_and(|error| matches!(error.code(), -25308 | -25293))
+    {
+        return ApiError::CredentialLocked;
+    }
     ApiError::Provider(format!(
         "The OS credential store could not be accessed: {error}. The key has not been written to a file."
     ))
@@ -144,6 +178,19 @@ fn credential_error(error: keyring::Error) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn credential_errors_distinguish_approval_from_unavailable_storage() {
+        for (code, requires_approval) in [(-25308, true), (-25293, true), (-25291, false)] {
+            let error =
+                keyring::macos::decode_error(security_framework::base::Error::from_code(code));
+            assert_eq!(
+                matches!(credential_error(error), ApiError::CredentialLocked),
+                requires_approval,
+            );
+        }
+    }
 
     #[test]
     fn launch_arguments_round_trip_without_shell_interpretation() {

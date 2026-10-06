@@ -298,37 +298,23 @@ impl Shared {
         let store = Store::open(&paths)?;
         let games = store.games()?;
         let steam_directory = store.setting("steam_directory")?.flatten();
-        let mut configured_credentials: BTreeSet<String> =
+        let configured_credentials: BTreeSet<String> =
             store.setting("configured_credentials")?.unwrap_or_default();
-        let mut credential_status = BTreeMap::new();
-        for provider in self
+        let credential_status = self
             .artwork
             .iter()
             .filter(|provider| provider.requires_credential())
-        {
-            let id = provider.descriptor().id;
-            let status = match platform::read_api_key(&id) {
-                Ok(credential) => {
-                    let credential = credential.filter(|key| !key.trim().is_empty());
-                    let status = if credential.is_some() {
-                        configured_credentials.insert(id.clone());
-                        CredentialStatus::Stored
-                    } else {
-                        configured_credentials.remove(&id);
-                        CredentialStatus::Missing
-                    };
-                    self.credentials
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .insert(id.clone(), credential);
-                    status
-                }
-                Err(error) => CredentialStatus::Unavailable(error.to_string()),
-            };
-            credential_status.insert(id, status);
-        }
-        store.save_setting("configured_credentials", &configured_credentials)?;
-        let appearance = store
+            .map(|provider| {
+                let id = provider.descriptor().id;
+                let status = if configured_credentials.contains(&id) {
+                    CredentialStatus::Stored
+                } else {
+                    CredentialStatus::Missing
+                };
+                (id, status)
+            })
+            .collect();
+        let mut appearance = store
             .setting("appearance")?
             .unwrap_or_else(|| AppearanceSettings {
                 start_screen: if self
@@ -342,6 +328,10 @@ impl Shared {
                 },
                 ..AppearanceSettings::default()
             });
+        if !appearance.sidebar_width.is_finite() {
+            appearance.sidebar_width = AppearanceSettings::default().sidebar_width;
+        }
+        appearance.sidebar_width = appearance.sidebar_width.clamp(192., 400.);
         *self
             .store
             .lock()
@@ -361,6 +351,43 @@ impl Shared {
         rebuild_library(&mut state);
         drop(state);
         self.publish(AppEvent::LibraryChanged);
+        let mut settings = self.snapshot().settings;
+        for provider in self
+            .artwork
+            .iter()
+            .filter(|provider| provider.requires_credential())
+        {
+            let id = provider.descriptor().id;
+            let status = match platform::read_api_key(&id, false) {
+                Ok(credential) => {
+                    let credential = credential.filter(|key| !key.trim().is_empty());
+                    let status = if credential.is_some() {
+                        settings.configured_credentials.insert(id.clone());
+                        CredentialStatus::Stored
+                    } else {
+                        settings.configured_credentials.remove(&id);
+                        CredentialStatus::Missing
+                    };
+                    self.credentials
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .insert(id.clone(), credential);
+                    status
+                }
+                Err(ApiError::CredentialLocked) => CredentialStatus::Locked,
+                Err(error) => CredentialStatus::Unavailable(error.to_string()),
+            };
+            settings.credential_status.insert(id, status);
+        }
+        self.store(|store| {
+            store.save_setting("configured_credentials", &settings.configured_credentials)
+        })?;
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .snapshot
+            .settings = settings;
+        self.publish(AppEvent::SettingsChanged);
         Ok(())
     }
 
@@ -456,14 +483,17 @@ impl Shared {
             .ok_or_else(|| ApiError::Validation("The artwork provider is not registered".into()))
     }
 
-    fn credential(&self, provider_id: &str) -> Result<String, ApiError> {
+    fn credential(&self, provider_id: &str, allow_interaction: bool) -> Result<String, ApiError> {
         let provider = self.artwork_provider(provider_id)?;
         let mut credentials = self
             .credentials
             .lock()
             .map_err(|_| ApiError::Provider("The credential worker failed".into()))?;
         if !credentials.contains_key(provider_id) {
-            credentials.insert(provider_id.into(), platform::read_api_key(provider_id)?);
+            credentials.insert(
+                provider_id.into(),
+                platform::read_api_key(provider_id, allow_interaction)?,
+            );
         }
         let credential = credentials
             .get(provider_id)
@@ -523,8 +553,24 @@ impl Shared {
         result
     }
 
-    fn verify_credential(&self, provider_id: &str, context: &JobContext) -> Result<(), ApiError> {
-        let credential = self.credential(provider_id)?;
+    fn verify_credential(
+        &self,
+        provider_id: &str,
+        context: &JobContext,
+        allow_interaction: bool,
+    ) -> Result<(), ApiError> {
+        let credential = match self.credential(provider_id, allow_interaction) {
+            Ok(credential) => credential,
+            Err(error) => {
+                let status = match &error {
+                    ApiError::CredentialLocked => CredentialStatus::Locked,
+                    ApiError::Validation(_) => CredentialStatus::Missing,
+                    _ => CredentialStatus::Unavailable(error.to_string()),
+                };
+                self.set_credential_status(provider_id, "", status);
+                return Err(error);
+            }
+        };
         self.set_credential_status(provider_id, &credential, CredentialStatus::Checking);
         context.report("Checking the saved SteamGridDB API key");
         let result = self
@@ -740,13 +786,13 @@ impl Shared {
                 );
                 self.publish(AppEvent::SettingsChanged);
                 if credential.is_some() {
-                    self.verify_credential(&provider_id, context)
+                    self.verify_credential(&provider_id, context, false)
                 } else {
                     Ok(())
                 }
             }
             Command::VerifyArtworkCredential { provider_id } => {
-                self.verify_credential(&provider_id, context)
+                self.verify_credential(&provider_id, context, true)
             }
             Command::SetArtworkGame {
                 provider_id,
@@ -788,6 +834,13 @@ impl Shared {
                 Ok(())
             }
             Command::SetAppearance { settings } => {
+                if !settings.sidebar_width.is_finite()
+                    || !(192. ..=400.).contains(&settings.sidebar_width)
+                {
+                    return Err(ApiError::Validation(
+                        "Sidebar width must be between 192 and 400 pixels".into(),
+                    ));
+                }
                 self.store(|store| {
                     store.save_setting("appearance", &settings)?;
                     self.state
@@ -812,7 +865,7 @@ impl Shared {
                 let games = match cached {
                     Some(games) => games,
                     None => {
-                        let credential = self.credential(&provider_id)?;
+                        let credential = self.credential(&provider_id, false)?;
                         let games = self.provider_result(
                             &provider_id,
                             &credential,
@@ -959,7 +1012,7 @@ impl Shared {
         if let Some(images) = self.store(|store| store.cached(&key, now()))? {
             return Ok(images);
         }
-        let credential = self.credential(provider_id)?;
+        let credential = self.credential(provider_id, false)?;
         let images = match self.provider_result(
             provider_id,
             &credential,
@@ -1068,10 +1121,11 @@ impl Shared {
         }
         let artwork_enabled = self.artwork_provider("steamgriddb").is_ok()
             && self
-                .snapshot()
-                .settings
-                .configured_credentials
-                .contains("steamgriddb");
+                .credentials
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .get("steamgriddb")
+                .is_some_and(Option::is_some);
         let credential_check = if artwork_enabled
             && self
                 .snapshot()
@@ -1080,7 +1134,7 @@ impl Shared {
                 .get("steamgriddb")
                 != Some(&CredentialStatus::Verified)
         {
-            self.verify_credential("steamgriddb", context)
+            self.verify_credential("steamgriddb", context, false)
         } else {
             Ok(())
         };
@@ -1192,7 +1246,7 @@ impl Shared {
 
     fn populate_game(&self, game_id: &GameId, context: &JobContext) -> Result<(), ApiError> {
         let mut game = self.game(game_id)?;
-        let credential = self.credential("steamgriddb")?;
+        let credential = self.credential("steamgriddb", false)?;
         let mut catalogue_error = None;
         if matches!(game.provider_id.as_str(), "steam" | "example")
             && (game.catalogue_metadata.title.is_none()
@@ -1370,6 +1424,8 @@ mod tests {
                 .expect("previous appearance settings");
         assert_eq!(previous_settings.start_screen, StartScreen::Library);
         assert!(!previous_settings.dither_recents);
+        assert!(!previous_settings.sidebar_visible);
+        assert_eq!(previous_settings.sidebar_width, 216.);
         let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/verification")
             .join(uuid::Uuid::new_v4().to_string());
@@ -1382,7 +1438,7 @@ mod tests {
             .expect("application");
         let events = api.subscribe();
         let executable = std::env::current_exe().expect("test executable");
-        for step in 0..7 {
+        for step in 0..11 {
             let game_id = api
                 .snapshot()
                 .games
@@ -1425,9 +1481,17 @@ mod tests {
                         dither_artwork: false,
                         start_screen: StartScreen::Recents,
                         dither_recents: true,
+                        sidebar_visible: true,
+                        sidebar_width: 320.,
                     },
                 },
-                _ => Command::LaunchGame { game_id },
+                6 => Command::LaunchGame { game_id },
+                _ => Command::SetAppearance {
+                    settings: AppearanceSettings {
+                        sidebar_width: [191., 401., f32::NAN, f32::INFINITY][step - 7],
+                        ..AppearanceSettings::default()
+                    },
+                },
             };
             let job_id = api.submit(command).expect("queued command");
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -1435,7 +1499,16 @@ mod tests {
                 assert!(Instant::now() < deadline, "application command timed out");
                 match events.try_recv() {
                     Ok(AppEvent::JobChanged(job)) if job.id == job_id && !job.state.active() => {
-                        assert_eq!(job.state, JobState::Completed, "{:?}", job.error);
+                        assert_eq!(
+                            job.state,
+                            if step < 7 {
+                                JobState::Completed
+                            } else {
+                                JobState::Failed
+                            },
+                            "{:?}",
+                            job.error
+                        );
                         break;
                     }
                     Ok(_) => {}
@@ -1509,6 +1582,8 @@ mod tests {
                 dither_artwork: false,
                 start_screen: StartScreen::Recents,
                 dither_recents: true,
+                sidebar_visible: true,
+                sidebar_width: 320.,
             }
         );
     }

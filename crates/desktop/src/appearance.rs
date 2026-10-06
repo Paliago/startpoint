@@ -69,6 +69,104 @@ pub(crate) fn surface(cx: &App) -> Hsla {
 }
 
 #[cfg(target_os = "macos")]
+fn native_window(window: &Window) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::NSView;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return None;
+    };
+    // GPUI owns the live AppKit view for the lifetime of this window handle.
+    let object = unsafe { handle.ns_view.cast::<AnyObject>().as_ref() };
+    object.downcast_ref::<NSView>()?.window()
+}
+
+pub(crate) fn configure_window(_window: &Window) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::{
+            runtime::{AnyClass, AnyObject, ClassBuilder, Sel},
+            sel,
+        };
+        use objc2_app_kit::NSView;
+        use objc2_foundation::NSRect;
+
+        unsafe extern "C-unwind" fn titlebar_content(view: *mut NSView, _: Sel) -> NSRect {
+            // Objective-C invokes this method only with a live instance of our NSView subclass.
+            unsafe { (*view).bounds() }
+        }
+
+        let Some(content) = native_window(_window).and_then(|window| window.contentView()) else {
+            return;
+        };
+        for view in content.subviews() {
+            if view.class().name().to_bytes() != b"GPUIView" {
+                continue;
+            }
+            let class = AnyClass::get(c"StartpointContentView").or_else(|| {
+                let mut class = ClassBuilder::new(c"StartpointContentView", view.class())?;
+                let implementation: unsafe extern "C-unwind" fn(*mut NSView, Sel) -> NSRect =
+                    titlebar_content;
+                // GPUI 0.2.2 otherwise leaves custom controls in AppKit's title-bar hit area.
+                unsafe {
+                    class.add_method(sel!(_opaqueRectForWindowMoveWhenInTitlebar), implementation)
+                };
+                Some(class.register())
+            });
+            if let Some(class) = class {
+                // The subclass adds no storage and preserves every GPUIView implementation.
+                unsafe { AnyObject::set_class(&view, class) };
+            }
+        }
+    }
+}
+
+pub(crate) fn start_window_move(window: &Window) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSApplication;
+
+        let Some(thread) = MainThreadMarker::new() else {
+            return;
+        };
+        if let Some(native) = native_window(window)
+            && let Some(event) = NSApplication::sharedApplication(thread).currentEvent()
+        {
+            native.performWindowDragWithEvent(&event);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    window.start_window_move();
+}
+
+pub(crate) fn reduced_motion() -> bool {
+    #[cfg(target_os = "macos")]
+    return objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SPI_GETCLIENTAREAANIMATION, SystemParametersInfoW,
+        };
+        let mut enabled = 1u32;
+        // Windows writes one BOOL to the live local value; the call retains no pointer.
+        return unsafe {
+            SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                std::ptr::from_mut(&mut enabled).cast(),
+                0,
+            ) != 0
+                && enabled == 0
+        };
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    false
+}
+
+#[cfg(target_os = "macos")]
 fn sync_native_appearance(mode: AppearanceMode) {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{

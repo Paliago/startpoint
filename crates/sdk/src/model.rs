@@ -62,23 +62,6 @@ pub struct ArtworkAsset {
     pub author: String,
 }
 
-impl ArtworkAsset {
-    /// Disposable ordered-dither artwork, regenerated alongside the thumbnail.
-    pub fn dithered_path(&self) -> PathBuf {
-        self.thumbnail_path.with_extension("dither-v2.png")
-    }
-
-    /// Disposable full-resolution banner with a smooth alpha fade.
-    pub fn recents_path(&self) -> PathBuf {
-        self.thumbnail_path.with_extension("recents-v3.png")
-    }
-
-    /// The same banner fade with fine, deterministic stippling.
-    pub fn recents_dithered_path(&self) -> PathBuf {
-        self.thumbnail_path.with_extension("recents-dither-v3.png")
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DiscoveredGame {
     pub source_game_id: String,
@@ -217,13 +200,15 @@ impl StartScreen {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppearanceSettings {
     pub mode: AppearanceMode,
     pub dither_artwork: bool,
     pub start_screen: StartScreen,
     pub dither_recents: bool,
+    pub sidebar_visible: bool,
+    pub sidebar_width: f32,
 }
 
 impl Default for AppearanceSettings {
@@ -233,6 +218,8 @@ impl Default for AppearanceSettings {
             dither_artwork: true,
             start_screen: StartScreen::Library,
             dither_recents: false,
+            sidebar_visible: false,
+            sidebar_width: 216.,
         }
     }
 }
@@ -252,6 +239,7 @@ pub enum CredentialStatus {
     Checking,
     Verified,
     Invalid,
+    Locked,
     Unavailable(String),
 }
 
@@ -263,6 +251,7 @@ impl CredentialStatus {
             Self::Checking => "API key saved · checking connection…",
             Self::Verified => "Connected · API key saved and working",
             Self::Invalid => "API key saved · rejected by SteamGridDB",
+            Self::Locked => "API key saved · access approval required",
             Self::Unavailable(_) => "Credential verification unavailable",
         }
     }
@@ -448,6 +437,10 @@ pub enum ApiError {
     Provider(String),
     #[error("{0}")]
     InvalidCredential(String),
+    #[error(
+        "The saved API key requires OS credential-store approval. Choose Unlock saved key in Settings."
+    )]
+    CredentialLocked,
     #[error("File or launch error: {0}")]
     Io(String),
     #[error("Game or asset not found")]

@@ -158,7 +158,10 @@ pub(crate) fn save_asset(
     if !asset.image_path.is_file() || cache_missing(&asset) {
         let image = decode(bytes)?;
         if !asset.image_path.is_file() {
-            write_image(&image.thumbnail(3840, 2160), &asset.image_path)?;
+            write_image(
+                &image.thumbnail(image.width().min(3840), image.height().min(2160)),
+                &asset.image_path,
+            )?;
         }
         cache_images(&image, &asset)?;
     }
@@ -167,30 +170,11 @@ pub(crate) fn save_asset(
 
 fn cache_missing(asset: &ArtworkAsset) -> bool {
     !asset.thumbnail_path.is_file()
-        || !asset.dithered_path().is_file()
-        || (matches!(asset.kind, ArtworkKind::Cover | ArtworkKind::Background)
-            && (!asset.recents_path().is_file() || !asset.recents_dithered_path().is_file()))
 }
 
 fn cache_images(image: &image::DynamicImage, asset: &ArtworkAsset) -> Result<(), ApiError> {
     if !asset.thumbnail_path.is_file() {
         write_image(&image.thumbnail(640, 960), &asset.thumbnail_path)?;
-    }
-    if !asset.dithered_path().is_file() {
-        write_image(
-            &dither(&image.thumbnail(1600, 1600)),
-            &asset.dithered_path(),
-        )?;
-    }
-    if matches!(asset.kind, ArtworkKind::Cover | ArtworkKind::Background) {
-        for (path, dithered) in [
-            (asset.recents_path(), false),
-            (asset.recents_dithered_path(), true),
-        ] {
-            if !path.is_file() {
-                write_image(&recents_fade(&image.thumbnail(3840, 2160), dithered), &path)?;
-            }
-        }
     }
     Ok(())
 }
@@ -237,105 +221,65 @@ pub(crate) fn restore_thumbnail(
     Ok(true)
 }
 
-fn recents_fade(image: &image::DynamicImage, dithered: bool) -> image::DynamicImage {
-    let mut pixels = image.to_rgba8();
-    let width = pixels.width().max(1);
-    let height = pixels.height().max(1);
-    for (x, y, pixel) in pixels.enumerate_pixels_mut() {
-        let horizontal = x * 256 / width;
-        let vertical = y * 256 / height;
-        let information_fade =
-            (256 - smooth_step(77, 174, horizontal)) * smooth_step(51, 159, vertical) / 256;
-        let bottom_fade = smooth_step(174, 252, vertical);
-        let coverage = 256 - information_fade.max(bottom_fade);
-        if !dithered {
-            pixel[3] = u8::try_from(u32::from(pixel[3]) * coverage / 256).unwrap_or_default();
-            continue;
-        }
-        let mut noise = (x / 2).wrapping_mul(0x9e37_79b9) ^ (y / 2).wrapping_mul(0x85eb_ca6b);
-        noise ^= noise >> 16;
-        noise = noise.wrapping_mul(0x7feb_352d);
-        noise ^= noise >> 15;
-        noise = noise.wrapping_mul(0x846c_a68b);
-        noise ^= noise >> 16;
-        let threshold = noise >> 24;
-        if threshold >= coverage {
-            pixel[3] = 0;
-        }
-    }
-    image::DynamicImage::ImageRgba8(pixels)
-}
-
-fn smooth_step(start: u32, end: u32, value: u32) -> u32 {
-    // Inputs and opacity use a 0–256 fixed-point scale.
-    let fraction = (value.saturating_sub(start) * 256 / (end - start)).min(256);
-    fraction * fraction * (768 - 2 * fraction) / 65_536
-}
-
-fn dither(image: &image::DynamicImage) -> image::DynamicImage {
-    const THRESHOLDS: [[u16; 4]; 4] =
-        [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
-    let mut pixels = image.to_rgba8();
-    for (x, y, pixel) in pixels.enumerate_pixels_mut() {
-        let column = usize::try_from(x / 2 % 4).unwrap_or_default();
-        let row = usize::try_from(y / 2 % 4).unwrap_or_default();
-        let threshold = (THRESHOLDS[row][column] * 2 + 1) * 255;
-        let peak = u16::from(pixel[0].max(pixel[1]).max(pixel[2]));
-        for channel in &mut pixel.0[..3] {
-            let value = if peak * 32 > threshold {
-                u16::from(*channel) * 255 / peak.max(1)
-            } else {
-                u16::from(*channel) / 12
-            };
-            *channel = u8::try_from(value).unwrap_or(255);
-        }
-    }
-    image::DynamicImage::ImageRgba8(pixels)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn dithering_preserves_dimensions_alpha_and_original_pixels() {
+    fn artwork_preserves_original_pixels_and_restores_thumbnails() {
+        let directory =
+            std::env::temp_dir().join(format!("startpoint-artwork-{}", uuid::Uuid::new_v4()));
+        let paths = ApplicationPaths {
+            data_directory: directory.join("data"),
+            cache_directory: directory.join("cache"),
+        };
         let original = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
-            8,
-            8,
-            image::Rgba([180, 90, 45, 170]),
-        ));
-        let result = dither(&original).to_rgba8();
-        assert_eq!(result.dimensions(), (8, 8));
-        assert!(result.pixels().all(|pixel| pixel[3] == 170));
-        assert!(result.pixels().any(|pixel| pixel[0] == 255));
-        assert!(result.pixels().any(|pixel| pixel[0] == 15));
-        assert_eq!(original.to_rgba8().get_pixel(0, 0).0, [180, 90, 45, 170]);
-        let banner = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
-            384,
-            124,
+            768,
+            248,
             image::Rgba([80, 120, 160, 200]),
         ));
-        let faded = recents_fade(&banner, true).to_rgba8();
-        assert_eq!(faded.dimensions(), (384, 124));
-        assert_eq!(faded.get_pixel(250, 10).0, [80, 120, 160, 200]);
-        assert_eq!(faded.get_pixel(0, 100)[3], 0);
-        assert_eq!(faded.get_pixel(250, 123)[3], 0);
+        let mut bytes = Cursor::new(Vec::new());
+        original
+            .write_to(&mut bytes, ImageFormat::Png)
+            .expect("encoded artwork");
+        let asset = save_asset(
+            bytes.get_ref(),
+            ArtworkKind::Background,
+            "local",
+            None,
+            "Local".into(),
+            &paths,
+        )
+        .expect("saved artwork");
         assert!(
-            faded
-                .enumerate_pixels()
-                .filter(|(x, y, _)| *x <= 100 && *y >= 80)
-                .all(|(_, _, pixel)| pixel[3] == 0)
+            image::open(&asset.image_path)
+                .expect("original image")
+                .to_rgba8()
+                == original.to_rgba8()
         );
-        assert!(
-            faded
-                .pixels()
-                .all(|pixel| pixel.0[..3] == [80, 120, 160] && matches!(pixel[3], 0 | 200))
+        let thumbnail = image::open(&asset.thumbnail_path)
+            .expect("thumbnail")
+            .to_rgba8();
+        assert_eq!(thumbnail.dimensions(), (640, 207));
+        assert!(!restore_thumbnail(&asset, &paths).expect("existing thumbnail"));
+        fs::remove_file(&asset.thumbnail_path).expect("removed disposable thumbnail");
+        assert!(restore_thumbnail(&asset, &paths).expect("restored thumbnail"));
+        assert_eq!(
+            image::open(&asset.thumbnail_path)
+                .expect("restored image")
+                .to_rgba8(),
+            thumbnail
         );
-        assert_eq!(faded, recents_fade(&banner, true).to_rgba8());
-        let smooth = recents_fade(&banner, false).to_rgba8();
-        assert_eq!(smooth.get_pixel(250, 10).0, [80, 120, 160, 200]);
-        assert_eq!(smooth.get_pixel(0, 100)[3], 0);
-        assert_eq!(smooth.get_pixel(250, 123)[3], 0);
-        assert!(smooth.pixels().any(|pixel| pixel[3] > 0 && pixel[3] < 200));
+        assert!(matches!(
+            restore_thumbnail(
+                &ArtworkAsset {
+                    thumbnail_path: paths.cache_directory.join("outside.png"),
+                    ..asset
+                },
+                &paths
+            ),
+            Err(ApiError::Validation(_))
+        ));
+        fs::remove_dir_all(directory).expect("removed temporary artwork");
     }
 }
