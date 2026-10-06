@@ -7,17 +7,21 @@ mod runtime;
 mod steam;
 mod steamgriddb;
 mod storage;
+mod stores;
 
 pub use platform::application_paths;
 pub use runtime::LauncherBuilder;
 pub use steam::SteamProvider;
 pub use steamgriddb::SteamGridDbProvider;
+pub use stores::{EpicProvider, GogProvider};
 
 use startpoint_sdk::{ApiError, Application};
 
 pub fn create_application() -> Result<Application, ApiError> {
     LauncherBuilder::new()
         .discovery_provider(SteamProvider)
+        .discovery_provider(EpicProvider)
+        .discovery_provider(GogProvider)
         .artwork_provider(SteamGridDbProvider::new()?)
         .build(application_paths()?)
 }

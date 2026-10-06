@@ -23,6 +23,8 @@ pub struct DiscoveryReport {
 #[derive(Clone, Default)]
 pub struct DiscoverySettings {
     pub steam_directory: Option<PathBuf>,
+    pub epic_directory: Option<PathBuf>,
+    pub gog_directory: Option<PathBuf>,
 }
 
 /// Cooperative cancellation is checked between I/O operations; network calls have timeouts.

@@ -302,6 +302,8 @@ impl Shared {
         let activity = store.activity()?;
         let journal = store.journal()?;
         let steam_directory = store.setting("steam_directory")?.flatten();
+        let epic_directory = store.setting("epic_directory")?.flatten();
+        let gog_directory = store.setting("gog_directory")?.flatten();
         let configured_credentials: BTreeSet<String> =
             store.setting("configured_credentials")?.unwrap_or_default();
         let credential_status = self
@@ -347,6 +349,8 @@ impl Shared {
             .collect();
         state.snapshot.settings = SettingsSnapshot {
             steam_directory,
+            epic_directory,
+            gog_directory,
             configured_credentials,
             credential_status,
             appearance,
@@ -909,6 +913,50 @@ impl Shared {
                 self.publish(AppEvent::SettingsChanged);
                 Ok(())
             }
+            Command::SetEpicDirectory { directory } => {
+                if directory
+                    .as_ref()
+                    .is_some_and(|path| !path.is_absolute() || !path.is_dir())
+                {
+                    return Err(ApiError::Validation(
+                        "Choose an existing Epic manifest directory".into(),
+                    ));
+                }
+                self.store(|store| {
+                    store.save_setting("epic_directory", &directory)?;
+                    self.state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .snapshot
+                        .settings
+                        .epic_directory = directory;
+                    Ok(())
+                })?;
+                self.publish(AppEvent::SettingsChanged);
+                Ok(())
+            }
+            Command::SetGogDirectory { directory } => {
+                if directory
+                    .as_ref()
+                    .is_some_and(|path| !path.is_absolute() || !path.is_dir())
+                {
+                    return Err(ApiError::Validation(
+                        "Choose an existing GOG games directory".into(),
+                    ));
+                }
+                self.store(|store| {
+                    store.save_setting("gog_directory", &directory)?;
+                    self.state
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .snapshot
+                        .settings
+                        .gog_directory = directory;
+                    Ok(())
+                })?;
+                self.publish(AppEvent::SettingsChanged);
+                Ok(())
+            }
             Command::SetAppearance { settings } => {
                 if settings.theme.trim().is_empty()
                     || settings.theme.len() > 80
@@ -1124,8 +1172,11 @@ impl Shared {
             ));
         }
         let _refresh = RefreshGuard(&self.refreshing);
+        let settings = self.snapshot().settings;
         let settings = DiscoverySettings {
-            steam_directory: self.snapshot().settings.steam_directory,
+            steam_directory: settings.steam_directory,
+            epic_directory: settings.epic_directory,
+            gog_directory: settings.gog_directory,
         };
         let mut local_covers = Vec::new();
         let mut warnings = Vec::new();
@@ -1288,8 +1339,8 @@ impl Shared {
         if artwork_enabled {
             self.populate_library(context)?;
         }
-        if let Some(warning) = warnings.first() {
-            context.report(warning.clone());
+        if !warnings.is_empty() {
+            context.report(warnings.join("\n"));
         } else {
             context.report("Installed games are up to date");
         }
@@ -1518,6 +1569,336 @@ fn now() -> u64 {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn local_store_discovery_preserves_edits_and_handles_partial_scans() {
+        use crate::{EpicProvider, GogProvider};
+        let directory = std::env::temp_dir()
+            .join("startpoint-discovery")
+            .join(uuid::Uuid::new_v4().to_string());
+        let epic_directory = directory.join("Manifests");
+        let epic_installation = directory.join("Epic game");
+        let gog_directory = directory.join("GOG Games");
+        let gog_installation = gog_directory.join("GOG game");
+        for path in [
+            &epic_directory,
+            &epic_installation,
+            &gog_installation.join("bin"),
+        ] {
+            std::fs::create_dir_all(path).expect("installation directory");
+        }
+        std::fs::write(gog_installation.join("bin/game.exe"), b"").expect("local executable");
+        let epic_record = epic_directory.join("game.item");
+        let mut epic_document = serde_json::json!({
+            "AppName": "ExampleGame", "CatalogNamespace": "namespace", "CatalogItemId": "catalogue",
+            "DisplayName": "Epic game", "InstallLocation": epic_installation,
+            "AppCategories": ["games"], "bIsIncompleteInstall": false
+        });
+        std::fs::write(
+            &epic_record,
+            serde_json::to_vec(&epic_document).expect("Epic record"),
+        )
+        .expect("Epic manifest");
+        let mut ignored = epic_document.clone();
+        ignored["AppName"] = "PendingGame".into();
+        ignored["bIsIncompleteInstall"] = true.into();
+        std::fs::write(
+            epic_directory.join("pending.item"),
+            serde_json::to_vec(&ignored).expect("incomplete Epic record"),
+        )
+        .expect("pending manifest");
+        ignored["bIsIncompleteInstall"] = false.into();
+        ignored["AppCategories"] = serde_json::json!(["addons"]);
+        std::fs::write(
+            epic_directory.join("addon.item"),
+            serde_json::to_vec(&ignored).expect("Epic add-on"),
+        )
+        .expect("add-on manifest");
+        let gog_record = gog_installation.join("goggame-123456.info");
+        let gog_document = serde_json::json!({
+            "gameId": "123456", "rootGameId": "123456", "name": "GOG game",
+            "playTasks": [
+                { "type": "FileTask", "path": "modelviewer.exe", "isPrimary": false },
+                { "type": "FileTask", "path": "bin\\game.exe", "isPrimary": true, "workingDir": "bin", "arguments": "--profile \"First save\" \"\" --option=\"quoted value\" $UNCHANGED" }
+            ]
+        });
+        let mut bytes = b"\xef\xbb\xbf".to_vec();
+        bytes.extend(serde_json::to_vec(&gog_document).expect("GOG record"));
+        std::fs::write(&gog_record, bytes).expect("GOG manifest with BOM");
+        let mut addon = gog_document.clone();
+        addon["gameId"] = "123457".into();
+        std::fs::write(
+            gog_installation.join("goggame-123457.info"),
+            serde_json::to_vec(&addon).expect("GOG add-on"),
+        )
+        .expect("GOG add-on manifest");
+        let settings = DiscoverySettings {
+            epic_directory: Some(epic_directory.clone()),
+            gog_directory: Some(gog_directory.clone()),
+            ..DiscoverySettings::default()
+        };
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let context = JobContext::new(cancellation.clone(), |_| {});
+        let epic = EpicProvider
+            .discover(&settings, &context)
+            .expect("Epic discovery");
+        assert!(epic.complete && epic.warnings.is_empty());
+        assert_eq!(epic.games.len(), 1);
+        assert!(
+            matches!(&epic.games[0].launch_target, LaunchTarget::Uri(uri) if uri == "com.epicgames.launcher://apps/namespace%3Acatalogue%3AExampleGame?action=launch&silent=true")
+        );
+        let gog = GogProvider
+            .discover(&settings, &context)
+            .expect("GOG discovery");
+        assert!(
+            gog.complete && gog.warnings.is_empty(),
+            "{:?}",
+            gog.warnings
+        );
+        assert_eq!(gog.games.len(), 1);
+        let LaunchTarget::Executable(launch) = &gog.games[0].launch_target else {
+            panic!("expected primary executable")
+        };
+        assert_eq!(
+            launch.executable,
+            gog_installation
+                .join("bin/game.exe")
+                .canonicalize()
+                .expect("executable path")
+        );
+        assert_eq!(
+            launch.working_directory,
+            Some(
+                gog_installation
+                    .join("bin")
+                    .canonicalize()
+                    .expect("working directory")
+            )
+        );
+        assert_eq!(
+            launch.arguments,
+            [
+                "--profile",
+                "First save",
+                "",
+                "--option=quoted value",
+                "$UNCHANGED"
+            ]
+        );
+        let invalid_record = gog_installation.join("goggame-invalid.info");
+        let mut invalid = gog_document.clone();
+        invalid["playTasks"][1]["path"] = "../outside.exe".into();
+        std::fs::write(
+            &invalid_record,
+            serde_json::to_vec(&invalid).expect("invalid task"),
+        )
+        .expect("invalid manifest");
+        let partial = GogProvider
+            .discover(&settings, &context)
+            .expect("partial GOG discovery");
+        assert!(!partial.complete && !partial.warnings.is_empty() && partial.games.len() == 1);
+        std::fs::remove_file(&invalid_record).expect("remove invalid task");
+        let oversized = epic_directory.join("oversized.item");
+        std::fs::write(&oversized, vec![b' '; 1_000_001]).expect("oversized record");
+        assert!(
+            !EpicProvider
+                .discover(&settings, &context)
+                .expect("bounded manifest read")
+                .complete
+        );
+        std::fs::remove_file(oversized).expect("remove oversized record");
+        let directory_record = epic_directory.join("directory.item");
+        std::fs::create_dir(&directory_record).expect("non-file installation record");
+        assert!(
+            !EpicProvider
+                .discover(&settings, &context)
+                .expect("regular-file validation")
+                .complete
+        );
+        std::fs::remove_dir(directory_record).expect("remove non-file record");
+        cancellation.store(true, Ordering::Relaxed);
+        assert!(matches!(
+            EpicProvider.discover(&settings, &context),
+            Err(ApiError::Cancelled)
+        ));
+        assert!(matches!(
+            GogProvider.discover(&settings, &context),
+            Err(ApiError::Cancelled)
+        ));
+        cancellation.store(false, Ordering::Relaxed);
+        let missing = DiscoverySettings {
+            epic_directory: Some(directory.join("missing")),
+            ..settings.clone()
+        };
+        assert!(
+            !EpicProvider
+                .discover(&missing, &context)
+                .expect("missing manifest folder")
+                .complete
+        );
+        #[cfg(target_os = "macos")]
+        {
+            let resources = gog_directory.join("Native game.app/Contents/Resources/game");
+            std::fs::create_dir_all(&resources).expect("bundle resources");
+            std::fs::write(
+                resources.join("goggame-123458.info"),
+                br#"{"gameId":"123458","name":"Native game","playTasks":[]}"#,
+            )
+            .expect("bundle manifest");
+            let native = GogProvider
+                .discover(&settings, &context)
+                .expect("native bundle discovery");
+            assert!(native.complete && native.games.len() == 2);
+            assert!(native.games.iter().any(|game| matches!(&game.launch_target, LaunchTarget::ApplicationBundle(launch) if launch.working_directory.is_none())));
+            std::fs::remove_file(resources.join("goggame-123458.info"))
+                .expect("remove native record");
+        }
+        let artwork = directory.join("artwork.png");
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([30, 50, 70, 255]))
+            .save(&artwork)
+            .expect("local artwork");
+        let paths = ApplicationPaths {
+            data_directory: directory.join("data"),
+            cache_directory: directory.join("cache"),
+        };
+        let api = LauncherBuilder::new()
+            .discovery_provider(EpicProvider)
+            .discovery_provider(GogProvider)
+            .build(paths.clone())
+            .expect("store application");
+        let events = api.subscribe();
+        let game_id = GameId("epic:ExampleGame".into());
+        for step in 0..14 {
+            if step == 9 {
+                epic_document["DisplayName"] = "Updated Epic title".into();
+                std::fs::write(
+                    &epic_record,
+                    serde_json::to_vec(&epic_document).expect("updated manifest"),
+                )
+                .expect("update discovered title");
+            }
+            if step == 10 {
+                std::fs::remove_file(&epic_record).expect("remove game manifest");
+                std::fs::remove_file(&gog_record).expect("remove GOG manifest");
+                std::fs::write(epic_directory.join("broken.item"), b"{")
+                    .expect("malformed Epic sibling");
+                std::fs::write(gog_installation.join("goggame-broken.info"), b"{")
+                    .expect("malformed GOG sibling");
+            }
+            if step == 11 {
+                assert!(api.snapshot().games.iter().all(|game| game.available));
+                std::fs::remove_file(epic_directory.join("broken.item"))
+                    .expect("remove malformed Epic record");
+                std::fs::remove_file(gog_installation.join("goggame-broken.info"))
+                    .expect("remove malformed GOG record");
+            }
+            let command = match step {
+                0 => Command::SetEpicDirectory {
+                    directory: Some(epic_directory.clone()),
+                },
+                1 => Command::SetGogDirectory {
+                    directory: Some(gog_directory.clone()),
+                },
+                2 | 9..=11 => Command::RefreshLibrary,
+                3 => Command::UpdateMetadata {
+                    game_id: game_id.clone(),
+                    metadata: UserMetadata {
+                        title: Some("Local title".into()),
+                        ..UserMetadata::default()
+                    },
+                },
+                4 => Command::SetFavourite {
+                    game_id: game_id.clone(),
+                    favourite: true,
+                },
+                5 => Command::SetGameProgress {
+                    game_id: game_id.clone(),
+                    collections: BTreeSet::from(["Collection".into()]),
+                    completed: true,
+                },
+                6 => Command::SetLaunchOverride {
+                    game_id: game_id.clone(),
+                    launch: Some(ExecutableLaunch {
+                        executable: std::env::current_exe().expect("executable"),
+                        arguments: vec!["--list".into()],
+                        working_directory: None,
+                    }),
+                },
+                7 => Command::SaveJournalEntry {
+                    game_id: game_id.clone(),
+                    entry_id: None,
+                    text: "Local game note".into(),
+                },
+                8 => Command::ImportArtwork {
+                    game_id: game_id.clone(),
+                    kind: ArtworkKind::Cover,
+                    path: artwork.clone(),
+                },
+                12 => Command::SetEpicDirectory {
+                    directory: Some(std::path::PathBuf::from("relative")),
+                },
+                _ => Command::SetGogDirectory {
+                    directory: Some(directory.join("missing")),
+                },
+            };
+            let job_id = api.submit(command).expect("queued discovery command");
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                assert!(Instant::now() < deadline, "discovery command timed out");
+                match events.try_recv() {
+                    Ok(AppEvent::JobChanged(job)) if job.id == job_id && !job.state.active() => {
+                        assert_eq!(
+                            job.state,
+                            if step < 12 {
+                                JobState::Completed
+                            } else {
+                                JobState::Failed
+                            },
+                            "{:?}",
+                            job.error
+                        );
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(_) => std::thread::sleep(Duration::from_millis(2)),
+                }
+            }
+        }
+        let snapshot = api.snapshot();
+        assert_eq!(snapshot.games.len(), 2);
+        assert!(snapshot.games.iter().all(|game| !game.available));
+        let game = snapshot
+            .games
+            .iter()
+            .find(|game| game.id == game_id)
+            .expect("retained Epic game");
+        assert_eq!(game.title(), "Local title");
+        assert_eq!(game.discovered_title, "Updated Epic title");
+        assert!(game.favourite && game.completed && game.launch_override.is_some());
+        assert_eq!(game.collections, BTreeSet::from(["Collection".into()]));
+        assert!(game.artwork.contains_key(&ArtworkKind::Cover));
+        assert_eq!(snapshot.journal[0].text, "Local game note");
+        let reopened = LauncherBuilder::new()
+            .build(paths)
+            .expect("reopened store settings");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !reopened.snapshot().ready {
+            assert!(
+                Instant::now() < deadline,
+                "reopening discovery settings timed out"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            reopened.snapshot().settings.epic_directory,
+            Some(epic_directory)
+        );
+        assert_eq!(
+            reopened.snapshot().settings.gog_directory,
+            Some(gog_directory)
+        );
+        assert_eq!(reopened.snapshot().games.len(), 2);
+    }
 
     #[test]
     fn application_api_preserves_edits_launch_configuration_and_persistence() {

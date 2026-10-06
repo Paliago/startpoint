@@ -260,6 +260,8 @@ pub struct SettingsSnapshot {
     pub configured_credentials: BTreeSet<String>,
     pub credential_status: BTreeMap<String, CredentialStatus>,
     pub steam_directory: Option<PathBuf>,
+    pub epic_directory: Option<PathBuf>,
+    pub gog_directory: Option<PathBuf>,
     pub appearance: AppearanceSettings,
 }
 
@@ -385,6 +387,12 @@ pub enum Command {
     SetSteamDirectory {
         directory: Option<PathBuf>,
     },
+    SetEpicDirectory {
+        directory: Option<PathBuf>,
+    },
+    SetGogDirectory {
+        directory: Option<PathBuf>,
+    },
     SetAppearance {
         settings: AppearanceSettings,
     },
@@ -444,6 +452,8 @@ impl Command {
             Self::VerifyArtworkCredential { .. } => "Checking artwork provider connection",
             Self::SetArtworkGame { .. } => "Saving artwork game match",
             Self::SetSteamDirectory { .. } => "Saving Steam directory",
+            Self::SetEpicDirectory { .. } => "Saving Epic manifest directory",
+            Self::SetGogDirectory { .. } => "Saving GOG games directory",
             Self::SetAppearance { .. } => "Saving appearance",
             Self::SearchArtworkGames { .. } => "Searching SteamGridDB",
             Self::ListArtwork { .. } => "Loading artwork choices",

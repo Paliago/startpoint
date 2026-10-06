@@ -111,6 +111,8 @@ enum PickerPurpose {
     LaunchOverride(GameId),
     Artwork(GameId, ArtworkKind),
     SteamDirectory,
+    EpicDirectory,
+    GogDirectory,
 }
 
 pub struct LauncherView {
@@ -770,16 +772,22 @@ impl LauncherView {
     }
 
     fn pick(&mut self, purpose: PickerPurpose, window: &mut Window, cx: &mut Context<Self>) {
-        let directory = matches!(purpose, PickerPurpose::SteamDirectory);
+        let directory = matches!(
+            purpose,
+            PickerPurpose::SteamDirectory
+                | PickerPurpose::EpicDirectory
+                | PickerPurpose::GogDirectory
+        );
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: !directory,
             directories: directory,
             multiple: false,
             prompt: Some(
-                if directory {
-                    "Choose Steam installation directory"
-                } else {
-                    "Choose file"
+                match purpose {
+                    PickerPurpose::SteamDirectory => "Choose Steam installation directory",
+                    PickerPurpose::EpicDirectory => "Choose Epic manifest directory",
+                    PickerPurpose::GogDirectory => "Choose GOG games directory",
+                    _ => "Choose file",
                 }
                 .into(),
             ),
@@ -828,6 +836,22 @@ impl LauncherView {
                         PickerPurpose::SteamDirectory => {
                             view.submit(
                                 Command::SetSteamDirectory {
+                                    directory: Some(path),
+                                },
+                                cx,
+                            );
+                        }
+                        PickerPurpose::EpicDirectory => {
+                            view.submit(
+                                Command::SetEpicDirectory {
+                                    directory: Some(path),
+                                },
+                                cx,
+                            );
+                        }
+                        PickerPurpose::GogDirectory => {
+                            view.submit(
+                                Command::SetGogDirectory {
                                     directory: Some(path),
                                 },
                                 cx,
@@ -1622,7 +1646,12 @@ impl LauncherView {
             .iter()
             .filter(|game| game.favourite)
             .count();
-        let mut sources = BTreeMap::from([("steam".to_string(), 0), ("manual".to_string(), 0)]);
+        let mut sources = BTreeMap::from([("manual".to_string(), 0)]);
+        for provider in &self.snapshot.providers {
+            if matches!(provider.id.as_str(), "steam" | "epic" | "gog" | "example") {
+                sources.insert(provider.id.clone(), 0);
+            }
+        }
         for game in self.snapshot.games.iter().filter(|game| game.available) {
             *sources.entry(game.provider_id.clone()).or_insert(0) += 1;
         }
@@ -4393,6 +4422,24 @@ impl LauncherView {
                                     })),
                             ),
                     )
+                    .child(div().mt_5().child(eyebrow("EPIC DISCOVERY")))
+                    .child(hint(&self.snapshot.settings.epic_directory.as_ref()
+                        .map(|path| path.to_string_lossy().into_owned()).unwrap_or_else(|| "Automatic detection · Epic launcher manifests".into())))
+                    .child(div().flex().flex_wrap().gap_2()
+                        .child(Button::new("choose-epic").label("Choose manifest directory…")
+                            .on_click(cx.listener(|view, _, window, cx| view.pick(PickerPurpose::EpicDirectory, window, cx))))
+                        .child(Button::new("reset-epic").ghost().label("Use automatic detection")
+                            .on_click(cx.listener(|view, _, _, cx| { view.submit(Command::SetEpicDirectory { directory: None }, cx); }))))
+                    .child(hint("Choose the folder containing Epic's .item files, not the games folder."))
+                    .child(div().mt_5().child(eyebrow("GOG DISCOVERY")))
+                    .child(hint(&self.snapshot.settings.gog_directory.as_ref()
+                        .map(|path| path.to_string_lossy().into_owned()).unwrap_or_else(|| "Automatic detection · Windows installer records or macOS Applications".into())))
+                    .child(div().flex().flex_wrap().gap_2()
+                        .child(Button::new("choose-gog").label("Choose games directory…")
+                            .on_click(cx.listener(|view, _, window, cx| view.pick(PickerPurpose::GogDirectory, window, cx))))
+                        .child(Button::new("reset-gog").ghost().label("Use automatic detection")
+                            .on_click(cx.listener(|view, _, _, cx| { view.submit(Command::SetGogDirectory { directory: None }, cx); }))))
+                    .child(hint("Reads goggame-*.info files in this folder, immediate game folders and native macOS bundles. No account login is needed. Refresh installed games after changing discovery folders."))
                     .child(div().mt_5().child(eyebrow("LOCAL STORAGE")))
                     .child(hint(&format!(
                         "Library and selected images\n{}\n\nDisposable thumbnails\n{}",
@@ -5009,6 +5056,8 @@ fn placeholder(title: &str, colors: ThemeColor) -> impl IntoElement {
 fn source_name(provider_id: &str) -> &str {
     match provider_id {
         "steam" => "Steam",
+        "epic" => "Epic Games",
+        "gog" => "GOG",
         "manual" => "Manually added",
         "example" => "Example library",
         other => other,
