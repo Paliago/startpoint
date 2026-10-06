@@ -3,6 +3,7 @@
 mod appearance;
 mod image_cache;
 mod interface;
+mod theme;
 
 use gpui::{prelude::*, *};
 use gpui_component::Root;
@@ -92,7 +93,8 @@ fn main() {
         .with_assets(LauncherAssets)
         .run(move |cx| {
             gpui_component::init(cx);
-            appearance::apply(api.snapshot().settings.appearance.mode, None, cx);
+            cx.set_global(theme::Catalog::default());
+            appearance::apply(&api.snapshot().settings.appearance, None, cx);
             cx.bind_keys([
                 KeyBinding::new("cmd-q", interface::Quit, None),
                 KeyBinding::new("ctrl-q", interface::Quit, None),

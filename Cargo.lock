@@ -5715,6 +5715,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "raw-window-handle",
+ "serde_json",
  "startpoint-core",
  "startpoint-sdk",
  "windows-sys 0.61.2",

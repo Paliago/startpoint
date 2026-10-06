@@ -200,13 +200,15 @@ impl StartScreen {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppearanceSettings {
+    pub theme: String,
     pub mode: AppearanceMode,
     pub dither_artwork: bool,
     pub start_screen: StartScreen,
     pub dither_recents: bool,
+    pub fade_recents: bool,
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
 }
@@ -214,10 +216,12 @@ pub struct AppearanceSettings {
 impl Default for AppearanceSettings {
     fn default() -> Self {
         Self {
+            theme: "Startpoint".into(),
             mode: AppearanceMode::System,
             dither_artwork: true,
             start_screen: StartScreen::Library,
             dither_recents: false,
+            fade_recents: false,
             sidebar_visible: false,
             sidebar_width: 216.,
         }

@@ -1,8 +1,9 @@
-use gpui::{App, Hsla, Window, WindowAppearance, WindowBackgroundAppearance, px, rgb};
+use gpui::{App, Hsla, Window, WindowAppearance, WindowBackgroundAppearance};
 use gpui_component::{ActiveTheme, Theme, ThemeMode};
-use startpoint_sdk::AppearanceMode;
+use startpoint_sdk::{AppearanceMode, AppearanceSettings};
 
-pub(crate) fn apply(mode: AppearanceMode, mut window: Option<&mut Window>, cx: &mut App) {
+pub(crate) fn apply(settings: &AppearanceSettings, mut window: Option<&mut Window>, cx: &mut App) {
+    let mode = settings.mode;
     sync_native_appearance(mode);
     let system = window
         .as_ref()
@@ -16,44 +17,26 @@ pub(crate) fn apply(mode: AppearanceMode, mut window: Option<&mut Window>, cx: &
             _ => ThemeMode::Light,
         },
     };
-    Theme::change(resolved, window.as_deref_mut(), cx);
-    let theme = Theme::global_mut(cx);
-    let dark = theme.is_dark();
-    theme.font_family = if cfg!(target_os = "windows") {
-        "Bahnschrift"
+    let themes = cx.global::<crate::theme::Catalog>();
+    let light = themes.configuration(&settings.theme, ThemeMode::Light);
+    let dark = themes.configuration(&settings.theme, ThemeMode::Dark);
+    let native_font = if resolved.is_dark() {
+        dark.font_family.is_none()
     } else {
-        "Avenir Next"
+        light.font_family.is_none()
+    };
+    let theme = Theme::global_mut(cx);
+    theme.light_theme = light;
+    theme.dark_theme = dark;
+    Theme::change(resolved, window.as_deref_mut(), cx);
+    if native_font {
+        Theme::global_mut(cx).font_family = if cfg!(target_os = "windows") {
+            "Bahnschrift"
+        } else {
+            "Avenir Next"
+        }
+        .into();
     }
-    .into();
-    theme.font_size = px(14.);
-    theme.radius = px(8.);
-    theme.radius_lg = px(12.);
-    theme.shadow = false;
-    theme.background = rgb(if dark { 0x1b1e22 } else { 0xf6f5f1 }).into();
-    theme.foreground = rgb(if dark { 0xf1f0ec } else { 0x17202b }).into();
-    theme.border = rgb(if dark { 0x393c40 } else { 0xd8d7d2 }).into();
-    theme.input = theme.border;
-    theme.muted = rgb(if dark { 0x282c30 } else { 0xecebe6 }).into();
-    theme.muted_foreground = rgb(if dark { 0xa4a7aa } else { 0x74777b }).into();
-    theme.secondary = rgb(if dark { 0x303438 } else { 0xfdfcf9 }).into();
-    theme.secondary_foreground = theme.foreground;
-    theme.secondary_hover = theme.muted;
-    theme.secondary_active = theme.border;
-    theme.primary = rgb(0xff650d).into();
-    theme.primary_hover = rgb(0xf57824).into();
-    theme.primary_active = rgb(0xe85400).into();
-    theme.primary_foreground = rgb(0xffffff).into();
-    theme.ring = theme.primary;
-    theme.caret = theme.primary;
-    theme.accent = rgb(if dark { 0x493123 } else { 0xffeadd }).into();
-    theme.accent_foreground = rgb(if dark { 0xffa268 } else { 0xa33a00 }).into();
-    theme.selection = theme.accent;
-    theme.switch = theme.border;
-    theme.switch_thumb = rgb(0xffffff).into();
-    theme.title_bar = gpui::transparent_black();
-    theme.title_bar_border = gpui::transparent_black();
-    theme.popover = theme.secondary;
-    theme.popover_foreground = theme.foreground;
     if let Some(window) = window {
         window.set_background_appearance(background());
     }

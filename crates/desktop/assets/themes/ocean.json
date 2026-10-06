@@ -1,0 +1,61 @@
+{
+  "name": "Ocean",
+  "themes": [
+    {
+      "mode": "light",
+      "colors": {
+        "background": "#f1f6fa",
+        "foreground": "#152d40",
+        "border": "#a5bbc9",
+        "input.border": "#a5bbc9",
+        "muted.background": "#e4edf3",
+        "muted.foreground": "#526777",
+        "secondary.background": "#d4e2ec",
+        "secondary.foreground": "#152d40",
+        "secondary.hover.background": "#c5d8e6",
+        "secondary.active.background": "#b4ccdd",
+        "primary.background": "#166494",
+        "primary.foreground": "#ffffff",
+        "primary.hover.background": "#12577f",
+        "primary.active.background": "#0e496b",
+        "accent.background": "#d3eaf8",
+        "accent.foreground": "#0e496b",
+        "selection.background": "#d3eaf8",
+        "ring": "#166494",
+        "caret": "#166494",
+        "switch.background": "#a5bbc9",
+        "popover.background": "#f8fbfd",
+        "popover.foreground": "#152d40",
+        "sidebar.background": "#e6eff5"
+      }
+    },
+    {
+      "mode": "dark",
+      "colors": {
+        "background": "#142330",
+        "foreground": "#e5f1f8",
+        "border": "#354e61",
+        "input.border": "#354e61",
+        "muted.background": "#203442",
+        "muted.foreground": "#a1b8c8",
+        "secondary.background": "#2b4152",
+        "secondary.foreground": "#e5f1f8",
+        "secondary.hover.background": "#354f64",
+        "secondary.active.background": "#3f5e76",
+        "primary.background": "#73c8f0",
+        "primary.foreground": "#102736",
+        "primary.hover.background": "#8fd7f7",
+        "primary.active.background": "#5bb7e0",
+        "accent.background": "#243f53",
+        "accent.foreground": "#9edcf9",
+        "selection.background": "#243f53",
+        "ring": "#73c8f0",
+        "caret": "#73c8f0",
+        "switch.background": "#354e61",
+        "popover.background": "#203442",
+        "popover.foreground": "#e5f1f8",
+        "sidebar.background": "#192b39"
+      }
+    }
+  ]
+}

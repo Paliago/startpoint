@@ -834,6 +834,14 @@ impl Shared {
                 Ok(())
             }
             Command::SetAppearance { settings } => {
+                if settings.theme.trim().is_empty()
+                    || settings.theme.len() > 80
+                    || settings.theme.chars().any(char::is_control)
+                {
+                    return Err(ApiError::Validation(
+                        "Theme names must contain 1–80 bytes without control characters".into(),
+                    ));
+                }
                 if !settings.sidebar_width.is_finite()
                     || !(192. ..=400.).contains(&settings.sidebar_width)
                 {
@@ -1424,8 +1432,10 @@ mod tests {
                 .expect("previous appearance settings");
         assert_eq!(previous_settings.start_screen, StartScreen::Library);
         assert!(!previous_settings.dither_recents);
+        assert!(!previous_settings.fade_recents);
         assert!(!previous_settings.sidebar_visible);
         assert_eq!(previous_settings.sidebar_width, 216.);
+        assert_eq!(previous_settings.theme, "Startpoint");
         let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/verification")
             .join(uuid::Uuid::new_v4().to_string());
@@ -1438,7 +1448,7 @@ mod tests {
             .expect("application");
         let events = api.subscribe();
         let executable = std::env::current_exe().expect("test executable");
-        for step in 0..11 {
+        for step in 0..15 {
             let game_id = api
                 .snapshot()
                 .games
@@ -1477,18 +1487,32 @@ mod tests {
                 4 => Command::RefreshLibrary,
                 5 => Command::SetAppearance {
                     settings: AppearanceSettings {
+                        theme: "Custom".into(),
                         mode: AppearanceMode::Light,
                         dither_artwork: false,
                         start_screen: StartScreen::Recents,
                         dither_recents: true,
+                        fade_recents: true,
                         sidebar_visible: true,
                         sidebar_width: 320.,
                     },
                 },
                 6 => Command::LaunchGame { game_id },
-                _ => Command::SetAppearance {
+                7..=10 => Command::SetAppearance {
                     settings: AppearanceSettings {
                         sidebar_width: [191., 401., f32::NAN, f32::INFINITY][step - 7],
+                        ..AppearanceSettings::default()
+                    },
+                },
+                _ => Command::SetAppearance {
+                    settings: AppearanceSettings {
+                        theme: [
+                            String::new(),
+                            " ".into(),
+                            "Line\nbreak".into(),
+                            "x".repeat(81),
+                        ][step - 11]
+                            .clone(),
                         ..AppearanceSettings::default()
                     },
                 },
@@ -1578,10 +1602,12 @@ mod tests {
         assert_eq!(
             reopened.snapshot().settings.appearance,
             AppearanceSettings {
+                theme: "Custom".into(),
                 mode: AppearanceMode::Light,
                 dither_artwork: false,
                 start_screen: StartScreen::Recents,
                 dither_recents: true,
+                fade_recents: true,
                 sidebar_visible: true,
                 sidebar_width: 320.,
             }

@@ -1,0 +1,61 @@
+{
+  "name": "Forest",
+  "themes": [
+    {
+      "mode": "light",
+      "colors": {
+        "background": "#f2f6f0",
+        "foreground": "#203528",
+        "border": "#adbfaa",
+        "input.border": "#adbfaa",
+        "muted.background": "#e5ede2",
+        "muted.foreground": "#586b58",
+        "secondary.background": "#d5e2d0",
+        "secondary.foreground": "#203528",
+        "secondary.hover.background": "#c7d8c0",
+        "secondary.active.background": "#b8cdb0",
+        "primary.background": "#32683d",
+        "primary.foreground": "#ffffff",
+        "primary.hover.background": "#295a33",
+        "primary.active.background": "#214c2a",
+        "accent.background": "#d9ead3",
+        "accent.foreground": "#214c2a",
+        "selection.background": "#d9ead3",
+        "ring": "#32683d",
+        "caret": "#32683d",
+        "switch.background": "#adbfaa",
+        "popover.background": "#fafcf8",
+        "popover.foreground": "#203528",
+        "sidebar.background": "#e8efe4"
+      }
+    },
+    {
+      "mode": "dark",
+      "colors": {
+        "background": "#1b2821",
+        "foreground": "#eaf2e6",
+        "border": "#3c5142",
+        "input.border": "#3c5142",
+        "muted.background": "#2a3a2e",
+        "muted.foreground": "#adbda8",
+        "secondary.background": "#334738",
+        "secondary.foreground": "#eaf2e6",
+        "secondary.hover.background": "#3e5444",
+        "secondary.active.background": "#49614f",
+        "primary.background": "#a2d789",
+        "primary.foreground": "#1b3021",
+        "primary.hover.background": "#b4e29e",
+        "primary.active.background": "#8dc575",
+        "accent.background": "#334c34",
+        "accent.foreground": "#b4e29e",
+        "selection.background": "#334c34",
+        "ring": "#a2d789",
+        "caret": "#a2d789",
+        "switch.background": "#3c5142",
+        "popover.background": "#2a3a2e",
+        "popover.foreground": "#eaf2e6",
+        "sidebar.background": "#223127"
+      }
+    }
+  ]
+}

@@ -1,12 +1,13 @@
-use crate::{appearance, image_cache::ThumbnailCache};
+use crate::{appearance, image_cache::ThumbnailCache, theme};
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, TitleBar,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, ThemeColor, TitleBar,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu, PopupMenuItem},
     spinner::Spinner,
     switch::Switch,
+    tooltip::Tooltip,
 };
 use startpoint_sdk::{
     AppEvent, AppearanceMode, AppearanceSettings, Application as LauncherApplication, ArtworkAsset,
@@ -20,10 +21,9 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-const ACCENT: u32 = 0xff650d;
 const HEADER_HEIGHT: f32 = 44.;
 const RECENTS_INTERVAL: Duration = Duration::from_secs(8);
-const RECENTS_INFORMATION_HEIGHT: f32 = 144.;
+const RECENTS_TRANSITION: Duration = Duration::from_millis(240);
 
 actions!(
     startpoint,
@@ -121,6 +121,7 @@ pub struct LauncherView {
     appearance: AppearanceSettings,
     appearance_loaded: bool,
     appearance_job: Option<JobId>,
+    themes_loading: bool,
     sidebar_transition: Option<(f32, Instant)>,
     sidebar_resize_focus: FocusHandle,
     sidebar_save: Option<Task<()>>,
@@ -157,8 +158,9 @@ pub struct LauncherView {
     carousel_elapsed: Duration,
     carousel_tick: Option<Instant>,
     carousel_paused: bool,
-    carousel_hovered: bool,
     carousel_focus: FocusHandle,
+    carousel_transition: Option<(Game, Instant)>,
+    carousel_image_ready: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -179,11 +181,12 @@ impl LauncherView {
             let _ = launcher.update(cx, |view, cx| view.intercept_key(event, window, cx));
         });
         let appearance_subscription = cx.observe_window_appearance(window, |view, window, cx| {
-            appearance::apply(view.appearance.mode, Some(window), cx);
+            appearance::apply(&view.appearance, Some(window), cx);
         });
-        let appearance_settings = snapshot.settings.appearance;
+        let appearance_settings = snapshot.settings.appearance.clone();
         let appearance_loaded = snapshot.ready;
-        appearance::apply(appearance_settings.mode, Some(window), cx);
+        appearance::apply(&appearance_settings, Some(window), cx);
+        let screen = appearance_settings.start_screen;
         let mut view = Self {
             api,
             snapshot,
@@ -200,11 +203,12 @@ impl LauncherView {
             appearance: appearance_settings,
             appearance_loaded,
             appearance_job: None,
+            themes_loading: false,
             sidebar_transition: None,
             sidebar_resize_focus: cx.focus_handle(),
             sidebar_save: None,
             window_should_move: false,
-            screen: appearance_settings.start_screen,
+            screen,
             settings_open: false,
             jobs_open: false,
             detail_tab: DetailTab::Overview,
@@ -243,13 +247,15 @@ impl LauncherView {
             carousel_elapsed: Duration::ZERO,
             carousel_tick: None,
             carousel_paused: appearance::reduced_motion(),
-            carousel_hovered: false,
             carousel_focus: cx.focus_handle(),
+            carousel_transition: None,
+            carousel_image_ready: false,
             _subscriptions: vec![subscription, appearance_subscription, key_subscription],
         };
         view.filter(cx);
         view.ensure_selection(window, cx);
         view.focus.focus(window);
+        view.reload_themes(window, cx);
         view.submit(Command::RefreshLibrary, cx);
         cx.spawn_in(window, async move |view, cx| {
             let mut interval = Duration::from_millis(250);
@@ -305,8 +311,8 @@ impl LauncherView {
                 self.screen = self.snapshot.settings.appearance.start_screen;
             }
             self.appearance_loaded = self.snapshot.ready;
-            self.appearance = self.snapshot.settings.appearance;
-            appearance::apply(self.appearance.mode, Some(window), cx);
+            self.appearance = self.snapshot.settings.appearance.clone();
+            appearance::apply(&self.appearance, Some(window), cx);
         }
         match event {
             AppEvent::LibraryChanged => {
@@ -370,8 +376,8 @@ impl LauncherView {
                 if Some(job.id) == self.appearance_job && !job.state.active() {
                     self.appearance_job = None;
                     if job.state != JobState::Completed {
-                        self.appearance = self.snapshot.settings.appearance;
-                        appearance::apply(self.appearance.mode, Some(window), cx);
+                        self.appearance = self.snapshot.settings.appearance.clone();
+                        appearance::apply(&self.appearance, Some(window), cx);
                     }
                 }
                 if let Some(error) = job.error {
@@ -475,14 +481,7 @@ impl LauncherView {
     }
 
     fn recent_games(&self) -> Vec<&Game> {
-        let mut games = self
-            .visible
-            .iter()
-            .filter(|game| game.last_launched.is_some())
-            .collect::<Vec<_>>();
-        if games.is_empty() {
-            games = self.visible.iter().collect();
-        }
+        let mut games = self.visible.iter().collect::<Vec<_>>();
         games.sort_by_key(|game| std::cmp::Reverse(game.last_launched.unwrap_or(0)));
         games.truncate(5);
         games
@@ -521,6 +520,8 @@ impl LauncherView {
     fn select_game(&mut self, id: GameId, window: &mut Window, cx: &mut Context<Self>) {
         self.carousel_elapsed = Duration::ZERO;
         self.carousel_tick = None;
+        self.carousel_transition = None;
+        self.carousel_image_ready = false;
         self.cancel_artwork();
         self.selected = Some(id);
         self.settings_open = false;
@@ -677,13 +678,13 @@ impl LauncherView {
                     .items_center()
                     .gap_2()
                     .text_sm()
-                    .child(div().size(px(8.)).rounded_full().bg(rgb(match status {
-                        CredentialStatus::Verified => 0x43ad6d,
+                    .child(div().size(px(8.)).rounded_full().bg(match status {
+                        CredentialStatus::Verified => cx.theme().success,
                         CredentialStatus::Invalid
                         | CredentialStatus::Locked
-                        | CredentialStatus::Unavailable(_) => 0xd89938,
-                        _ => 0x92969a,
-                    })))
+                        | CredentialStatus::Unavailable(_) => cx.theme().warning,
+                        _ => cx.theme().muted_foreground,
+                    }))
                     .child(status.label())
                     .when(*status == CredentialStatus::Checking, |row| {
                         row.child(Spinner::new().small().color(cx.theme().primary))
@@ -1120,7 +1121,7 @@ impl LauncherView {
             LauncherCommand::Appearance(mode) => self.set_appearance(
                 AppearanceSettings {
                     mode,
-                    ..self.appearance
+                    ..self.appearance.clone()
                 },
                 window,
                 cx,
@@ -1128,7 +1129,7 @@ impl LauncherView {
             LauncherCommand::DitherRecents => self.set_appearance(
                 AppearanceSettings {
                     dither_recents: !self.appearance.dither_recents,
-                    ..self.appearance
+                    ..self.appearance.clone()
                 },
                 window,
                 cx,
@@ -1136,7 +1137,7 @@ impl LauncherView {
             LauncherCommand::DitherArtwork => self.set_appearance(
                 AppearanceSettings {
                     dither_artwork: !self.appearance.dither_artwork,
-                    ..self.appearance
+                    ..self.appearance.clone()
                 },
                 window,
                 cx,
@@ -1243,6 +1244,7 @@ impl LauncherView {
     fn switch_screen(&mut self, screen: StartScreen, window: &mut Window, cx: &mut Context<Self>) {
         self.carousel_elapsed = Duration::ZERO;
         self.carousel_tick = None;
+        self.carousel_transition = None;
         self.screen = screen;
         self.settings_open = false;
         self.jobs_open = false;
@@ -1315,7 +1317,7 @@ impl LauncherView {
         self.set_appearance(
             AppearanceSettings {
                 sidebar_visible: !self.appearance.sidebar_visible,
-                ..self.appearance
+                ..self.appearance.clone()
             },
             window,
             cx,
@@ -1333,7 +1335,7 @@ impl LauncherView {
                 .await;
             let _ = view.update_in(cx, |view, window, cx| {
                 view.sidebar_save = None;
-                view.set_appearance(view.appearance, window, cx);
+                view.set_appearance(view.appearance.clone(), window, cx);
             });
         }));
         cx.notify();
@@ -1346,7 +1348,12 @@ impl LauncherView {
         cx: &mut Context<Self>,
     ) {
         self.sidebar_save = None;
-        if let Some(id) = self.submit(Command::SetAppearance { settings }, cx) {
+        if let Some(id) = self.submit(
+            Command::SetAppearance {
+                settings: settings.clone(),
+            },
+            cx,
+        ) {
             self.appearance_job = Some(id);
             if self.appearance.start_screen != settings.start_screen {
                 self.screen = settings.start_screen;
@@ -1354,9 +1361,31 @@ impl LauncherView {
                 self.cancel_artwork();
             }
             self.appearance = settings;
-            appearance::apply(settings.mode, Some(window), cx);
+            appearance::apply(&self.appearance, Some(window), cx);
             cx.notify();
         }
+    }
+
+    fn reload_themes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.themes_loading {
+            return;
+        }
+        self.themes_loading = true;
+        let directory = self.snapshot.paths.data_directory.join("themes");
+        let task = cx
+            .background_executor()
+            .spawn(async move { theme::Catalog::load(&directory) });
+        cx.spawn_in(window, async move |view, cx| {
+            let themes = task.await;
+            let _ = view.update_in(cx, |view, window, cx| {
+                cx.set_global(themes);
+                view.themes_loading = false;
+                appearance::apply(&view.appearance, Some(window), cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     fn sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1381,7 +1410,7 @@ impl LauncherView {
             .w(px(self.appearance.sidebar_width))
             .flex_shrink_0()
             .h_full()
-            .bg(cx.theme().muted.opacity(0.4))
+            .bg(cx.theme().sidebar)
             .flex()
             .flex_col()
             .px_3()
@@ -1520,10 +1549,10 @@ impl LauncherView {
                     .overflow_hidden()
                     .bg(cx.theme().muted)
                     .child(match cover {
-                        Some(asset) => image(asset.thumbnail_path.clone(), ObjectFit::Cover)
+                        Some(asset) => image(asset.thumbnail_path.clone(), ObjectFit::Cover, cx)
                             .rounded(px(6.))
                             .into_any_element(),
-                        None => placeholder("").into_any_element(),
+                        None => placeholder("", cx.theme().colors).into_any_element(),
                     }),
             )
             .child(
@@ -1546,13 +1575,17 @@ impl LauncherView {
                     .child(hint(&last_played(game))),
             )
             .when(game.favourite, |row| {
-                row.child(Icon::new(IconName::Star).small().text_color(rgb(ACCENT)))
+                row.child(
+                    Icon::new(IconName::Star)
+                        .small()
+                        .text_color(cx.theme().primary),
+                )
             })
             .when(selected, |row| {
                 row.child(
                     Icon::new(IconName::ChevronRight)
                         .small()
-                        .text_color(rgb(ACCENT)),
+                        .text_color(cx.theme().primary),
                 )
             })
             .on_click(cx.listener(move |view, _, window, cx| {
@@ -1599,12 +1632,12 @@ impl LauncherView {
                         .h(px(100.))
                         .rounded(px(7.))
                         .border_1()
-                        .border_color(rgb(ACCENT))
+                        .border_color(cx.theme().primary)
                         .bg(cx.theme().muted)
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(div().w_8().h_1().bg(rgb(ACCENT))),
+                        .child(div().w_8().h_1().bg(cx.theme().primary)),
                 )
                 .child(div().text_2xl().child(if self.snapshot.games.is_empty() {
                     "No games yet"
@@ -1821,7 +1854,7 @@ impl LauncherView {
             }))
     }
 
-    fn recent_card(&self, game: &Game, cx: &mut Context<Self>) -> AnyElement {
+    fn recent_card(&self, game: &Game, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let id = game.id.clone();
         let artwork = game
             .artwork
@@ -1839,6 +1872,9 @@ impl LauncherView {
             .gap_2()
             .p_1()
             .rounded(px(10.))
+            .when(!self.appearance.fade_recents, |card| {
+                card.bg(cx.theme().background.alpha(0.94))
+            })
             .when(selected, |card| card.bg(cx.theme().accent))
             .hover(|card| card.bg(cx.theme().muted))
             .cursor_pointer()
@@ -1850,20 +1886,22 @@ impl LauncherView {
                     .rounded(px(8.))
                     .overflow_hidden()
                     .child(match artwork {
-                        Some(asset) => image(asset.thumbnail_path.clone(), ObjectFit::Cover)
+                        Some(asset) => image(asset.thumbnail_path.clone(), ObjectFit::Cover, cx)
+                            .absolute()
+                            .inset_0()
                             .rounded(px(6.))
                             .into_any_element(),
-                        None => placeholder("").into_any_element(),
+                        None => placeholder("", cx.theme().colors).into_any_element(),
                     }),
             )
-            .child(
-                div()
-                    .w_full()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .line_clamp(1)
-                    .child(game.title().to_string()),
-            )
+            .child(recents_title(
+                SharedString::from(format!("recent-card-title-{}", id.0)),
+                game.title(),
+                window.rem_size() * 0.875,
+                FontWeight::SEMIBOLD,
+                window,
+                cx,
+            ))
             .child(
                 div()
                     .w_full()
@@ -1879,6 +1917,10 @@ impl LauncherView {
             .into_any_element()
     }
 
+    fn carousel_is_paused(&self, window: &Window, cx: &App) -> bool {
+        self.carousel_paused || self.carousel_focus.contains_focused(window, cx)
+    }
+
     fn advance_carousel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.screen != StartScreen::Recents
             || !self.snapshot.ready
@@ -1886,9 +1928,7 @@ impl LauncherView {
             || self.jobs_open
             || self.command_mode.is_some()
             || self.detail_tab != DetailTab::Overview
-            || self.carousel_paused
-            || self.carousel_hovered
-            || self.carousel_focus.contains_focused(window, cx)
+            || self.carousel_is_paused(window, cx)
             || !window.is_window_active()
             || self.recent_games().len() < 2
         {
@@ -1898,8 +1938,18 @@ impl LauncherView {
         if let Some(previous) = self.carousel_tick.replace(Instant::now()) {
             self.carousel_elapsed += previous.elapsed();
         }
-        if self.carousel_elapsed >= RECENTS_INTERVAL {
-            self.move_selection(true, window, cx);
+        if self.carousel_elapsed >= RECENTS_INTERVAL && self.carousel_image_ready {
+            let games = self.recent_games();
+            let index = games
+                .iter()
+                .position(|game| self.selected.as_ref() == Some(&game.id))
+                .unwrap_or(0);
+            let next = games[(index + 1) % games.len()].id.clone();
+            let previous = self.selected_game();
+            self.select_game(next, window, cx);
+            if !appearance::reduced_motion() {
+                self.carousel_transition = previous.map(|game| (game, Instant::now()));
+            }
         }
         cx.notify();
         true
@@ -1926,6 +1976,22 @@ impl LauncherView {
         texture
     }
 
+    fn recents_background(&self, game: &Game, opacity: f32, cx: &App) -> Div {
+        let artwork = game
+            .artwork
+            .get(&ArtworkKind::Background)
+            .or_else(|| game.artwork.get(&ArtworkKind::Cover));
+        div()
+            .absolute()
+            .inset_0()
+            .overflow_hidden()
+            .opacity(opacity)
+            .bg(cx.theme().background)
+            .when_some(artwork, |background, asset| {
+                background.child(image(asset.image_path.clone(), ObjectFit::Cover, cx))
+            })
+    }
+
     fn recents(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(game) = self.selected_game().filter(|_| self.snapshot.ready) else {
             return div()
@@ -1935,109 +2001,112 @@ impl LauncherView {
                 .into_any_element();
         };
         let games = self.recent_games();
+        let paused = self.carousel_is_paused(window, cx);
         let artwork = game
             .artwork
             .get(&ArtworkKind::Background)
             .or_else(|| game.artwork.get(&ArtworkKind::Cover));
         let background = cx.theme().background.alpha(1.);
         let has_history = games.iter().any(|game| game.last_launched.is_some());
+        let compact = window.viewport_size().width
+            - px(self.appearance.sidebar_width * self.sidebar_progress())
+            < px(800.);
+        let transition = self.carousel_transition.as_ref();
+        let opacity = transition
+            .map(|(_, started)| {
+                let progress =
+                    (started.elapsed().as_secs_f32() / RECENTS_TRANSITION.as_secs_f32()).min(1.);
+                1. - (1. - progress).powi(3)
+            })
+            .unwrap_or(1.);
         div()
             .id("recents-carousel")
-            .track_focus(&self.carousel_focus)
-            .on_hover(cx.listener(|view, hovered, _, cx| {
-                view.carousel_hovered = *hovered;
-                view.carousel_tick = None;
-                cx.notify();
-            }))
             .size_full()
+            .relative()
+            .overflow_hidden()
+            .bg(background)
             .flex()
             .flex_col()
+            .when_some(transition, |view, (previous, _)| {
+                view.child(self.recents_background(previous, 1., cx))
+            })
+            .child(self.recents_background(&game, opacity, cx))
+            .when(
+                self.appearance.dither_recents && artwork.is_some(),
+                |view| view.child(self.artwork_texture(window)),
+            )
+            .child(div().flex_1().min_h(px(HEADER_HEIGHT + 12.)))
             .child(
                 div()
+                    .id("recents-information")
                     .relative()
                     .w_full()
-                    .flex_1()
-                    .min_h(px(220.))
-                    .overflow_hidden()
-                    .bg(background)
-                    .when_some(artwork, |hero, asset| {
-                        hero.child(
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_col()
+                    .track_focus(&self.carousel_focus)
+                    .when(self.appearance.fade_recents, |information| {
+                        information.child(
                             div()
                                 .absolute()
-                                .top_0()
+                                .top(-px(112.))
+                                .bottom_0()
                                 .left_0()
-                                .size_full()
-                                .child(image(asset.image_path.clone(), ObjectFit::Cover)),
+                                .right_0()
+                                .bg(linear_gradient(
+                                    180.,
+                                    linear_color_stop(background.alpha(0.), 0.),
+                                    linear_color_stop(background, 0.72),
+                                )),
                         )
                     })
-                    .when(
-                        self.appearance.dither_recents && artwork.is_some(),
-                        |hero| {
-                            hero.child(
-                                self.artwork_texture(window)
-                                    .bottom(px(RECENTS_INFORMATION_HEIGHT)),
-                            )
-                        },
-                    )
                     .child(
                         div()
-                            .absolute()
-                            .bottom(px(RECENTS_INFORMATION_HEIGHT))
-                            .left_0()
-                            .w_full()
-                            .h(px(96.))
-                            .bg(linear_gradient(
-                                180.,
-                                linear_color_stop(background.alpha(0.), 0.),
-                                linear_color_stop(background, 1.),
-                            )),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .bottom_0()
-                            .left_0()
-                            .w_full()
-                            .h(px(RECENTS_INFORMATION_HEIGHT))
-                            .bg(background),
-                    )
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(32.))
-                            .right(px(32.))
-                            .bottom_4()
+                            .relative()
+                            .mx(px(32.))
+                            .mb_4()
                             .flex()
                             .items_end()
                             .justify_between()
                             .gap_4()
+                            .when(compact, |row| row.flex_col())
                             .child(
                                 div()
-                                    .flex_1()
                                     .min_w_0()
-                                    .max_w(relative(0.6))
+                                    .when(!compact, |panel| panel.w(px(520.)).max_w(relative(0.6)))
+                                    .when(compact, |panel| panel.w_full())
+                                    .p_4()
+                                    .rounded(cx.theme().radius_lg)
+                                    .bg(background.alpha(if self.appearance.fade_recents {
+                                        0.8
+                                    } else {
+                                        0.96
+                                    }))
                                     .flex()
                                     .flex_col()
                                     .items_start()
                                     .gap_2()
-                                    .child(
-                                        div()
-                                            .w_full()
-                                            .text_size(px(40.))
-                                            .line_height(relative(1.08))
-                                            .font_weight(FontWeight::BOLD)
-                                            .line_clamp(1)
-                                            .child(game.title().to_string()),
-                                    )
+                                    .child(recents_title(
+                                        "selected-recent-title".into(),
+                                        game.title(),
+                                        px(40.),
+                                        FontWeight::BOLD,
+                                        window,
+                                        cx,
+                                    ))
                                     .child(
                                         div()
                                             .flex()
                                             .items_center()
                                             .gap_2()
                                             .text_sm()
-                                            .child(div().size(px(8.)).rounded_full().bg(rgb(
-                                                if game.available { 0x53bf78 } else { 0xd6a15b },
-                                            )))
+                                            .child(div().size(px(8.)).rounded_full().bg(
+                                                if game.available {
+                                                    cx.theme().success
+                                                } else {
+                                                    cx.theme().warning
+                                                },
+                                            ))
                                             .child(if game.available {
                                                 "Ready to play"
                                             } else {
@@ -2066,6 +2135,11 @@ impl LauncherView {
                                     .flex_col()
                                     .items_end()
                                     .gap_3()
+                                    .p_3()
+                                    .rounded(cx.theme().radius_lg)
+                                    .when(!self.appearance.fade_recents, |controls| {
+                                        controls.bg(background.alpha(0.94))
+                                    })
                                     .child(
                                         div()
                                             .w(px(156.))
@@ -2113,26 +2187,29 @@ impl LauncherView {
                                                     .ghost()
                                                     .size(px(30.))
                                                     .rounded(px(15.))
-                                                    .icon(Icon::default().path(
-                                                        if self.carousel_paused {
-                                                            "icons/play.svg"
-                                                        } else {
-                                                            "icons/pause.svg"
-                                                        },
-                                                    ))
-                                                    .tooltip(if self.carousel_paused {
+                                                    .icon(Icon::default().path(if paused {
+                                                        "icons/play.svg"
+                                                    } else {
+                                                        "icons/pause.svg"
+                                                    }))
+                                                    .tooltip(if paused {
                                                         "Resume carousel"
                                                     } else {
                                                         "Pause carousel"
                                                     })
                                                     .bg(background.opacity(0.85))
                                                     .disabled(games.len() < 2)
-                                                    .on_click(cx.listener(|view, _, _, cx| {
-                                                        view.carousel_paused =
-                                                            !view.carousel_paused;
-                                                        view.carousel_tick = None;
-                                                        cx.notify();
-                                                    })),
+                                                    .on_click(cx.listener(
+                                                        |view, _, window, cx| {
+                                                            view.carousel_paused = !view
+                                                                .carousel_is_paused(window, cx);
+                                                            view.carousel_tick = None;
+                                                            if !view.carousel_paused {
+                                                                view.focus.focus(window);
+                                                            }
+                                                            cx.notify();
+                                                        },
+                                                    )),
                                             )
                                             .child(
                                                 Button::new("previous-recent")
@@ -2204,48 +2281,55 @@ impl LauncherView {
                                             ),
                                     ),
                             ),
-                    ),
-            )
-            .child(
-                div()
-                    .w_full()
-                    .flex_shrink_0()
-                    .px(px(32.))
-                    .pb_5()
-                    .pt_2()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .bg(background)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(
-                                if has_history {
-                                    "Recently played"
-                                } else {
-                                    "Ready to play"
-                                },
-                            ))
-                            .child(
-                                Button::new("recents-view-library")
-                                    .ghost()
-                                    .small()
-                                    .label("View library")
-                                    .icon(IconName::ArrowRight)
-                                    .on_click(cx.listener(|view, _, window, cx| {
-                                        view.switch_screen(StartScreen::Library, window, cx)
-                                    })),
-                            ),
                     )
                     .child(
                         div()
+                            .relative()
                             .w_full()
+                            .flex_shrink_0()
+                            .px(px(32.))
+                            .pb_5()
+                            .pt_2()
                             .flex()
+                            .flex_col()
+                            .items_start()
                             .gap_3()
-                            .children(games.into_iter().map(|game| self.recent_card(game, cx))),
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_3()
+                                    .px_3()
+                                    .py_1()
+                                    .rounded(cx.theme().radius)
+                                    .when(!self.appearance.fade_recents, |heading| {
+                                        heading.bg(background.alpha(0.94))
+                                    })
+                                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(
+                                        if has_history {
+                                            "Recently played"
+                                        } else {
+                                            "Ready to play"
+                                        },
+                                    ))
+                                    .child(
+                                        Button::new("recents-view-library")
+                                            .ghost()
+                                            .small()
+                                            .label("View library")
+                                            .icon(IconName::ArrowRight)
+                                            .on_click(cx.listener(|view, _, window, cx| {
+                                                view.switch_screen(StartScreen::Library, window, cx)
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div().w_full().flex().gap_3().children(
+                                    games
+                                        .into_iter()
+                                        .map(|game| self.recent_card(game, window, cx)),
+                                ),
+                            ),
                     ),
             )
             .into_any_element()
@@ -2521,28 +2605,23 @@ impl LauncherView {
             .relative()
             .size_full()
             .overflow_hidden()
-            .rounded(px(12.))
-            .bg(rgb(0x11191b))
-            .text_color(rgb(0xffffff))
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
             .child(div().absolute().size_full().child(match artwork {
-                Some(asset) => image(asset.image_path.clone(), ObjectFit::Cover).into_any_element(),
-                None => placeholder(game.title()).into_any_element(),
+                Some(asset) => {
+                    image(asset.image_path.clone(), ObjectFit::Cover, cx).into_any_element()
+                }
+                None => placeholder(game.title(), cx.theme().colors).into_any_element(),
             }))
             .when(
                 self.appearance.dither_artwork && artwork.is_some(),
                 |hero| hero.child(self.artwork_texture(window)),
             )
-            .child(
-                div()
-                    .absolute()
-                    .size_full()
-                    .rounded(px(12.))
-                    .bg(linear_gradient(
-                        180.,
-                        linear_color_stop(rgba(0x10181a00), 0.25),
-                        linear_color_stop(rgba(0x10181aff), 0.88),
-                    )),
-            )
+            .child(div().absolute().size_full().bg(linear_gradient(
+                180.,
+                linear_color_stop(cx.theme().background.alpha(0.), 0.25),
+                linear_color_stop(cx.theme().background, 0.88),
+            )))
             .when_some(game.artwork.get(&ArtworkKind::Logo), |hero, logo| {
                 hero.child(
                     div()
@@ -2551,7 +2630,7 @@ impl LauncherView {
                         .left_5()
                         .right_5()
                         .h(px(64.))
-                        .child(image(logo.image_path.clone(), ObjectFit::Contain)),
+                        .child(image(logo.image_path.clone(), ObjectFit::Contain, cx)),
                 )
             })
             .child(
@@ -2568,7 +2647,7 @@ impl LauncherView {
                             .px_3()
                             .py_1()
                             .rounded_lg()
-                            .bg(rgba(0x10181a99))
+                            .bg(cx.theme().popover.alpha(0.94))
                             .text_xs()
                             .child(source_name(&game.provider_id).to_string()),
                     )
@@ -2581,8 +2660,12 @@ impl LauncherView {
                             } else {
                                 IconName::StarOff
                             })
-                            .text_color(rgb(if favourite { 0xffa269 } else { 0xffffff }))
-                            .bg(rgba(0x10181a99))
+                            .text_color(if favourite {
+                                cx.theme().accent_foreground
+                            } else {
+                                cx.theme().foreground
+                            })
+                            .bg(cx.theme().popover.alpha(0.94))
                             .tooltip(if favourite {
                                 "Remove from favourites"
                             } else {
@@ -2627,7 +2710,7 @@ impl LauncherView {
                                     .ghost()
                                     .small()
                                     .icon(IconName::Ellipsis)
-                                    .text_color(rgb(0xffffff))
+                                    .text_color(cx.theme().foreground)
                                     .tooltip("Edit metadata, artwork or launch options")
                                     .on_click(cx.listener(|view, _, window, cx| {
                                         view.open_details(DetailTab::Metadata, window, cx)
@@ -2639,11 +2722,11 @@ impl LauncherView {
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(div().size(px(9.)).rounded_full().bg(rgb(if game.available {
-                                0x61d18a
+                            .child(div().size(px(9.)).rounded_full().bg(if game.available {
+                                cx.theme().success
                             } else {
-                                0xeaa65a
-                            })))
+                                cx.theme().warning
+                            }))
                             .child(div().text_xs().font_weight(FontWeight::MEDIUM).child(
                                 if game.available {
                                     "READY TO PLAY"
@@ -2655,7 +2738,7 @@ impl LauncherView {
                     .child(
                         div()
                             .text_sm()
-                            .text_color(rgb(0xb1b8b9))
+                            .text_color(cx.theme().muted_foreground)
                             .child(last_played(game)),
                     )
                     .when_some(metadata.description, |hero, description| {
@@ -2665,12 +2748,17 @@ impl LauncherView {
                                 .max_h(px(56.))
                                 .overflow_hidden()
                                 .text_sm()
-                                .text_color(rgb(0xd0d5d5))
+                                .text_color(cx.theme().foreground)
                                 .child(description),
                         )
                     })
                     .when_some(metadata.developer, |hero, developer| {
-                        hero.child(div().text_xs().text_color(rgb(0xb1b8b9)).child(developer))
+                        hero.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(developer),
+                        )
                     })
                     .child(self.start_button(game, cx))
                     .when(artwork.is_none(), |hero| {
@@ -2679,7 +2767,7 @@ impl LauncherView {
                                 .ghost()
                                 .small()
                                 .label("Choose artwork…")
-                                .text_color(rgb(0xffffff))
+                                .text_color(cx.theme().foreground)
                                 .on_click(cx.listener(|view, _, window, cx| {
                                     view.open_details(DetailTab::Artwork, window, cx)
                                 })),
@@ -2731,7 +2819,6 @@ impl LauncherView {
             .flex_shrink_0()
             .h_full()
             .bg(cx.theme().secondary.opacity(0.7))
-            .rounded(px(12.))
             .flex()
             .flex_col()
             .p_5()
@@ -2953,14 +3040,16 @@ impl LauncherView {
                                         .overflow_hidden()
                                         .bg(cx.theme().muted)
                                         .child(match candidate.preview_path {
-                                            Some(path) => {
-                                                image(path, ObjectFit::Contain).into_any_element()
-                                            }
-                                            None => placeholder(if self.artwork_job.is_some() {
-                                                "Loading preview…"
-                                            } else {
-                                                "Preview unavailable"
-                                            })
+                                            Some(path) => image(path, ObjectFit::Contain, cx)
+                                                .into_any_element(),
+                                            None => placeholder(
+                                                if self.artwork_job.is_some() {
+                                                    "Loading preview…"
+                                                } else {
+                                                    "Preview unavailable"
+                                                },
+                                                cx.theme().colors,
+                                            )
                                             .into_any_element(),
                                         }),
                                 )
@@ -3012,7 +3101,7 @@ impl LauncherView {
                     .rounded_md()
                     .overflow_hidden()
                     .bg(cx.theme().muted)
-                    .child(image(asset.thumbnail_path.clone(), ObjectFit::Contain)),
+                    .child(image(asset.thumbnail_path.clone(), ObjectFit::Contain, cx)),
             )
             .child(
                 div()
@@ -3050,6 +3139,17 @@ impl LauncherView {
             .contains("steamgriddb");
         let data_directory = self.snapshot.paths.data_directory.clone();
         let cache_directory = self.snapshot.paths.cache_directory.clone();
+        let theme_directory = data_directory.join("themes");
+        let catalog = cx.global::<theme::Catalog>();
+        let theme_names = catalog
+            .themes
+            .iter()
+            .map(|theme| theme.name.clone())
+            .collect::<Vec<_>>();
+        let theme_warnings = catalog.warnings.clone();
+        let theme_missing = !catalog.contains(&self.appearance.theme);
+        let selected_theme = self.appearance.theme.clone();
+        let view = cx.weak_entity();
         div()
             .id("settings-content")
             .w_full()
@@ -3085,7 +3185,7 @@ impl LauncherView {
                                         view.set_appearance(
                                             AppearanceSettings {
                                                 start_screen,
-                                                ..view.appearance
+                                                ..view.appearance.clone()
                                             },
                                             window,
                                             cx,
@@ -3103,7 +3203,7 @@ impl LauncherView {
                                 view.set_appearance(
                                     AppearanceSettings {
                                         dither_recents: *enabled,
-                                        ..view.appearance
+                                        ..view.appearance.clone()
                                     },
                                     window,
                                     cx,
@@ -3111,6 +3211,80 @@ impl LauncherView {
                             })),
                     )
                     .child(div().mt_3().child(eyebrow("APPEARANCE")))
+                    .child(
+                        Switch::new("recents-background-fade")
+                            .checked(self.appearance.fade_recents)
+                            .label("Fade Recents background")
+                            .disabled(!self.snapshot.ready)
+                            .on_click(cx.listener(|view, enabled, window, cx| {
+                                view.set_appearance(
+                                    AppearanceSettings {
+                                        fade_recents: *enabled,
+                                        ..view.appearance.clone()
+                                    },
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(
+                                Button::new("select-theme")
+                                    .label(self.appearance.theme.clone())
+                                    .min_w(px(180.))
+                                    .dropdown_caret(true)
+                                    .disabled(!self.snapshot.ready || self.themes_loading)
+                                    .dropdown_menu(move |mut menu, _, _| {
+                                        for name in &theme_names {
+                                            let view = view.clone();
+                                            let name = name.to_string();
+                                            menu = menu.item(
+                                                PopupMenuItem::new(name.clone())
+                                                    .checked(
+                                                        name.eq_ignore_ascii_case(&selected_theme),
+                                                    )
+                                                    .on_click(move |_, window, cx| {
+                                                        let _ = view.update(cx, |view, cx| {
+                                                            view.set_appearance(
+                                                                AppearanceSettings {
+                                                                    theme: name.clone(),
+                                                                    ..view.appearance.clone()
+                                                                },
+                                                                window,
+                                                                cx,
+                                                            );
+                                                            view.focus.focus(window);
+                                                        });
+                                                    }),
+                                            );
+                                        }
+                                        menu
+                                    }),
+                            )
+                            .child(
+                                Button::new("open-themes")
+                                    .label("Open themes directory")
+                                    .disabled(self.themes_loading)
+                                    .on_click(move |_, _, cx| cx.reveal_path(&theme_directory)),
+                            )
+                            .child(
+                                Button::new("reload-themes")
+                                    .label("Reload")
+                                    .icon(Icon::default().path("icons/refresh.svg"))
+                                    .disabled(self.themes_loading)
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.reload_themes(window, cx)
+                                    })),
+                            ),
+                    )
+                    .when(theme_missing && !self.themes_loading, |settings| {
+                        settings.child(hint("Selected theme unavailable; using Startpoint."))
+                    })
+                    .children(theme_warnings.iter().map(|warning| hint(warning)))
                     .child(
                         div().flex().gap_2().children(
                             [
@@ -3134,7 +3308,7 @@ impl LauncherView {
                                         view.set_appearance(
                                             AppearanceSettings {
                                                 mode,
-                                                ..view.appearance
+                                                ..view.appearance.clone()
                                             },
                                             window,
                                             cx,
@@ -3152,7 +3326,7 @@ impl LauncherView {
                                 view.set_appearance(
                                     AppearanceSettings {
                                         dither_artwork: *enabled,
-                                        ..view.appearance
+                                        ..view.appearance.clone()
                                     },
                                     window,
                                     cx,
@@ -3447,7 +3621,7 @@ impl LauncherView {
             .absolute()
             .inset_0()
             .occlude()
-            .bg(rgba(0x00000044))
+            .bg(cx.theme().overlay)
             .flex()
             .items_center()
             .justify_center()
@@ -3581,9 +3755,37 @@ impl LauncherView {
 
 impl Render for LauncherView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.screen == StartScreen::Recents && !self.settings_open {
+            let games = self.recent_games();
+            let next = games
+                .iter()
+                .position(|game| self.selected.as_ref() == Some(&game.id))
+                .and_then(|index| games.get((index + 1) % games.len()));
+            let resource = next.and_then(|game| {
+                game.artwork
+                    .get(&ArtworkKind::Background)
+                    .or_else(|| game.artwork.get(&ArtworkKind::Cover))
+                    .map(|asset| Resource::from(asset.image_path.clone()))
+            });
+            self.carousel_image_ready = resource.is_none_or(|resource| {
+                self.thumbnails
+                    .update(cx, |cache, cx| cache.load(&resource, window, cx).is_some())
+            });
+        }
         if let Some((_, started)) = self.sidebar_transition {
             if started.elapsed().as_secs_f32() >= 0.2 || appearance::reduced_motion() {
                 self.sidebar_transition = None;
+            } else {
+                window.request_animation_frame();
+            }
+        }
+        if let Some((_, started)) = &self.carousel_transition {
+            if started.elapsed() >= RECENTS_TRANSITION
+                || appearance::reduced_motion()
+                || self.screen != StartScreen::Recents
+                || self.settings_open
+            {
+                self.carousel_transition = None;
             } else {
                 window.request_animation_frame();
             }
@@ -3770,14 +3972,90 @@ fn hint(text: &str) -> impl IntoElement {
     div().text_xs().opacity(0.7).child(text.to_string())
 }
 
-fn image(path: PathBuf, fit: ObjectFit) -> Img {
+fn recents_title(
+    id: SharedString,
+    title: &str,
+    font_size: Pixels,
+    weight: FontWeight,
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement {
+    let title = SharedString::from(title.to_string());
+    let started = *window
+        .use_keyed_state(
+            (SharedString::from(format!("{id}-{title}")), 0usize),
+            cx,
+            |_, _| Instant::now(),
+        )
+        .read(cx);
+    let tooltip = title.clone();
+    let reduced_motion = appearance::reduced_motion();
+    div()
+        .id(id)
+        .w_full()
+        .h(font_size * 1.2)
+        .text_size(font_size)
+        .font_weight(weight)
+        .overflow_hidden()
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .child(
+            canvas(
+                move |_, window, _| {
+                    let style = window.text_style();
+                    window.text_system().shape_line(
+                        title.clone(),
+                        font_size,
+                        &[TextRun {
+                            len: title.len(),
+                            font: style.font(),
+                            color: style.color,
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        }],
+                        None,
+                    )
+                },
+                move |bounds, line, window, cx| {
+                    let overflow = f32::from((line.width - bounds.size.width).max(px(0.)));
+                    let mut offset = 0.;
+                    if overflow > 0. && !reduced_motion && window.is_window_active() {
+                        let travel = overflow / 28.;
+                        let elapsed = started.elapsed().as_secs_f32() % (2. * travel + 2.4);
+                        offset = if elapsed < 1.2 {
+                            0.
+                        } else if elapsed < travel + 1.2 {
+                            (elapsed - 1.2) * 28.
+                        } else if elapsed < travel + 2.4 {
+                            overflow
+                        } else {
+                            overflow - (elapsed - travel - 2.4) * 28.
+                        };
+                        window.request_animation_frame();
+                    }
+                    window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                        let _ = line.paint(
+                            bounds.origin - point(px(offset), px(0.)),
+                            bounds.size.height,
+                            window,
+                            cx,
+                        );
+                    });
+                },
+            )
+            .size_full(),
+        )
+}
+
+fn image(path: PathBuf, fit: ObjectFit, cx: &App) -> Img {
+    let colors = cx.theme().colors;
     img(path)
         .size_full()
         .object_fit(fit)
-        .with_fallback(|| placeholder("Image unavailable").into_any_element())
+        .with_fallback(move || placeholder("Image unavailable", colors).into_any_element())
 }
 
-fn placeholder(title: &str) -> impl IntoElement {
+fn placeholder(title: &str, colors: ThemeColor) -> impl IntoElement {
     div()
         .size_full()
         .flex()
@@ -3786,12 +4064,12 @@ fn placeholder(title: &str) -> impl IntoElement {
         .justify_center()
         .gap_5()
         .px_4()
-        .bg(rgb(0x24282d))
-        .child(div().w_6().h_1().bg(rgb(ACCENT)))
+        .bg(colors.muted)
+        .child(div().w_6().h_1().bg(colors.primary))
         .child(
             div()
                 .text_sm()
-                .text_color(rgb(0xb7bec4))
+                .text_color(colors.muted_foreground)
                 .text_center()
                 .child(title.to_string()),
         )
