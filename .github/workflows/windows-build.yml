@@ -1,0 +1,64 @@
+name: Windows test executable
+run-name: Windows executable — ${{ inputs.branch || github.ref_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to build (blank uses the selected workflow branch)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-msvc
+  RUSTFLAGS: -C target-feature=+crt-static
+
+jobs:
+  build:
+    name: Build Windows x64
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.branch || github.ref }}
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup toolchain install "$env:RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+
+      - name: Configure Windows SDK
+        id: environment
+        run: |
+          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\fxc.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $fxc) { throw "Windows SDK shader compiler fxc.exe was not found." }
+          "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
+          "compiler=$(rustc --version)" >> $env:GITHUB_OUTPUT
+          git log -1 --format="%H %s"
+
+      - name: Cache Rust build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-x64-static-release-${{ steps.environment.outputs.compiler }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Test workspace
+        run: cargo test --locked --workspace --release
+
+      - name: Build executable
+        run: cargo build --locked --release
+
+      - name: Upload executable
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: startpoint-windows-x64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/release/startpoint.exe
+          if-no-files-found: error
+          retention-days: 7

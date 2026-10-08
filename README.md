@@ -17,6 +17,11 @@ SteamGridDB artwork is optional; API keys stay in the OS credential store.
 
 On macOS without the Metal compiler, add `--features runtime-shaders` to Cargo commands.
 
+## Windows executable
+
+**Actions → Windows test executable → Run workflow**: choose a branch. For branches without the workflow, run from `main` and fill in `branch`.
+Download and extract the run's artifact for `startpoint.exe` (unsigned; retained seven days).
+
 ## Check
 
 ```sh
