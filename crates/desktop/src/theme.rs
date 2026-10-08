@@ -89,7 +89,7 @@ impl Catalog {
                     theme.name
                 )),
                 Ok(theme) => {
-                    catalog.files.insert(theme.name.to_lowercase(), path);
+                    catalog.files.insert(theme.name.to_ascii_lowercase(), path);
                     catalog.themes.push(theme);
                 }
                 Err(error) => catalog
@@ -130,7 +130,7 @@ impl Catalog {
         original_name: &str,
     ) -> Result<String, String> {
         let theme = parse(source)?;
-        let key = theme.name.to_lowercase();
+        let key = theme.name.to_ascii_lowercase();
         if self.contains(&theme.name)
             && (!self.files.contains_key(&key) || !theme.name.eq_ignore_ascii_case(original_name))
         {
@@ -392,6 +392,51 @@ fn custom_themes_inherit_defaults_and_validate_colors() {
     assert!(
         catalog
             .save(&directory, DEFAULT_THEME, "Startpoint")
+            .is_err()
+    );
+    for (name, size) in [("Å", 16.), ("å", 22.), ("K", 17.), ("K", 23.)] {
+        edited.name = name.into();
+        edited.themes[1].font_size = Some(size);
+        Catalog::load(&directory)
+            .save(
+                &directory,
+                &source(&edited).expect("serialize Unicode theme"),
+                "Startpoint",
+            )
+            .expect("save distinct Unicode theme");
+    }
+    let loaded = Catalog::load(&directory);
+    assert!(loaded.warnings.is_empty());
+    for (name, size) in [("Å", 16.), ("å", 22.), ("K", 17.), ("K", 23.)] {
+        assert_eq!(
+            loaded.configuration(name, ThemeMode::Dark).font_size,
+            Some(size)
+        );
+    }
+    edited.name = "å".into();
+    edited.themes[1].font_size = Some(24.);
+    let document = source(&edited).expect("serialize Unicode edit");
+    assert!(loaded.save(&directory, &document, "Å").is_err());
+    loaded
+        .save(&directory, &document, "å")
+        .expect("update the original Unicode theme");
+    let loaded = Catalog::load(&directory);
+    assert_eq!(
+        loaded.configuration("Å", ThemeMode::Dark).font_size,
+        Some(16.)
+    );
+    assert_eq!(
+        loaded.configuration("å", ThemeMode::Dark).font_size,
+        Some(24.)
+    );
+    edited.name = "k".into();
+    assert!(
+        loaded
+            .save(
+                &directory,
+                &source(&edited).expect("serialize ASCII collision"),
+                "Startpoint"
+            )
             .is_err()
     );
     fs::remove_dir_all(&directory).expect("remove test theme directory");

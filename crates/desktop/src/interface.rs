@@ -1,6 +1,6 @@
 use crate::{
     appearance,
-    image_cache::ThumbnailCache,
+    image_cache::ArtworkImageCache,
     theme,
     theme_editor::{Editor, EditorEvent},
 };
@@ -173,7 +173,8 @@ pub struct LauncherView {
     working_directory: Entity<InputState>,
     api_key: Entity<InputState>,
     artwork_search: Entity<InputState>,
-    thumbnails: Entity<ThumbnailCache>,
+    thumbnails: Entity<ArtworkImageCache>,
+    full_resolution_images: Entity<ArtworkImageCache>,
     focus: FocusHandle,
     list_scroll: UniformListScrollHandle,
     artwork_texture: Arc<Image>,
@@ -274,7 +275,10 @@ impl LauncherView {
                     .masked(true)
             }),
             artwork_search: text_input("Search SteamGridDB by game title", false, window, cx),
-            thumbnails: cx.new(ThumbnailCache::new),
+            thumbnails: cx
+                .new(|cx| ArtworkImageCache::new(96, 64 * 1024 * 1024, 640 * 960 * 4, cx)),
+            full_resolution_images: cx
+                .new(|cx| ArtworkImageCache::new(3, 128 * 1024 * 1024, 3840 * 2160 * 4, cx)),
             focus: cx.focus_handle(),
             list_scroll: UniformListScrollHandle::new(),
             artwork_texture: Arc::new(Image::from_bytes(
@@ -405,9 +409,11 @@ impl LauncherView {
                     });
                 }
             }
-            AppEvent::ArtworkCacheChanged => self
-                .thumbnails
-                .update(cx, |cache, cx| cache.invalidate_failed(window, cx)),
+            AppEvent::ArtworkCacheChanged => {
+                for cache in [&self.thumbnails, &self.full_resolution_images] {
+                    cache.update(cx, |cache, cx| cache.invalidate_failed(window, cx));
+                }
+            }
             AppEvent::SettingsChanged => {}
             AppEvent::JobChanged(job) => {
                 if Some(job.id) == self.appearance_job && !job.state.active() {
@@ -549,12 +555,19 @@ impl LauncherView {
     }
 
     fn ensure_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let games = self.displayed_games();
-        if !games
-            .iter()
-            .any(|game| self.selected.as_ref() == Some(&game.id))
-        {
-            if let Some(id) = games.first().map(|game| game.id.clone()) {
+        let preserve_selected = self.detail_tab != DetailTab::Overview
+            && self
+                .snapshot
+                .games
+                .iter()
+                .any(|game| self.selected.as_ref() == Some(&game.id));
+        let selected = reconciled_selection(
+            self.selected.as_ref(),
+            self.displayed_games().into_iter().map(|game| &game.id),
+            preserve_selected,
+        );
+        if self.selected != selected {
+            if let Some(id) = selected {
                 self.select_game(id, window, cx);
             } else {
                 self.selected = None;
@@ -1600,10 +1613,8 @@ impl LauncherView {
         if self.theme_editor.is_some() || self.themes_loading {
             return;
         }
-        self.settings_open = false;
-        self.screen = StartScreen::Recents;
+        self.switch_screen(StartScreen::Recents, window, cx);
         self.customization_open = true;
-        self.ensure_selection(window, cx);
         let selected = self.appearance.theme.clone();
         let directory = self.snapshot.paths.data_directory.join("themes");
         let editor = cx.new(|cx| Editor::new(&selected, directory, window, cx));
@@ -2271,6 +2282,7 @@ impl LauncherView {
             .get(&ArtworkKind::Background)
             .or_else(|| game.artwork.get(&ArtworkKind::Cover));
         div()
+            .image_cache(self.full_resolution_images.clone())
             .absolute()
             .inset_0()
             .overflow_hidden()
@@ -2930,6 +2942,7 @@ impl LauncherView {
         let favourite_id = game.id.clone();
         let favourite = game.favourite;
         div()
+            .image_cache(self.full_resolution_images.clone())
             .relative()
             .size_full()
             .overflow_hidden()
@@ -4720,7 +4733,7 @@ impl Render for LauncherView {
                     .map(|asset| Resource::from(asset.image_path.clone()))
             });
             self.carousel_image_ready = resource.is_none_or(|resource| {
-                self.thumbnails
+                self.full_resolution_images
                     .update(cx, |cache, cx| cache.load(&resource, window, cx).is_some())
             });
         }
@@ -4873,6 +4886,53 @@ impl Render for LauncherView {
                 view.child(self.command_bar(cx))
             })
     }
+}
+
+fn reconciled_selection<'a>(
+    selected: Option<&GameId>,
+    displayed: impl Iterator<Item = &'a GameId>,
+    preserve_selected: bool,
+) -> Option<GameId> {
+    if preserve_selected {
+        return selected.cloned();
+    }
+    let mut first = None;
+    for id in displayed {
+        if Some(id) == selected {
+            return Some(id.clone());
+        }
+        first.get_or_insert(id);
+    }
+    first.cloned()
+}
+
+#[cfg(test)]
+#[::core::prelude::v1::test]
+fn filtered_selection_preserves_the_editor_owner_until_it_is_removed() {
+    let edited = GameId("manual:edited".into());
+    let other = GameId("manual:other".into());
+    for displayed in [vec![&other], Vec::new(), vec![&other, &edited]] {
+        assert_eq!(
+            reconciled_selection(Some(&edited), displayed.into_iter(), true),
+            Some(edited.clone())
+        );
+    }
+    assert_eq!(
+        reconciled_selection(Some(&edited), [&other].into_iter(), false),
+        Some(other.clone())
+    );
+    assert_eq!(
+        reconciled_selection(Some(&edited), [&other, &edited].into_iter(), false),
+        Some(edited.clone())
+    );
+    assert_eq!(
+        reconciled_selection(Some(&edited), std::iter::empty(), false),
+        None
+    );
+    assert_eq!(
+        reconciled_selection(None, [&other].into_iter(), false),
+        Some(other)
+    );
 }
 
 fn text_input<T: 'static>(

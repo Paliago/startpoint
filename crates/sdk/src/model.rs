@@ -10,21 +10,21 @@ pub type JobId = u64;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct GameId(pub String);
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutableLaunch {
     pub executable: PathBuf,
     pub arguments: Vec<String>,
     pub working_directory: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LaunchTarget {
     Uri(String),
     Executable(ExecutableLaunch),
     ApplicationBundle(ExecutableLaunch),
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserMetadata {
     pub title: Option<String>,
     pub description: Option<String>,
@@ -51,7 +51,7 @@ impl ArtworkKind {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtworkAsset {
     pub id: String,
     pub kind: ArtworkKind,
@@ -71,7 +71,7 @@ pub struct DiscoveredGame {
     pub local_cover: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Game {
     pub id: GameId,
     pub provider_id: String,

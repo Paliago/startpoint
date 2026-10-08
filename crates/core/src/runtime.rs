@@ -298,7 +298,12 @@ impl Shared {
     fn initialize(&self) -> Result<(), ApiError> {
         let paths = self.snapshot().paths;
         let store = Store::open(&paths)?;
-        let games = store.games()?;
+        let games: BTreeMap<_, _> = store
+            .games()?
+            .into_iter()
+            .map(|game| (game.id.clone(), game))
+            .collect();
+        let library = sorted_library(games.values().cloned().collect());
         let activity = store.activity()?;
         let journal = store.journal()?;
         let steam_directory = store.setting("steam_directory")?.flatten();
@@ -343,10 +348,7 @@ impl Shared {
             .lock()
             .map_err(|_| ApiError::Storage("The database worker failed".into()))? = Some(store);
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.games = games
-            .into_iter()
-            .map(|game| (game.id.clone(), game))
-            .collect();
+        state.games = games;
         state.snapshot.settings = SettingsSnapshot {
             steam_directory,
             epic_directory,
@@ -358,7 +360,7 @@ impl Shared {
         state.snapshot.ready = true;
         state.snapshot.activity = Arc::new(activity);
         state.snapshot.journal = Arc::new(journal);
-        rebuild_library(&mut state);
+        state.snapshot.games = library;
         drop(state);
         self.publish(AppEvent::LibraryChanged);
         let mut settings = self.snapshot().settings;
@@ -473,16 +475,29 @@ impl Shared {
         id: &GameId,
         update: impl FnOnce(&mut Game) -> Result<(), ApiError>,
     ) -> Result<(), ApiError> {
-        self.store(|store| {
-            let mut game = self.game(id)?;
+        let changed = self.store(|store| {
+            let previous = self.snapshot().games;
+            let original = previous
+                .iter()
+                .find(|game| &game.id == id)
+                .ok_or(ApiError::NotFound)?;
+            let mut game = original.clone();
             update(&mut game)?;
+            if game == *original {
+                return Ok(false);
+            }
             store.save_games(std::slice::from_ref(&game))?;
+            let library = updated_library(&previous, &game);
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            state.games.insert(id.clone(), game);
-            rebuild_library(&mut state);
-            Ok(())
+            let replaced = state.games.insert(id.clone(), game);
+            state.snapshot.games = library;
+            drop(state);
+            drop(replaced);
+            Ok(true)
         })?;
-        self.publish(AppEvent::LibraryChanged);
+        if changed {
+            self.publish(AppEvent::LibraryChanged);
+        }
         Ok(())
     }
 
@@ -649,9 +664,11 @@ impl Shared {
                 };
                 self.store(|store| {
                     store.save_games(std::slice::from_ref(&game))?;
+                    let previous = self.snapshot().games;
+                    let library = updated_library(&previous, &game);
                     let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
                     state.games.insert(id.clone(), game);
-                    rebuild_library(&mut state);
+                    state.snapshot.games = library;
                     Ok(())
                 })?;
                 self.publish(AppEvent::LibraryChanged);
@@ -669,11 +686,18 @@ impl Shared {
                         ));
                     }
                     store.remove_game(&game_id.0)?;
+                    let previous = self.snapshot().games;
+                    let mut games = previous.as_ref().clone();
+                    games.retain(|game| game.id != game_id);
+                    let journal = Arc::new(store.journal()?);
+                    let activity = Arc::new(store.activity()?);
                     let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-                    state.games.remove(&game_id);
-                    state.snapshot.journal = Arc::new(store.journal()?);
-                    state.snapshot.activity = Arc::new(store.activity()?);
-                    rebuild_library(&mut state);
+                    let removed = state.games.remove(&game_id);
+                    state.snapshot.games = Arc::new(games);
+                    state.snapshot.journal = journal;
+                    state.snapshot.activity = activity;
+                    drop(state);
+                    drop(removed);
                     Ok(())
                 })?;
                 self.publish(AppEvent::LibraryChanged);
@@ -1183,79 +1207,120 @@ impl Shared {
         for provider in &self.discovery {
             context.checkpoint()?;
             let descriptor = provider.descriptor();
-            let report = provider.discover(&settings, context)?;
+            let report =
+                match catch_unwind(AssertUnwindSafe(|| provider.discover(&settings, context)))
+                    .unwrap_or_else(|_| {
+                        Err(ApiError::Provider("Discovery failed unexpectedly".into()))
+                    }) {
+                    Ok(report) => report,
+                    Err(ApiError::Cancelled) => return Err(ApiError::Cancelled),
+                    Err(error) => {
+                        warnings.push(format!(
+                            "{} discovery failed; saved games retained: {error}",
+                            descriptor.name
+                        ));
+                        continue;
+                    }
+                };
+            if report
+                .games
+                .iter()
+                .any(|game| game.source_game_id.is_empty() || game.source_game_id.len() > 512)
+            {
+                warnings.push(format!(
+                    "{} returned an invalid game identifier; saved games retained",
+                    descriptor.name
+                ));
+                continue;
+            }
             warnings.extend(report.warnings);
             context.checkpoint()?;
-            self.store(|store| {
-                let mut games = self
-                    .state
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .games
-                    .clone();
+            let changed = self.store(|store| {
+                let previous = self.snapshot().games;
+                let mut games = previous.as_ref().clone();
+                let mut positions: BTreeMap<_, _> = games
+                    .iter()
+                    .enumerate()
+                    .map(|(index, game)| (game.id.clone(), index))
+                    .collect();
                 if report.complete {
                     for game in games
-                        .values_mut()
+                        .iter_mut()
                         .filter(|game| game.provider_id == descriptor.id)
                     {
                         game.available = false;
                     }
                 }
                 for (index, discovered) in report.games.into_iter().enumerate() {
-                    if discovered.source_game_id.is_empty() || discovered.source_game_id.len() > 512
-                    {
-                        return Err(ApiError::Validation(
-                            "A discovery provider returned an invalid game identifier".into(),
-                        ));
-                    }
+                    context.checkpoint()?;
                     let id = GameId(format!("{}:{}", descriptor.id, discovered.source_game_id));
                     if let Some(path) = discovered.local_cover {
                         local_covers.push((id.clone(), path));
                     }
-                    if let Some(game) = games.get_mut(&id) {
+                    if let Some(position) = positions.get(&id) {
+                        let game = &mut games[*position];
                         game.discovered_title = discovered.title;
                         game.install_directory = discovered.install_directory;
                         game.default_launch = discovered.launch_target;
                         game.available = true;
                     } else {
-                        games.insert(
-                            id.clone(),
-                            Game {
-                                id,
-                                provider_id: descriptor.id.clone(),
-                                source_game_id: discovered.source_game_id,
-                                discovered_title: discovered.title,
-                                install_directory: discovered.install_directory,
-                                default_launch: discovered.launch_target,
-                                launch_override: None,
-                                metadata: UserMetadata::default(),
-                                catalogue_metadata: UserMetadata::default(),
-                                favourite: false,
-                                available: true,
-                                collections: BTreeSet::new(),
-                                completed: false,
-                                last_launched: if descriptor.id == "example" {
-                                    Some(now().saturating_sub(
-                                        (u64::try_from(index).unwrap_or_default() + 1) * 86_400,
-                                    ))
-                                } else {
-                                    None
-                                },
-                                artwork: BTreeMap::new(),
-                                artwork_history: Vec::new(),
-                                artwork_game_ids: BTreeMap::new(),
+                        positions.insert(id.clone(), games.len());
+                        games.push(Game {
+                            id,
+                            provider_id: descriptor.id.clone(),
+                            source_game_id: discovered.source_game_id,
+                            discovered_title: discovered.title,
+                            install_directory: discovered.install_directory,
+                            default_launch: discovered.launch_target,
+                            launch_override: None,
+                            metadata: UserMetadata::default(),
+                            catalogue_metadata: UserMetadata::default(),
+                            favourite: false,
+                            available: true,
+                            collections: BTreeSet::new(),
+                            completed: false,
+                            last_launched: if descriptor.id == "example" {
+                                Some(now().saturating_sub(
+                                    (u64::try_from(index).unwrap_or_default() + 1) * 86_400,
+                                ))
+                            } else {
+                                None
                             },
-                        );
+                            artwork: BTreeMap::new(),
+                            artwork_history: Vec::new(),
+                            artwork_game_ids: BTreeMap::new(),
+                        });
                     }
                 }
-                store.save_games(&games.values().cloned().collect::<Vec<_>>())?;
+                context.checkpoint()?;
+                if games == *previous {
+                    return Ok(false);
+                }
+                let changes: Vec<_> = games
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, game)| previous.get(*index) != Some(*game))
+                    .map(|(_, game)| game.clone())
+                    .collect();
+                store.save_games(&changes)?;
+                let library = sorted_library(games);
+                let games = library
+                    .iter()
+                    .cloned()
+                    .map(|game| (game.id.clone(), game))
+                    .collect();
                 let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-                state.games = games;
-                rebuild_library(&mut state);
-                Ok(())
+                let replaced = std::mem::replace(&mut state.games, games);
+                state.snapshot.games = library;
+                drop(state);
+                drop(replaced);
+                Ok(true)
             })?;
-            self.publish(AppEvent::LibraryChanged);
+            if changed {
+                self.publish(AppEvent::LibraryChanged);
+            }
         }
+        context.checkpoint()?;
         let artwork_enabled = self.artwork_provider("steamgriddb").is_ok()
             && self
                 .credentials
@@ -1304,6 +1369,7 @@ impl Shared {
             .iter()
             .filter(|game| game.provider_id == "manual")
         {
+            context.checkpoint()?;
             let available = match &game.default_launch {
                 LaunchTarget::Executable(launch) | LaunchTarget::ApplicationBundle(launch) => {
                     launch.executable.exists()
@@ -1339,6 +1405,7 @@ impl Shared {
         if artwork_enabled {
             self.populate_library(context)?;
         }
+        context.checkpoint()?;
         if !warnings.is_empty() {
             context.report(warnings.join("\n"));
         } else {
@@ -1353,10 +1420,14 @@ impl Shared {
             let timestamp = now();
             game.last_launched = Some(timestamp);
             let activity = store.record_launch(&game, timestamp)?;
+            let previous = self.snapshot().games;
+            let library = updated_library(&previous, &game);
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-            state.games.insert(game_id.clone(), game);
+            let replaced = state.games.insert(game_id.clone(), game);
             state.snapshot.activity = Arc::new(activity);
-            rebuild_library(&mut state);
+            state.snapshot.games = library;
+            drop(state);
+            drop(replaced);
             Ok(())
         })?;
         self.publish(AppEvent::LibraryChanged);
@@ -1519,10 +1590,27 @@ impl Drop for RefreshGuard<'_> {
     }
 }
 
-fn rebuild_library(state: &mut State) {
-    let mut games: Vec<_> = state.games.values().cloned().collect();
-    games.sort_by_cached_key(|game| game.title().to_lowercase());
-    state.snapshot.games = Arc::new(games);
+fn sorted_library(mut games: Vec<Game>) -> Arc<Vec<Game>> {
+    games.sort_by_cached_key(|game| (game.title().to_lowercase(), game.id.clone()));
+    Arc::new(games)
+}
+
+fn updated_library(previous: &[Game], game: &Game) -> Arc<Vec<Game>> {
+    // ponytail: value-based SDK snapshots require O(n) copying; use per-game Arc handles if profiling warrants an API change.
+    let mut games = previous.to_vec();
+    let needs_sort = if let Some(index) = games.iter().position(|current| current.id == game.id) {
+        let title_changed = games[index].title() != game.title();
+        games[index] = game.clone();
+        title_changed
+    } else {
+        games.push(game.clone());
+        true
+    };
+    if needs_sort {
+        sorted_library(games)
+    } else {
+        Arc::new(games)
+    }
 }
 
 fn select_asset(game: &mut Game, mut asset: ArtworkAsset) {
@@ -1572,7 +1660,7 @@ mod tests {
 
     #[test]
     fn local_store_discovery_preserves_edits_and_handles_partial_scans() {
-        use crate::{EpicProvider, GogProvider};
+        use crate::{EpicProvider, GogProvider, SteamProvider};
         let directory = std::env::temp_dir()
             .join("startpoint-discovery")
             .join(uuid::Uuid::new_v4().to_string());
@@ -1580,13 +1668,29 @@ mod tests {
         let epic_installation = directory.join("Epic game");
         let gog_directory = directory.join("GOG Games");
         let gog_installation = gog_directory.join("GOG game");
+        let steam_directory = directory.join("Steam");
         for path in [
             &epic_directory,
             &epic_installation,
             &gog_installation.join("bin"),
+            &steam_directory.join("steamapps/common/Steam game"),
         ] {
             std::fs::create_dir_all(path).expect("installation directory");
         }
+        let steam_libraries = steam_directory.join("steamapps/libraryfolders.vdf");
+        std::fs::write(
+            &steam_libraries,
+            format!(
+                "\"libraryfolders\" {{ \"0\" {{ \"path\" \"{}\" }} }}",
+                steam_directory.to_string_lossy().replace('\\', "\\\\")
+            ),
+        )
+        .expect("Steam libraries");
+        std::fs::write(
+            steam_directory.join("steamapps/appmanifest_123.acf"),
+            r#""AppState" { "appid" "123" "name" "Steam game" "installdir" "Steam game" "StateFlags" "4" }"#,
+        )
+        .expect("Steam installation record");
         std::fs::write(gog_installation.join("bin/game.exe"), b"").expect("local executable");
         let epic_record = epic_directory.join("game.item");
         let mut epic_document = serde_json::json!({
@@ -1761,15 +1865,32 @@ mod tests {
             data_directory: directory.join("data"),
             cache_directory: directory.join("cache"),
         };
+        let store = Store::open(&paths).expect("discovery settings store");
+        store
+            .save_setting("steam_directory", &Some(steam_directory))
+            .expect("isolated Steam directory");
+        drop(store);
         let api = LauncherBuilder::new()
+            .discovery_provider(SteamProvider)
             .discovery_provider(EpicProvider)
             .discovery_provider(GogProvider)
             .build(paths.clone())
             .expect("store application");
         let events = api.subscribe();
         let game_id = GameId("epic:ExampleGame".into());
-        for step in 0..14 {
+        let manual_executable = directory.join("manual.exe");
+        std::fs::write(&manual_executable, b"").expect("manual installation");
+        for step in 0..17 {
             if step == 9 {
+                std::fs::write(&steam_libraries, b"{").expect("unreadable Steam libraries");
+                let snapshot = api.snapshot();
+                let cover = snapshot
+                    .games
+                    .iter()
+                    .find(|game| game.id == game_id)
+                    .and_then(|game| game.artwork.get(&ArtworkKind::Cover))
+                    .expect("saved cover");
+                std::fs::remove_file(&cover.thumbnail_path).expect("discard disposable thumbnail");
                 epic_document["DisplayName"] = "Updated Epic title".into();
                 std::fs::write(
                     &epic_record,
@@ -1792,6 +1913,10 @@ mod tests {
                 std::fs::remove_file(gog_installation.join("goggame-broken.info"))
                     .expect("remove malformed GOG record");
             }
+            if step == 15 {
+                std::fs::remove_file(&manual_executable).expect("remove manual installation");
+            }
+            let previous_library = api.snapshot().games;
             let command = match step {
                 0 => Command::SetEpicDirectory {
                     directory: Some(epic_directory.clone()),
@@ -1799,7 +1924,7 @@ mod tests {
                 1 => Command::SetGogDirectory {
                     directory: Some(gog_directory.clone()),
                 },
-                2 | 9..=11 => Command::RefreshLibrary,
+                2 | 9..=11 | 15 => Command::RefreshLibrary,
                 3 => Command::UpdateMetadata {
                     game_id: game_id.clone(),
                     metadata: UserMetadata {
@@ -1837,8 +1962,26 @@ mod tests {
                 12 => Command::SetEpicDirectory {
                     directory: Some(std::path::PathBuf::from("relative")),
                 },
-                _ => Command::SetGogDirectory {
+                13 => Command::SetGogDirectory {
                     directory: Some(directory.join("missing")),
+                },
+                14 => Command::AddManualGame {
+                    title: "Manual game".into(),
+                    launch: ExecutableLaunch {
+                        executable: manual_executable.clone(),
+                        arguments: Vec::new(),
+                        working_directory: None,
+                    },
+                },
+                _ => Command::RemoveManualGame {
+                    game_id: api
+                        .snapshot()
+                        .games
+                        .iter()
+                        .find(|game| game.provider_id == "manual")
+                        .expect("saved manual game")
+                        .id
+                        .clone(),
                 },
             };
             let job_id = api.submit(command).expect("queued discovery command");
@@ -1849,7 +1992,7 @@ mod tests {
                     Ok(AppEvent::JobChanged(job)) if job.id == job_id && !job.state.active() => {
                         assert_eq!(
                             job.state,
-                            if step < 12 {
+                            if !matches!(step, 12..=13) {
                                 JobState::Completed
                             } else {
                                 JobState::Failed
@@ -1857,16 +2000,57 @@ mod tests {
                             "{:?}",
                             job.error
                         );
+                        if matches!(step, 9..=11 | 15) {
+                            assert!(
+                                job.label.contains("Steam discovery failed"),
+                                "{}",
+                                job.label
+                            );
+                        }
                         break;
                     }
                     Ok(_) => {}
                     Err(_) => std::thread::sleep(Duration::from_millis(2)),
                 }
             }
+            if step == 9 {
+                let snapshot = api.snapshot();
+                let game = snapshot
+                    .games
+                    .iter()
+                    .find(|game| game.id == game_id)
+                    .expect("updated Epic game after Steam failed");
+                assert_eq!(game.discovered_title, "Updated Epic title");
+                assert!(game.artwork[&ArtworkKind::Cover].thumbnail_path.is_file());
+                assert_eq!(
+                    snapshot
+                        .games
+                        .iter()
+                        .find(|game| game.provider_id == "steam"),
+                    previous_library
+                        .iter()
+                        .find(|game| game.provider_id == "steam")
+                );
+            }
+            if step == 15 {
+                assert!(
+                    !api.snapshot()
+                        .games
+                        .iter()
+                        .find(|game| game.provider_id == "manual")
+                        .expect("manual maintenance after Steam failed")
+                        .available
+                );
+            }
         }
         let snapshot = api.snapshot();
-        assert_eq!(snapshot.games.len(), 2);
-        assert!(snapshot.games.iter().all(|game| !game.available));
+        assert_eq!(snapshot.games.len(), 3);
+        assert!(
+            snapshot
+                .games
+                .iter()
+                .all(|game| game.available == (game.provider_id == "steam"))
+        );
         let game = snapshot
             .games
             .iter()
@@ -1897,7 +2081,7 @@ mod tests {
             reopened.snapshot().settings.gog_directory,
             Some(gog_directory)
         );
-        assert_eq!(reopened.snapshot().games.len(), 2);
+        assert_eq!(reopened.snapshot().games.len(), 3);
     }
 
     #[test]
@@ -1933,7 +2117,8 @@ mod tests {
             .expect("application");
         let events = api.subscribe();
         let executable = std::env::current_exe().expect("test executable");
-        for step in 0..23 {
+        for step in 0..24 {
+            let previous_library = api.snapshot().games;
             let game_id = api
                 .snapshot()
                 .games
@@ -1957,7 +2142,7 @@ mod tests {
                         ..UserMetadata::default()
                     },
                 },
-                2 => Command::SetFavourite {
+                2 | 23 => Command::SetFavourite {
                     game_id,
                     favourite: true,
                 },
@@ -2054,7 +2239,7 @@ mod tests {
                     Ok(AppEvent::JobChanged(job)) if job.id == job_id && !job.state.active() => {
                         assert_eq!(
                             job.state,
-                            if step < 7 || matches!(step, 15..=17 | 21..=22) {
+                            if step < 7 || matches!(step, 15..=17 | 21..=23) {
                                 JobState::Completed
                             } else {
                                 JobState::Failed
@@ -2068,11 +2253,29 @@ mod tests {
                     Err(_) => std::thread::sleep(Duration::from_millis(2)),
                 }
             }
+            if matches!(step, 4 | 23) {
+                assert!(Arc::ptr_eq(&previous_library, &api.snapshot().games));
+            }
+            if step == 1 {
+                assert_eq!(previous_library[0].title(), "Original title");
+                assert_eq!(api.snapshot().games[0].title(), "Edited title");
+            }
         }
         let saved = api.snapshot().games.first().cloned().expect("saved game");
         assert_eq!(saved.title(), "Edited title");
         assert_eq!(saved.discovered_title, "Original title");
         let mut enriched = saved.clone();
+        enriched.id = GameId("manual:enriched".into());
+        enriched.metadata.title = Some("A first game".into());
+        let library = updated_library(std::slice::from_ref(&saved), &enriched);
+        assert_eq!(library[0].id, enriched.id);
+        assert_eq!(library[1], saved);
+        enriched.metadata.title = Some("Z last game".into());
+        let renamed = updated_library(&library, &enriched);
+        assert_eq!(renamed[0], saved);
+        assert_eq!(renamed[1].id, enriched.id);
+        assert_eq!(library[0].title(), "A first game");
+        enriched.metadata = saved.metadata.clone();
         enriched.catalogue_metadata = UserMetadata {
             title: Some("Catalogue title".into()),
             description: Some("Catalogue description".into()),

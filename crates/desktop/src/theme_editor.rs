@@ -49,7 +49,7 @@ impl Editor {
         let mode = cx.theme().mode;
         let configuration = catalog.configuration(selected, mode);
         let mut name = selected.to_string();
-        if !catalog.files.contains_key(&selected.to_lowercase()) {
+        if !catalog.files.contains_key(&selected.to_ascii_lowercase()) {
             name = format!("{selected} Custom");
             let mut suffix = 2;
             while catalog.contains(&name) {
