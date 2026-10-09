@@ -6,8 +6,10 @@ use crate::{
 };
 use chrono::{Datelike, Local, Months, NaiveDate, TimeZone};
 use gpui::{prelude::*, *};
+#[cfg(not(target_os = "windows"))]
+use gpui_component::TitleBar;
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, ThemeColor, TitleBar,
+    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, ThemeColor,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu, PopupMenuItem},
@@ -30,6 +32,119 @@ use std::{
 const HEADER_HEIGHT: f32 = 44.;
 const RECENTS_INTERVAL: Duration = Duration::from_secs(8);
 const RECENTS_TRANSITION: Duration = Duration::from_millis(240);
+
+#[derive(IntoElement)]
+struct LauncherTitleBar {
+    content: AnyElement,
+}
+
+impl RenderOnce for LauncherTitleBar {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        #[cfg(target_os = "windows")]
+        {
+            div()
+                .id("title-bar")
+                .w_full()
+                .h(px(HEADER_HEIGHT))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .bg(cx.theme().title_bar)
+                .child(
+                    div()
+                        .id("title-bar-content")
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .window_control_area(WindowControlArea::Drag)
+                        .child(self.content),
+                )
+                .into_any_element()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = cx;
+            TitleBar::new()
+                .h(px(HEADER_HEIGHT))
+                .pl(px(8.))
+                .pr(px(8.))
+                .border_0()
+                .child(self.content)
+                .into_any_element()
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_window_controls(window: &Window, cx: &App) -> impl IntoElement {
+    let maximized = window.is_maximized();
+    div()
+        .id("windows-window-controls")
+        .h(px(32.))
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap(px(2.))
+        .children(
+            [
+                (
+                    "window-minimize",
+                    IconName::WindowMinimize,
+                    WindowControlArea::Min,
+                ),
+                (
+                    "window-maximize",
+                    if maximized {
+                        IconName::WindowRestore
+                    } else {
+                        IconName::WindowMaximize
+                    },
+                    WindowControlArea::Max,
+                ),
+                (
+                    "window-close",
+                    IconName::WindowClose,
+                    WindowControlArea::Close,
+                ),
+            ]
+            .into_iter()
+            .map(|(id, icon, area)| {
+                let close = matches!(area, WindowControlArea::Close);
+                div()
+                    .id(id)
+                    .size(px(32.))
+                    .rounded(px(6.))
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_center()
+                    .text_color(cx.theme().foreground)
+                    .hover(|style| {
+                        style
+                            .bg(if close {
+                                cx.theme().danger
+                            } else {
+                                cx.theme().secondary_hover
+                            })
+                            .text_color(if close {
+                                cx.theme().danger_foreground
+                            } else {
+                                cx.theme().secondary_foreground
+                            })
+                    })
+                    .active(|style| {
+                        style.bg(if close {
+                            cx.theme().danger_active
+                        } else {
+                            cx.theme().secondary_active
+                        })
+                    })
+                    // Native hit testing preserves caption actions and Windows Snap Layouts.
+                    .window_control_area(area)
+                    .child(Icon::new(icon).small())
+            }),
+        )
+}
 
 actions!(
     startpoint,
@@ -2761,197 +2876,191 @@ impl LauncherView {
                         }
                     }))
             })
-            .child(
-                TitleBar::new()
-                    .h(px(HEADER_HEIGHT))
-                    .pl(px(8.))
-                    .pr(px(8.))
-                    .border_0()
+            .child(LauncherTitleBar {
+                content: div()
+                    .w_full()
+                    .h_full()
+                    .flex()
+                    .items_center()
                     .child(
                         div()
-                            .w_full()
-                            .h_full()
+                            .id("window-control-island")
+                            .occlude()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .relative()
+                            .h(px(36.))
+                            .flex_shrink_0()
                             .flex()
                             .items_center()
+                            .px(px(6.))
                             .child(
                                 div()
-                                    .id("window-control-island")
-                                    .occlude()
-                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .on_mouse_up(MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .on_click(|_, _, cx| cx.stop_propagation())
-                                    .relative()
-                                    .h(px(36.))
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .items_center()
-                                    .px(px(6.))
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .inset_0()
-                                            .rounded(px(12.))
-                                            .bg(cx.theme().secondary)
-                                            .shadow_sm()
-                                            .opacity(1. - sidebar),
-                                    )
-                                    .child(div().w(px(inset)).flex_shrink_0())
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(2.))
-                                            .child(
-                                                self.toolbar_button(
-                                                    "toggle-sources",
-                                                    IconName::PanelLeft,
-                                                    "Toggle sidebar",
-                                                )
-                                                .disabled(
-                                                    !self.snapshot.ready
-                                                        || self.command_mode.is_some(),
-                                                )
-                                                .on_click(cx.listener(|view, _, window, cx| {
-                                                    view.toggle_sidebar(&ToggleSidebar, window, cx)
-                                                })),
-                                            )
-                                            .child(
-                                                self.toolbar_button(
-                                                    "navigation-back",
-                                                    IconName::ArrowLeft,
-                                                    "Back",
-                                                )
-                                                .disabled(
-                                                    self.command_mode.is_some()
-                                                        || (!self.settings_open
-                                                            && !self.customization_open
-                                                            && self.theme_editor.is_none()
-                                                            && self.detail_tab
-                                                                == DetailTab::Overview),
-                                                )
-                                                .on_click(cx.listener(|view, _, window, cx| {
-                                                    view.dismiss(&DismissPanel, window, cx)
-                                                })),
-                                            )
-                                            .child(
-                                                self.toolbar_button(
-                                                    "open-commands",
-                                                    IconName::Search,
-                                                    "Search games or actions",
-                                                )
-                                                .on_click(cx.listener(|view, _, window, cx| {
-                                                    view.open_commands(&OpenCommands, window, cx)
-                                                })),
-                                            )
-                                            .child(
-                                                self.toolbar_button(
-                                                    "open-settings",
-                                                    IconName::Settings,
-                                                    "Settings",
-                                                )
-                                                .on_click(cx.listener(|view, _, window, cx| {
-                                                    view.open_settings(&OpenSettings, window, cx)
-                                                })),
-                                            ),
-                                    ),
-                            )
-                            .child(div().w(px(clearance)).flex_shrink_0())
-                            .when(!self.settings_open, |bar| {
-                                bar.child(self.navigation_bar(cx))
-                            })
-                            .when(self.settings_open, |bar| {
-                                bar.child(
-                                    div()
-                                        .text_sm()
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .child("Settings"),
-                                )
-                            })
-                            .child(div().flex_1())
-                            .child(
-                                div()
-                                    .id("library-controls")
-                                    .occlude()
-                                    .h(px(36.))
-                                    .px(px(6.))
+                                    .absolute()
+                                    .inset_0()
                                     .rounded(px(12.))
                                     .bg(cx.theme().secondary)
+                                    .shadow_sm()
+                                    .opacity(1. - sidebar),
+                            )
+                            .child(div().w(px(inset)).flex_shrink_0())
+                            .child(
+                                div()
                                     .flex()
                                     .items_center()
                                     .gap(px(2.))
-                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .on_mouse_up(MouseButton::Left, |_, _, cx| {
-                                        cx.stop_propagation()
-                                    })
-                                    .on_click(|_, _, cx| cx.stop_propagation())
-                                    .when(
-                                        self.screen == StartScreen::Recents && !self.settings_open,
-                                        |controls| {
-                                            controls.child(
-                                                self.toolbar_button(
-                                                    "customize-recents",
-                                                    IconName::Palette,
-                                                    "Customize Recents",
-                                                )
-                                                .selected(self.customization_open)
-                                                .disabled(
-                                                    !self.snapshot.ready
-                                                        || self.command_mode.is_some(),
-                                                )
-                                                .on_click(cx.listener(|view, _, window, cx| {
-                                                    if view.theme_editor.is_some() {
-                                                        view.close_theme_editor(window, cx);
-                                                    } else {
-                                                        view.customization_open =
-                                                            !view.customization_open;
-                                                    }
-                                                    view.jobs_open = false;
-                                                    view.focus.focus(window);
-                                                    cx.notify();
-                                                })),
-                                            )
-                                        },
-                                    )
                                     .child(
                                         self.toolbar_button(
-                                            "refresh-library",
-                                            Icon::default().path("icons/refresh.svg"),
-                                            "Refresh installed games",
-                                        )
-                                        .disabled(
-                                            !self.snapshot.ready || self.command_mode.is_some(),
-                                        )
-                                        .on_click(
-                                            cx.listener(|view, _, _, cx| {
-                                                view.submit(Command::RefreshLibrary, cx);
-                                            }),
-                                        ),
-                                    )
-                                    .child(
-                                        self.toolbar_button(
-                                            "add-game",
-                                            IconName::Plus,
-                                            "Add a game",
+                                            "toggle-sources",
+                                            IconName::PanelLeft,
+                                            "Toggle sidebar",
                                         )
                                         .disabled(
                                             !self.snapshot.ready || self.command_mode.is_some(),
                                         )
                                         .on_click(
                                             cx.listener(|view, _, window, cx| {
-                                                view.pick(PickerPurpose::AddGame, window, cx)
+                                                view.toggle_sidebar(&ToggleSidebar, window, cx)
                                             }),
                                         ),
                                     )
-                                    .child(self.activity_button(cx)),
+                                    .child(
+                                        self.toolbar_button(
+                                            "navigation-back",
+                                            IconName::ArrowLeft,
+                                            "Back",
+                                        )
+                                        .disabled(
+                                            self.command_mode.is_some()
+                                                || (!self.settings_open
+                                                    && !self.customization_open
+                                                    && self.theme_editor.is_none()
+                                                    && self.detail_tab == DetailTab::Overview),
+                                        )
+                                        .on_click(
+                                            cx.listener(|view, _, window, cx| {
+                                                view.dismiss(&DismissPanel, window, cx)
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        self.toolbar_button(
+                                            "open-commands",
+                                            IconName::Search,
+                                            "Search games or actions",
+                                        )
+                                        .on_click(
+                                            cx.listener(|view, _, window, cx| {
+                                                view.open_commands(&OpenCommands, window, cx)
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        self.toolbar_button(
+                                            "open-settings",
+                                            IconName::Settings,
+                                            "Settings",
+                                        )
+                                        .on_click(
+                                            cx.listener(|view, _, window, cx| {
+                                                view.open_settings(&OpenSettings, window, cx)
+                                            }),
+                                        ),
+                                    ),
                             ),
-                    ),
-            )
+                    )
+                    .child(div().w(px(clearance)).flex_shrink_0())
+                    .when(!self.settings_open, |bar| {
+                        bar.child(self.navigation_bar(cx))
+                    })
+                    .when(self.settings_open, |bar| {
+                        bar.child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child("Settings"),
+                        )
+                    })
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .id("library-controls")
+                            .occlude()
+                            .h(px(36.))
+                            .px(px(6.))
+                            .rounded(px(12.))
+                            .bg(cx.theme().secondary)
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .gap(px(2.))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(|_, _, cx| cx.stop_propagation())
+                            .when(
+                                self.screen == StartScreen::Recents && !self.settings_open,
+                                |controls| {
+                                    controls.child(
+                                        self.toolbar_button(
+                                            "customize-recents",
+                                            IconName::Palette,
+                                            "Customize Recents",
+                                        )
+                                        .selected(self.customization_open)
+                                        .disabled(
+                                            !self.snapshot.ready || self.command_mode.is_some(),
+                                        )
+                                        .on_click(
+                                            cx.listener(|view, _, window, cx| {
+                                                if view.theme_editor.is_some() {
+                                                    view.close_theme_editor(window, cx);
+                                                } else {
+                                                    view.customization_open =
+                                                        !view.customization_open;
+                                                }
+                                                view.jobs_open = false;
+                                                view.focus.focus(window);
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    )
+                                },
+                            )
+                            .child(
+                                self.toolbar_button(
+                                    "refresh-library",
+                                    Icon::default().path("icons/refresh.svg"),
+                                    "Refresh installed games",
+                                )
+                                .disabled(!self.snapshot.ready || self.command_mode.is_some())
+                                .on_click(cx.listener(
+                                    |view, _, _, cx| {
+                                        view.submit(Command::RefreshLibrary, cx);
+                                    },
+                                )),
+                            )
+                            .child(
+                                self.toolbar_button("add-game", IconName::Plus, "Add a game")
+                                    .disabled(!self.snapshot.ready || self.command_mode.is_some())
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.pick(PickerPurpose::AddGame, window, cx)
+                                    })),
+                            )
+                            .child(self.activity_button(cx))
+                            .when(cfg!(target_os = "windows"), |controls| {
+                                #[cfg(target_os = "windows")]
+                                {
+                                    controls.child(windows_window_controls(window, cx))
+                                }
+                                #[cfg(not(target_os = "windows"))]
+                                {
+                                    controls
+                                }
+                            }),
+                    )
+                    .into_any_element(),
+            })
     }
 
     fn hero(&self, game: &Game, window: &Window, cx: &mut Context<Self>) -> AnyElement {
