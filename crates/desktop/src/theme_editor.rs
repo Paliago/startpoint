@@ -300,11 +300,21 @@ impl Render for Editor {
                         "Preview without saving. Built-in themes are copied, never overwritten.",
                     ),
             )
-            .child(Input::new(&self.name).w_full().disabled(self.saving))
+            .child(
+                div().flex().child(
+                    Input::new(&self.name)
+                        .large()
+                        .w_auto()
+                        .flex_1()
+                        .min_w_0()
+                        .disabled(self.saving),
+                ),
+            )
             .child(div().flex().gap_2().children(
                 [ThemeMode::Light, ThemeMode::Dark].into_iter().map(|mode| {
                     Button::new(mode.name())
-                        .small()
+                        .h(px(32.))
+                        .px_3()
                         .label(mode.name())
                         .selected(self.mode == mode)
                         .border_0()
@@ -321,7 +331,7 @@ impl Render for Editor {
                     .justify_between()
                     .gap_3()
                     .child(div().text_sm().child(label))
-                    .child(ColorPicker::new(picker).small().anchor(Corner::TopRight))
+                    .child(ColorPicker::new(picker).anchor(Corner::TopRight))
             }))
             .child(
                 div()
@@ -346,7 +356,16 @@ impl Render for Editor {
                     .flex_col()
                     .gap_2()
                     .child(div().text_sm().child("Font family"))
-                    .child(Input::new(&self.font).w_full().disabled(self.saving)),
+                    .child(
+                        div().flex().child(
+                            Input::new(&self.font)
+                                .large()
+                                .w_auto()
+                                .flex_1()
+                                .min_w_0()
+                                .disabled(self.saving),
+                        ),
+                    ),
             )
             .child(
                 div()
@@ -368,8 +387,7 @@ impl Render for Editor {
                                 } else {
                                     "increase-font"
                                 })
-                                .ghost()
-                                .small()
+                                .size(px(32.))
                                 .icon(if step < 0. {
                                     IconName::Minus
                                 } else {
@@ -407,7 +425,8 @@ impl Render for Editor {
                     .gap_1()
                     .children([0usize, 4, 8, 12, 16].into_iter().map(|value| {
                         Button::new(("theme-radius", value))
-                            .small()
+                            .h(px(32.))
+                            .px_3()
                             .label(value.to_string())
                             .selected(radius == value)
                             .border_0()
@@ -436,7 +455,8 @@ impl Render for Editor {
                     .child(
                         Button::new("save-theme")
                             .primary()
-                            .small()
+                            .h(px(32.))
+                            .px_3()
                             .label(if self.saving {
                                 "Saving…"
                             } else {
@@ -447,8 +467,8 @@ impl Render for Editor {
                     )
                     .child(
                         Button::new("cancel-theme")
-                            .ghost()
-                            .small()
+                            .h(px(32.))
+                            .px_3()
                             .label("Cancel")
                             .disabled(self.saving)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(EditorEvent::Closed))),
