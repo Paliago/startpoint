@@ -18,6 +18,13 @@ gpui-component = "=0.5.1"
 gpui-component-assets = "=0.5.1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 raw-window-handle = "0.6"
+log = "=0.4.34"
+
+[build-dependencies]
+embed-resource = "=3.0.11"
+
+[dev-dependencies]
+resvg = { version = "=0.45.1", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
@@ -25,4 +32,4 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAppl
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Diagnostics_Debug", "Win32_System_LibraryLoader"] }

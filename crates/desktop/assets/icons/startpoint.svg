@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Startpoint</title>
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="#17665e"/>
+  <path d="M192 144 L368 256 L192 368 Z" fill="#f6f5f1" stroke="#f6f5f1" stroke-width="24" stroke-linejoin="round"/>
+</svg>

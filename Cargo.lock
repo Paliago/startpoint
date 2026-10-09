@@ -5709,14 +5709,17 @@ name = "startpoint"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "embed-resource",
  "gpui",
  "gpui-component",
  "gpui-component-assets",
  "image",
+ "log",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "raw-window-handle",
+ "resvg",
  "serde_json",
  "startpoint-core",
  "startpoint-sdk",

@@ -2488,6 +2488,19 @@ mod tests {
         assert_eq!(corrected.launch_override, saved.launch_override);
         assert_eq!(corrected.metadata.description, saved.metadata.description);
         assert_eq!(corrected.last_launched, saved.last_launched);
+        for kind in [
+            ArtworkKind::Cover,
+            ArtworkKind::Background,
+            ArtworkKind::Logo,
+            ArtworkKind::Icon,
+        ] {
+            let key = artwork_cache_key("steamgriddb", &corrected, None, kind);
+            assert_eq!(
+                key,
+                artwork_cache_key("steamgriddb", &corrected, Some("456"), kind)
+            );
+            assert_ne!(key, artwork_cache_key("steamgriddb", &saved, None, kind));
+        }
         let mut enriched = saved.clone();
         enriched.id = GameId("manual:enriched".into());
         enriched.metadata.title = Some("A first game".into());

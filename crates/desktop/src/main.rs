@@ -1,6 +1,9 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod appearance;
+mod diagnostics;
+#[cfg(test)]
+mod icon_tests;
 mod image_cache;
 mod interface;
 mod recents_fade;
@@ -40,6 +43,7 @@ impl AssetSource for LauncherAssets {
 }
 
 fn main() {
+    let _diagnostics = diagnostics::initialize();
     let example_library = std::env::args().any(|argument| argument == "--example-library");
     let application = if example_library {
         startpoint_core::create_example_application()
@@ -49,6 +53,7 @@ fn main() {
     let api = match application {
         Ok(api) => api,
         Err(error) => {
+            diagnostics::record("application initialization failed");
             eprintln!("Startpoint could not start: {error}");
             return;
         }
@@ -205,6 +210,7 @@ fn main() {
                     cx.new(|cx| Root::new(view, window, cx))
                 },
             ) {
+                diagnostics::record("window creation failed");
                 eprintln!("Could not open the Startpoint window: {error}");
                 cx.quit();
             }

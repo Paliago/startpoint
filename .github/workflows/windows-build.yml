@@ -62,3 +62,14 @@ jobs:
           path: target/release/startpoint.exe
           if-no-files-found: error
           retention-days: 7
+
+      - name: Upload matching crash symbols and tools
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: startpoint-crash-tools-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/release/startpoint.pdb
+            scripts/Collect-Diagnostics.ps1
+            scripts/Enable-CrashDumps.ps1
+          if-no-files-found: error
+          retention-days: 7

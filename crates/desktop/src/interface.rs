@@ -291,6 +291,7 @@ pub struct LauncherView {
     artwork_images: Vec<ArtworkCandidate>,
     artwork_games: Vec<ArtworkGame>,
     artwork_job: Option<JobId>,
+    identity_job: Option<(JobId, GameId)>,
     manual_import_job: Option<JobId>,
     credential_job: Option<JobId>,
     credential_editing: bool,
@@ -388,6 +389,7 @@ impl LauncherView {
             artwork_images: Vec::new(),
             artwork_games: Vec::new(),
             artwork_job: None,
+            identity_job: None,
             manual_import_job: None,
             credential_job: None,
             credential_editing: false,
@@ -469,6 +471,7 @@ impl LauncherView {
     }
 
     fn submit(&mut self, command: Command, cx: &mut Context<Self>) -> Option<JobId> {
+        crate::diagnostics::record(command.label());
         match self.api.submit(command) {
             Ok(id) => {
                 self.snapshot = self.api.snapshot();
@@ -542,6 +545,10 @@ impl LauncherView {
                     };
                 }
                 if let Some(game) = self.selected_game()
+                    && !self
+                        .identity_job
+                        .as_ref()
+                        .is_some_and(|(_, owner)| owner == &game.id)
                     && let Some(id) = game.artwork_game_ids.get("steamgriddb")
                     && self
                         .artwork_match
@@ -561,6 +568,28 @@ impl LauncherView {
             }
             AppEvent::SettingsChanged => {}
             AppEvent::JobChanged(job) => {
+                crate::diagnostics::record(&format!("job {:?} {:?}", job.id, job.state));
+                if self
+                    .identity_job
+                    .as_ref()
+                    .is_some_and(|(id, _)| *id == job.id)
+                    && !job.state.active()
+                    && let Some((_, owner)) = self.identity_job.take()
+                    && self.selected.as_ref() == Some(&owner)
+                {
+                    self.artwork_match =
+                        self.selected_game().as_ref().and_then(saved_artwork_match);
+                    self.reidentifying = self.artwork_match.is_none();
+                    self.artwork_message = Some(if job.state == JobState::Completed {
+                        "Identity saved for all image categories. Browse images to choose artwork."
+                            .into()
+                    } else {
+                        "Check the saved identity below. The artwork refresh did not complete; see Jobs for details.".into()
+                    });
+                    if job.state == JobState::Completed {
+                        self.load_artwork(None, cx);
+                    }
+                }
                 if Some(job.id) == self.appearance_job && !job.state.active() {
                     self.appearance_job = None;
                     if job.state != JobState::Completed {
@@ -744,14 +773,7 @@ impl LauncherView {
         self.artwork_games.clear();
         self.artwork_message = None;
         self.reidentifying = false;
-        self.artwork_match = self.selected_game().and_then(|game| {
-            game.artwork_game_ids
-                .get("steamgriddb")
-                .map(|id| ArtworkGame {
-                    id: id.clone(),
-                    name: game.title().to_string(),
-                })
-        });
+        self.artwork_match = self.selected_game().as_ref().and_then(saved_artwork_match);
         self.populate_game_fields(window, cx);
         cx.notify();
     }
@@ -856,6 +878,12 @@ impl LauncherView {
     }
 
     fn load_artwork(&mut self, remote_game_id: Option<String>, cx: &mut Context<Self>) {
+        if self.identity_job.is_some() {
+            self.artwork_message =
+                Some("Saving the game identity; browse images when it finishes.".into());
+            cx.notify();
+            return;
+        }
         if let Some(game_id) = self.selected.clone() {
             self.cancel_artwork();
             self.artwork_images.clear();
@@ -865,7 +893,13 @@ impl LauncherView {
                     provider_id: "steamgriddb".into(),
                     game_id,
                     remote_game_id: remote_game_id
-                        .or_else(|| self.artwork_match.as_ref().map(|game| game.id.clone())),
+                        .or_else(|| self.artwork_match.as_ref().map(|game| game.id.clone()))
+                        .or_else(|| {
+                            self.selected_game()
+                                .as_ref()
+                                .and_then(saved_artwork_match)
+                                .map(|game| game.id)
+                        }),
                     kind: self.artwork_kind,
                 },
                 cx,
@@ -874,31 +908,48 @@ impl LauncherView {
     }
 
     fn choose_artwork_game(&mut self, matched: ArtworkGame, cx: &mut Context<Self>) {
+        if self.identity_job.is_some() {
+            return;
+        }
         if let Some(game_id) = self.selected.clone() {
             if self.reidentifying {
                 self.cancel_artwork();
                 self.artwork_match = Some(matched.clone());
                 self.artwork_games.clear();
                 self.artwork_images.clear();
-                self.artwork_job = self.submit(Command::ReidentifyGame { game_id, matched }, cx);
-                self.reidentifying = false;
-                self.artwork_message = Some("The chosen identity is saved; artwork is refreshed without changing your launcher or uploaded images.".into());
+                self.identity_job = self
+                    .submit(
+                        Command::ReidentifyGame {
+                            game_id: game_id.clone(),
+                            matched,
+                        },
+                        cx,
+                    )
+                    .map(|id| (id, game_id));
+                self.artwork_message =
+                    Some("Saving identity and refreshing automatic artwork…".into());
                 return;
             }
             self.artwork_match = Some(matched.clone());
-            self.submit(
-                Command::SetArtworkGame {
-                    provider_id: "steamgriddb".into(),
-                    game_id,
-                    remote_game_id: matched.id.clone(),
-                },
-                cx,
-            );
-            self.load_artwork(Some(matched.id), cx);
+            self.identity_job = self
+                .submit(
+                    Command::SetArtworkGame {
+                        provider_id: "steamgriddb".into(),
+                        game_id: game_id.clone(),
+                        remote_game_id: matched.id.clone(),
+                    },
+                    cx,
+                )
+                .map(|id| (id, game_id));
+            self.artwork_games.clear();
+            self.artwork_message = Some("Saving this match for all image categories…".into());
         }
     }
 
     fn begin_reidentify(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.identity_job.is_some() {
+            return;
+        }
         let Some(game) = self.selected_game() else {
             return;
         };
@@ -911,6 +962,14 @@ impl LauncherView {
         set_value(&self.artwork_search, &game.discovered_title, window, cx);
         self.artwork_search
             .update(cx, |input, cx| input.focus(window, cx));
+        if self
+            .snapshot
+            .settings
+            .configured_credentials
+            .contains("steamgriddb")
+        {
+            self.search_artwork(cx);
+        }
         cx.notify();
     }
 
@@ -3526,6 +3585,9 @@ impl LauncherView {
     }
 
     fn artwork_picker(&self, game: &Game, cx: &mut Context<Self>) -> AnyElement {
+        if self.reidentifying {
+            return self.reidentify_picker(cx);
+        }
         let key_configured = self
             .snapshot
             .settings
@@ -3566,6 +3628,11 @@ impl LauncherView {
                                     .configured_credentials
                                     .contains("steamgriddb")
                                     && (view.artwork_match.is_some()
+                                        || view
+                                            .selected_game()
+                                            .as_ref()
+                                            .and_then(saved_artwork_match)
+                                            .is_some()
                                         || view.selected_game().is_some_and(|game| {
                                             matches!(game.provider_id.as_str(), "steam" | "example")
                                         }))
@@ -3596,13 +3663,22 @@ impl LauncherView {
             )
             .child(div().mt_3().child(eyebrow("STEAMGRIDDB")))
             .child(self.credential_status(cx))
-            .child(Button::new("reidentify-artwork-game").h(px(36.)).label("Re-identify game…")
-                .on_click(cx.listener(|view, _, window, cx| view.begin_reidentify(window, cx))))
-            .when(self.reidentifying, |view| {
-                view.child(hint("Search the correct title below, then select a match to replace the game's title and automatic artwork. Uploaded images, notes and launch settings are kept."))
-            })
+            .child(
+                Button::new("reidentify-artwork-game")
+                    .h(px(36.))
+                    .label("Re-identify game…")
+                    .on_click(cx.listener(|view, _, window, cx| view.begin_reidentify(window, cx))),
+            )
             .when_some(self.artwork_match.clone(), |view, matched| {
-                view.child(hint(&format!("{} · #{}", matched.name, matched.id)))
+                let label = if self.identity_job.is_some() {
+                    "Saving match"
+                } else {
+                    "Saved match for all image types"
+                };
+                view.child(hint(&format!(
+                    "{label}: {} · #{}",
+                    matched.name, matched.id
+                )))
             })
             .when(!key_configured, |view| {
                 view.child(
@@ -3633,27 +3709,30 @@ impl LauncherView {
                         Button::new("search-artwork-games")
                             .h(px(36.))
                             .label("Find game")
-                            .disabled(!key_configured)
+                            .disabled(!key_configured || self.identity_job.is_some())
                             .on_click(cx.listener(|view, _, _, cx| view.search_artwork(cx))),
                     )
                     .child(
                         Button::new("load-artwork")
                             .h(px(36.))
                             .label("Browse images")
-                            .disabled(!key_configured)
+                            .disabled(!key_configured || self.identity_job.is_some())
                             .on_click(cx.listener(|view, _, _, cx| view.load_artwork(None, cx))),
                     ),
             )
-            .when(self.artwork_job.is_some(), |view| {
-                view.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(Spinner::new().small())
-                        .child(hint("Loading artwork…")),
-                )
-            })
+            .when(
+                self.artwork_job.is_some() || self.identity_job.is_some(),
+                |view| {
+                    view.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(Spinner::new().small())
+                            .child(hint("Loading artwork…")),
+                    )
+                },
+            )
             .when_some(self.artwork_message.clone(), |view, message| {
                 view.child(hint(&message))
             })
@@ -3728,6 +3807,42 @@ impl LauncherView {
                         }),
                 ),
             )
+            .into_any_element()
+    }
+
+    fn reidentify_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let configured = self
+            .snapshot
+            .settings
+            .configured_credentials
+            .contains("steamgriddb");
+        let saving = self.identity_job.is_some();
+        div().w_full().flex().flex_col().gap_4()
+            .child(eyebrow("RE-IDENTIFY GAME"))
+            .child(hint("Search the correct title, then choose a result. This saves one identity for covers, backgrounds, logos and icons. Your launcher, notes and uploaded images are kept."))
+            .when(!configured, |view| view.child(self.credential_status(cx)).child(
+                Button::new("identify-configure").label("Configure SteamGridDB")
+                    .on_click(cx.listener(|view, _, window, cx| view.open_settings(&OpenSettings, window, cx)))))
+            .child(Input::new(&self.artwork_search).large().disabled(!configured || saving))
+            .child(div().flex().gap_2()
+                .child(Button::new("identify-search").primary().label("Search games").disabled(!configured || saving)
+                    .on_click(cx.listener(|view, _, _, cx| view.search_artwork(cx))))
+                .child(Button::new("identify-cancel").ghost().label("Cancel").disabled(saving)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.cancel_artwork();
+                        view.reidentifying = false;
+                        view.artwork_games.clear();
+                        view.artwork_message = None;
+                        cx.notify();
+                    }))))
+            .when(self.artwork_job.is_some() || saving, |view| view.child(Spinner::new().small()))
+            .when_some(self.artwork_message.clone(), |view, message| view.child(hint(&message)))
+            .children(self.artwork_games.iter().map(|game| {
+                let matched = game.clone();
+                Button::new(SharedString::from(format!("identify-{}", game.id)))
+                    .w_full().label(format!("Use {}", game.name)).disabled(saving)
+                    .on_click(cx.listener(move |view, _, _, cx| view.choose_artwork_game(matched.clone(), cx)))
+            }))
             .into_any_element()
     }
 
@@ -5335,6 +5450,15 @@ impl Render for LauncherView {
     }
 }
 
+fn saved_artwork_match(game: &Game) -> Option<ArtworkGame> {
+    game.artwork_game_ids
+        .get("steamgriddb")
+        .map(|id| ArtworkGame {
+            id: id.clone(),
+            name: game.title().to_string(),
+        })
+}
+
 fn reconciled_selection<'a>(
     selected: Option<&GameId>,
     displayed: impl Iterator<Item = &'a GameId>,
@@ -5365,6 +5489,11 @@ fn hidden_games_are_excluded_from_normal_views_and_restorable_in_hidden_view() {
     }))
     .expect("legacy discovered game");
     assert!(!game.hidden);
+    assert!(saved_artwork_match(&game).is_none());
+    game.artwork_game_ids
+        .insert("steamgriddb".into(), "456".into());
+    let reopened: Game = serde_json::from_value(serde_json::to_value(&game).unwrap()).unwrap();
+    assert_eq!(saved_artwork_match(&reopened).unwrap().id, "456");
     for filter in [
         LibraryFilter::Installed,
         LibraryFilter::All,
