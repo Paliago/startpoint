@@ -325,24 +325,14 @@ impl Shared {
                 (id, status)
             })
             .collect();
-        let mut appearance = store
-            .setting("appearance")?
-            .unwrap_or_else(|| AppearanceSettings {
-                start_screen: if self
-                    .discovery
-                    .iter()
-                    .any(|provider| provider.descriptor().id == "example")
-                {
-                    StartScreen::Recents
-                } else {
-                    StartScreen::Library
-                },
-                ..AppearanceSettings::default()
-            });
+        let (mut appearance, migrated) = restore_appearance_settings(store.setting("appearance")?)?;
         if !appearance.sidebar_width.is_finite() {
             appearance.sidebar_width = AppearanceSettings::default().sidebar_width;
         }
         appearance.sidebar_width = appearance.sidebar_width.clamp(192., 400.);
+        if migrated {
+            store.save_setting("appearance", &appearance)?;
+        }
         *self
             .store
             .lock()
@@ -654,6 +644,7 @@ impl Shared {
                     metadata: UserMetadata::default(),
                     catalogue_metadata: UserMetadata::default(),
                     favourite: false,
+                    hidden: false,
                     available: true,
                     last_launched: None,
                     collections: BTreeSet::new(),
@@ -738,6 +729,36 @@ impl Shared {
                 game.favourite = favourite;
                 Ok(())
             }),
+            Command::SetHidden { game_id, hidden } => self.update_game(&game_id, |game| {
+                game.hidden = hidden;
+                Ok(())
+            }),
+            Command::ReidentifyGame { game_id, matched } => {
+                if matched.id.parse::<u64>().is_err()
+                    || matched.name.trim().is_empty()
+                    || matched.name.len() > 500
+                    || matched.name.chars().any(char::is_control)
+                {
+                    return Err(ApiError::Validation(
+                        "Choose a valid SteamGridDB game match".into(),
+                    ));
+                }
+                self.update_game(&game_id, |game| {
+                    apply_reidentification(game, &matched);
+                    Ok(())
+                })?;
+                // The selected identity is saved even if subsequent artwork downloads fail.
+                if self.artwork_provider("steamgriddb").is_ok()
+                    && self
+                        .snapshot()
+                        .settings
+                        .configured_credentials
+                        .contains("steamgriddb")
+                {
+                    self.populate_game(&game_id, context)?;
+                }
+                Ok(())
+            }
             Command::SetGameProgress {
                 game_id,
                 collections,
@@ -1276,6 +1297,7 @@ impl Shared {
                             metadata: UserMetadata::default(),
                             catalogue_metadata: UserMetadata::default(),
                             favourite: false,
+                            hidden: false,
                             available: true,
                             collections: BTreeSet::new(),
                             completed: false,
@@ -1442,7 +1464,7 @@ impl Shared {
             .snapshot()
             .games
             .iter()
-            .filter(|game| game.available)
+            .filter(|game| game.available && !game.hidden)
             .cloned()
             .collect();
         games.sort_by_key(|game| std::cmp::Reverse(game.last_launched.unwrap_or(0)));
@@ -1588,6 +1610,44 @@ impl Drop for RefreshGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Relaxed);
     }
+}
+
+fn restore_appearance_settings(
+    document: Option<serde_json::Value>,
+) -> Result<(AppearanceSettings, bool), ApiError> {
+    let Some(document) = document else {
+        return Ok((AppearanceSettings::default(), false));
+    };
+    let experimental = [
+        "recents_fade_length",
+        "recents_fade_style",
+        "recents_fade_dithering",
+        "recents_fade_dither_style",
+    ]
+    .iter()
+    .any(|key| document.get(key).is_some());
+    let mut settings: AppearanceSettings = serde_json::from_value(document)
+        .map_err(|error| ApiError::Storage(format!("Invalid appearance settings: {error}")))?;
+    if experimental {
+        // Adopt the settled Recents defaults once, retaining theme/mode/widgets
+        // and all other preferences. Saving removes the experimental keys, so
+        // subsequent changes to the retained toggles/start page are respected.
+        let defaults = AppearanceSettings::default();
+        settings.start_screen = defaults.start_screen;
+        settings.dither_recents = defaults.dither_recents;
+        settings.fade_recents = defaults.fade_recents;
+    }
+    Ok((settings, experimental))
+}
+
+fn apply_reidentification(game: &mut Game, matched: &ArtworkGame) {
+    game.metadata.title = Some(matched.name.trim().to_string());
+    game.catalogue_metadata.title = Some(matched.name.trim().to_string());
+    game.artwork_game_ids
+        .insert("steamgriddb".into(), matched.id.clone());
+    // Keep user imports and every saved image; discard only the old automatic selections.
+    game.artwork
+        .retain(|_, asset| asset.provider_id != "steamgriddb");
 }
 
 fn sorted_library(mut games: Vec<Game>) -> Arc<Vec<Game>> {
@@ -1880,7 +1940,7 @@ mod tests {
         let game_id = GameId("epic:ExampleGame".into());
         let manual_executable = directory.join("manual.exe");
         std::fs::write(&manual_executable, b"").expect("manual installation");
-        for step in 0..17 {
+        for step in 0..19 {
             if step == 9 {
                 std::fs::write(&steam_libraries, b"{").expect("unreadable Steam libraries");
                 let snapshot = api.snapshot();
@@ -1973,6 +2033,11 @@ mod tests {
                         working_directory: None,
                     },
                 },
+                17 => Command::SetHidden {
+                    game_id: game_id.clone(),
+                    hidden: true,
+                },
+                18 => Command::RefreshLibrary,
                 _ => Command::RemoveManualGame {
                     game_id: api
                         .snapshot()
@@ -2000,7 +2065,7 @@ mod tests {
                             "{:?}",
                             job.error
                         );
-                        if matches!(step, 9..=11 | 15) {
+                        if matches!(step, 9..=11 | 15 | 18) {
                             assert!(
                                 job.label.contains("Steam discovery failed"),
                                 "{}",
@@ -2058,7 +2123,7 @@ mod tests {
             .expect("retained Epic game");
         assert_eq!(game.title(), "Local title");
         assert_eq!(game.discovered_title, "Updated Epic title");
-        assert!(game.favourite && game.completed && game.launch_override.is_some());
+        assert!(game.favourite && game.hidden && game.completed && game.launch_override.is_some());
         assert_eq!(game.collections, BTreeSet::from(["Collection".into()]));
         assert!(game.artwork.contains_key(&ArtworkKind::Cover));
         assert_eq!(snapshot.journal[0].text, "Local game note");
@@ -2082,6 +2147,93 @@ mod tests {
             Some(gog_directory)
         );
         assert_eq!(reopened.snapshot().games.len(), 3);
+        assert!(
+            reopened
+                .snapshot()
+                .games
+                .iter()
+                .find(|game| game.id == game_id)
+                .unwrap()
+                .hidden
+        );
+    }
+
+    #[test]
+    fn settled_recents_defaults_migrate_experiments_without_resetting_other_preferences() {
+        let defaults = AppearanceSettings::default();
+        assert_eq!(StartScreen::default(), StartScreen::Recents);
+        assert_eq!(defaults.start_screen, StartScreen::Recents);
+        assert!(defaults.dither_recents && defaults.fade_recents);
+        let paths = ApplicationPaths {
+            data_directory: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/verification")
+                .join(uuid::Uuid::new_v4().to_string()),
+            cache_directory: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/verification")
+                .join(uuid::Uuid::new_v4().to_string()),
+        };
+        let store = Store::open(&paths).expect("appearance migration store");
+        store
+            .save_setting(
+                "appearance",
+                &serde_json::json!({
+                    "theme": "Custom", "mode": "dark", "dither_artwork": false,
+                    "start_screen": "library", "dither_recents": false, "fade_recents": false,
+                    "recents_activity": true, "recents_progress": false, "recents_journal": true,
+                    "sidebar_visible": true, "sidebar_width": 320.,
+                    "recents_fade_length": 35., "recents_fade_style": "frosted",
+                    "recents_fade_dithering": true, "recents_fade_dither_style": "stepped"
+                }),
+            )
+            .expect("experimental settings");
+        drop(store);
+        let api = LauncherBuilder::new()
+            .build(paths.clone())
+            .expect("migrated application");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !api.snapshot().ready {
+            assert!(Instant::now() < deadline, "appearance migration timed out");
+            assert!(api.snapshot().initialization_error.is_none());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let settings = api.snapshot().settings.appearance;
+        assert_eq!(settings.start_screen, StartScreen::Recents);
+        assert!(settings.dither_recents && settings.fade_recents);
+        assert_eq!(settings.theme, "Custom");
+        assert_eq!(settings.mode, AppearanceMode::Dark);
+        assert!(!settings.dither_artwork);
+        assert!(
+            settings.recents_activity && !settings.recents_progress && settings.recents_journal
+        );
+        assert!(settings.sidebar_visible && settings.sidebar_width == 320.);
+        let store = Store::open(&paths).expect("cleaned appearance store");
+        let document: serde_json::Value = store.setting("appearance").expect("appearance").unwrap();
+        assert!(
+            !document
+                .as_object()
+                .unwrap()
+                .keys()
+                .any(|key| key.starts_with("recents_fade_"))
+        );
+        let (restored, migrated) =
+            restore_appearance_settings(Some(document)).expect("cleaned settings");
+        assert!(!migrated);
+        assert_eq!(restored, settings);
+        let chosen = AppearanceSettings {
+            start_screen: StartScreen::Library,
+            dither_recents: false,
+            fade_recents: false,
+            ..settings
+        };
+        let (restored, migrated) = restore_appearance_settings(Some(
+            serde_json::to_value(&chosen).expect("retained preferences"),
+        ))
+        .expect("subsequent startup");
+        assert!(!migrated);
+        assert_eq!(
+            restored, chosen,
+            "retained controls remain customizable after migration"
+        );
     }
 
     #[test]
@@ -2089,9 +2241,8 @@ mod tests {
         let previous_settings: AppearanceSettings =
             serde_json::from_str(r#"{"mode":"dark","dither_artwork":true}"#)
                 .expect("previous appearance settings");
-        assert_eq!(previous_settings.start_screen, StartScreen::Library);
-        assert!(!previous_settings.dither_recents);
-        assert!(!previous_settings.fade_recents);
+        assert_eq!(previous_settings.start_screen, StartScreen::Recents);
+        assert!(previous_settings.dither_recents && previous_settings.fade_recents);
         assert!(
             !previous_settings.recents_activity
                 && !previous_settings.recents_progress
@@ -2117,7 +2268,7 @@ mod tests {
             .expect("application");
         let events = api.subscribe();
         let executable = std::env::current_exe().expect("test executable");
-        for step in 0..24 {
+        for step in 0..29 {
             let previous_library = api.snapshot().games;
             let game_id = api
                 .snapshot()
@@ -2189,6 +2340,29 @@ mod tests {
                         ..AppearanceSettings::default()
                     },
                 },
+                24 => Command::SetHidden {
+                    game_id,
+                    hidden: true,
+                },
+                25 => Command::RefreshLibrary,
+                26 => Command::SetHidden {
+                    game_id,
+                    hidden: false,
+                },
+                27 => Command::ReidentifyGame {
+                    game_id,
+                    matched: ArtworkGame {
+                        id: "987".into(),
+                        name: "Edited title".into(),
+                    },
+                },
+                28 => Command::ReidentifyGame {
+                    game_id,
+                    matched: ArtworkGame {
+                        id: "invalid".into(),
+                        name: "Invalid match".into(),
+                    },
+                },
                 15 => Command::SetGameProgress {
                     game_id,
                     collections: BTreeSet::from([
@@ -2239,7 +2413,7 @@ mod tests {
                     Ok(AppEvent::JobChanged(job)) if job.id == job_id && !job.state.active() => {
                         assert_eq!(
                             job.state,
-                            if step < 7 || matches!(step, 15..=17 | 21..=23) {
+                            if step < 7 || matches!(step, 15..=17 | 21..=27) {
                                 JobState::Completed
                             } else {
                                 JobState::Failed
@@ -2260,10 +2434,60 @@ mod tests {
                 assert_eq!(previous_library[0].title(), "Original title");
                 assert_eq!(api.snapshot().games[0].title(), "Edited title");
             }
+            if matches!(step, 24..=25) {
+                assert!(api.snapshot().games[0].hidden);
+            }
         }
         let saved = api.snapshot().games.first().cloned().expect("saved game");
         assert_eq!(saved.title(), "Edited title");
         assert_eq!(saved.discovered_title, "Original title");
+        assert!(!saved.hidden);
+        assert_eq!(
+            saved
+                .artwork_game_ids
+                .get("steamgriddb")
+                .map(String::as_str),
+            Some("987")
+        );
+        let mut corrected = saved.clone();
+        let uploaded = ArtworkAsset {
+            id: "user-cover".into(),
+            kind: ArtworkKind::Cover,
+            image_path: "cover.png".into(),
+            thumbnail_path: "thumb.png".into(),
+            provider_id: "local".into(),
+            source_url: None,
+            author: "You".into(),
+        };
+        let wrong = ArtworkAsset {
+            id: "wrong-background".into(),
+            kind: ArtworkKind::Background,
+            provider_id: "steamgriddb".into(),
+            ..uploaded.clone()
+        };
+        corrected
+            .artwork
+            .insert(ArtworkKind::Cover, uploaded.clone());
+        corrected
+            .artwork
+            .insert(ArtworkKind::Background, wrong.clone());
+        corrected.artwork_history = vec![uploaded.clone(), wrong];
+        let history = corrected.artwork_history.clone();
+        apply_reidentification(
+            &mut corrected,
+            &ArtworkGame {
+                id: "456".into(),
+                name: "Metro Exodus Enhanced Edition".into(),
+            },
+        );
+        assert_eq!(corrected.title(), "Metro Exodus Enhanced Edition");
+        assert_eq!(corrected.artwork.get(&ArtworkKind::Cover), Some(&uploaded));
+        assert!(!corrected.artwork.contains_key(&ArtworkKind::Background));
+        assert_eq!(corrected.artwork_history, history);
+        assert_eq!(corrected.default_launch, saved.default_launch);
+        assert_eq!(corrected.launch_override, saved.launch_override);
+        assert_eq!(corrected.metadata.description, saved.metadata.description);
+        assert_eq!(corrected.last_launched, saved.last_launched);
         let mut enriched = saved.clone();
         enriched.id = GameId("manual:enriched".into());
         enriched.metadata.title = Some("A first game".into());
@@ -2296,7 +2520,7 @@ mod tests {
             .as_object_mut()
             .expect("game object")
             .remove("catalogue_metadata");
-        for field in ["collections", "completed"] {
+        for field in ["collections", "completed", "hidden"] {
             previous_document
                 .as_object_mut()
                 .expect("game object")
@@ -2307,6 +2531,7 @@ mod tests {
         assert_eq!(previous_game.title(), "Edited title");
         assert!(previous_game.catalogue_metadata.developer.is_none());
         assert!(previous_game.collections.is_empty() && !previous_game.completed);
+        assert!(!previous_game.hidden);
         assert!(saved.favourite && saved.available && saved.last_launched.is_some());
         assert!(saved.completed);
         assert_eq!(
@@ -2349,6 +2574,13 @@ mod tests {
             .first()
             .cloned()
             .expect("persisted game");
+        assert_eq!(
+            loaded
+                .artwork_game_ids
+                .get("steamgriddb")
+                .map(String::as_str),
+            Some("987")
+        );
         assert_eq!(loaded.id, saved.id);
         assert_eq!(loaded.title(), "Edited title");
         assert_eq!(

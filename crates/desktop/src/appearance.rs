@@ -157,8 +157,63 @@ pub(crate) fn start_window_move(window: &Window) {
             native.performWindowDragWithEvent(&event);
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::ReleaseCapture,
+            WindowsAndMessaging::{HTCAPTION, PostMessageW, SC_MOVE, WM_SYSCOMMAND},
+        };
+        let Ok(handle) = HasWindowHandle::window_handle(window) else {
+            return;
+        };
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return;
+        };
+        // Post the native move request after GPUI finishes dispatching the mouse event.
+        // Calling SendMessage here would re-enter GPUI with its input callback borrowed.
+        unsafe {
+            ReleaseCapture();
+            PostMessageW(
+                handle.hwnd.get() as _,
+                WM_SYSCOMMAND,
+                (SC_MOVE | HTCAPTION) as usize,
+                0,
+            );
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     window.start_window_move();
+}
+
+pub(crate) fn toggle_window_maximize(window: &Window) {
+    #[cfg(target_os = "windows")]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            IsZoomed, SW_MAXIMIZE, SW_RESTORE, ShowWindowAsync,
+        };
+        let Ok(handle) = HasWindowHandle::window_handle(window) else {
+            return;
+        };
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return;
+        };
+        let hwnd = handle.hwnd.get() as _;
+        // GPUI 0.2.2's Windows zoom() only maximizes; restore must be explicit.
+        unsafe {
+            ShowWindowAsync(
+                hwnd,
+                if IsZoomed(hwnd) != 0 {
+                    SW_RESTORE
+                } else {
+                    SW_MAXIMIZE
+                },
+            );
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    window.zoom_window();
 }
 
 pub(crate) fn reduced_motion() -> bool {

@@ -3,6 +3,7 @@
 mod appearance;
 mod image_cache;
 mod interface;
+mod recents_fade;
 mod theme;
 mod theme_editor;
 

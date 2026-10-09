@@ -84,6 +84,8 @@ pub struct Game {
     #[serde(default)]
     pub catalogue_metadata: UserMetadata,
     pub favourite: bool,
+    #[serde(default)]
+    pub hidden: bool,
     pub available: bool,
     pub last_launched: Option<u64>,
     #[serde(default)]
@@ -205,8 +207,8 @@ impl AppearanceMode {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StartScreen {
-    #[default]
     Library,
+    #[default]
     Recents,
     Activity,
 }
@@ -243,9 +245,9 @@ impl Default for AppearanceSettings {
             theme: "Startpoint".into(),
             mode: AppearanceMode::System,
             dither_artwork: true,
-            start_screen: StartScreen::Library,
-            dither_recents: false,
-            fade_recents: false,
+            start_screen: StartScreen::Recents,
+            dither_recents: true,
+            fade_recents: true,
             recents_activity: false,
             recents_progress: false,
             recents_journal: false,
@@ -351,6 +353,14 @@ pub enum Command {
         game_id: GameId,
         favourite: bool,
     },
+    SetHidden {
+        game_id: GameId,
+        hidden: bool,
+    },
+    ReidentifyGame {
+        game_id: GameId,
+        matched: ArtworkGame,
+    },
     SetGameProgress {
         game_id: GameId,
         collections: BTreeSet<String>,
@@ -427,6 +437,7 @@ impl Command {
         matches!(
             self,
             Self::RefreshLibrary
+                | Self::ReidentifyGame { .. }
                 | Self::SetArtworkCredential { .. }
                 | Self::VerifyArtworkCredential { .. }
                 | Self::SearchArtworkGames { .. }
@@ -443,6 +454,8 @@ impl Command {
             Self::RemoveManualGame { .. } => "Removing game",
             Self::UpdateMetadata { .. } => "Saving metadata",
             Self::SetFavourite { .. } => "Saving favourite",
+            Self::SetHidden { .. } => "Saving game visibility",
+            Self::ReidentifyGame { .. } => "Re-identifying game",
             Self::SetGameProgress { .. } => "Saving collections and completion",
             Self::SaveJournalEntry { .. } => "Saving journal entry",
             Self::DeleteJournalEntry { .. } => "Deleting journal entry",

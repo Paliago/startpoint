@@ -216,6 +216,17 @@ impl Editor {
         self.apply(window, cx);
     }
 
+    fn restore_defaults(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.saving {
+            return;
+        }
+        restore_default_variants(&mut self.draft);
+        self.error = None;
+        // Refresh the live preview, pickers and font field in the current mode.
+        // Keep the draft name and original save target; no file is written here.
+        self.set_mode(self.mode, window, cx);
+    }
+
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.saving {
             return;
@@ -449,6 +460,15 @@ impl Render for Editor {
                 panel.child(div().text_sm().text_color(cx.theme().danger).child(error))
             })
             .child(
+                Button::new("restore-theme-defaults")
+                    .h(px(32.))
+                    .ghost()
+                    .label("Restore defaults")
+                    .tooltip("Reset both light and dark variants to Startpoint defaults. Save theme to keep the changes.")
+                    .disabled(self.saving)
+                    .on_click(cx.listener(|editor, _, window, cx| editor.restore_defaults(window, cx))),
+            )
+            .child(
                 div()
                     .flex()
                     .gap_2()
@@ -475,4 +495,54 @@ impl Render for Editor {
                     ),
             )
     }
+}
+
+fn restore_default_variants(draft: &mut ThemeSet) {
+    let defaults = theme::Catalog::default();
+    draft.themes = [ThemeMode::Light, ThemeMode::Dark]
+        .into_iter()
+        .map(|mode| defaults.configuration("Startpoint", mode).as_ref().clone())
+        .collect();
+}
+
+#[cfg(test)]
+#[::core::prelude::v1::test]
+fn restoring_defaults_resets_both_variants_and_preserves_the_draft_name() {
+    let catalog = theme::Catalog::default();
+    let mut draft = catalog.themes[1].clone();
+    draft.name = "My custom theme".into();
+    for variant in &mut draft.themes {
+        variant.font_family = Some("Custom font".into());
+        variant.font_size = Some(24.);
+        variant.radius = Some(0);
+        variant.colors.background = Some("#123456".into());
+    }
+    let edited = theme::source(&draft).expect("edited draft");
+    restore_default_variants(&mut draft);
+    assert_eq!(draft.name, "My custom theme");
+    assert_ne!(theme::source(&draft).expect("restored draft"), edited);
+    for mode in [ThemeMode::Light, ThemeMode::Dark] {
+        let restored = draft
+            .themes
+            .iter()
+            .find(|variant| variant.mode == mode)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(restored).unwrap(),
+            serde_json::to_value(catalog.configuration("Startpoint", mode).as_ref()).unwrap()
+        );
+    }
+    let restored = theme::source(&draft).expect("restored draft");
+    assert!(
+        theme::parse(&restored).is_ok(),
+        "restored theme can be saved"
+    );
+    restore_default_variants(&mut draft);
+    assert_eq!(
+        theme::source(&draft).unwrap(),
+        restored,
+        "reset is repeatable"
+    );
+    // Reset only touches the draft, never the loaded catalog or saved themes.
+    assert_ne!(catalog.themes[1].name, draft.name);
 }
