@@ -6,9 +6,11 @@ mod diagnostics;
 mod icon_tests;
 mod image_cache;
 mod interface;
+mod library_layout;
 mod recents_fade;
 mod theme;
 mod theme_editor;
+mod window_state;
 
 use gpui::{prelude::*, *};
 use gpui_component::Root;
@@ -22,6 +24,7 @@ impl AssetSource for LauncherAssets {
             "icons/refresh.svg" => Some(include_bytes!("../assets/refresh.svg")),
             "icons/pause.svg" => Some(include_bytes!("../assets/pause.svg")),
             "icons/play.svg" => Some(include_bytes!("../assets/play.svg")),
+            "icons/star-filled.svg" => Some(include_bytes!("../assets/star-filled.svg")),
             _ => None,
         };
         match bytes {
@@ -33,10 +36,15 @@ impl AssetSource for LauncherAssets {
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
         let mut assets = gpui_component_assets::Assets.list(path)?;
         assets.extend(
-            ["icons/refresh.svg", "icons/pause.svg", "icons/play.svg"]
-                .into_iter()
-                .filter(|asset| asset.starts_with(path))
-                .map(SharedString::from),
+            [
+                "icons/refresh.svg",
+                "icons/pause.svg",
+                "icons/play.svg",
+                "icons/star-filled.svg",
+            ]
+            .into_iter()
+            .filter(|asset| asset.starts_with(path))
+            .map(SharedString::from),
         );
         Ok(assets)
     }
@@ -183,10 +191,10 @@ fn main() {
                     ],
                 },
             ]);
-            let bounds = Bounds::centered(None, size(px(1280.), px(820.)), cx);
+            let bounds = window_state::restore(&api.snapshot().paths.data_directory, cx);
             if let Err(error) = cx.open_window(
                 WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_bounds: Some(bounds),
                     window_min_size: Some(size(px(960.), px(620.))),
                     titlebar: Some(TitlebarOptions {
                         title: Some(

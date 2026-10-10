@@ -22,6 +22,18 @@ On macOS without the Metal compiler, add `--features runtime-shaders` to Cargo c
 **Actions → Windows test executable → Run workflow**: choose a branch. For branches without the workflow, run from `main` and fill in `branch`.
 Download and extract the run's artifact for `startpoint.exe` (unsigned; retained seven days).
 
+## Library views
+
+**Cover grid** is the default. Use the palette button in the Library toolbar to try **Pills**, **Cover grid**, **Landscape tiles** or **Compact list**. Size/spacing, source labels, last-played dates, favourite buttons and the right-hand detail panel are configurable and saved automatically. Previously saved layout choices are kept.
+
+Double-click a game to launch it, or right-click for play, metadata/collections, artwork, launch settings, journal, re-identification, favourite, completion, hide/unhide and folder actions. Manually added games can also be removed with confirmation. Hover over grid artwork for Play/Manage buttons and an empty favourite star; favourited stars are filled and always visible unless disabled in customization. The detail pane has a close button; selecting a game reopens it when enabled. With the pane disabled (or closed), editors open in a centered modal instead of taking space from the library. Close editors with × or Escape.
+
+Compact rows include developer/genre metadata, collections, completion and Startpoint launch counts, alongside availability and optional source/date information. Source labels and launch dates are independent: games with no recorded launch date leave that field empty. Switching layout or density returns the library to its heading and filters.
+
+Hidden games are available from the sidebar only. Favourites and Manually added filters appear when populated; the first favourite reveals its filter and removing the last collapses it with a short animation (disabled with reduced motion).
+
+Window size, location and maximized state are saved locally in `window-state.json` in the application's data directory. If a monitor is removed, the next launch moves the window back onto an available display. Example-library placement stays with its isolated data.
+
 ## Check
 
 ```sh

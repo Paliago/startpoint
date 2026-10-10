@@ -329,7 +329,7 @@ impl Shared {
         if !appearance.sidebar_width.is_finite() {
             appearance.sidebar_width = AppearanceSettings::default().sidebar_width;
         }
-        appearance.sidebar_width = appearance.sidebar_width.clamp(192., 400.);
+        appearance.sidebar_width = appearance.sidebar_width.clamp(176., 400.);
         if migrated {
             store.save_setting("appearance", &appearance)?;
         }
@@ -1012,10 +1012,10 @@ impl Shared {
                     ));
                 }
                 if !settings.sidebar_width.is_finite()
-                    || !(192. ..=400.).contains(&settings.sidebar_width)
+                    || !(176. ..=400.).contains(&settings.sidebar_width)
                 {
                     return Err(ApiError::Validation(
-                        "Sidebar width must be between 192 and 400 pixels".into(),
+                        "Sidebar width must be between 176 and 400 pixels".into(),
                     ));
                 }
                 self.store(|store| {
@@ -2249,7 +2249,7 @@ mod tests {
                 && !previous_settings.recents_journal
         );
         assert!(!previous_settings.sidebar_visible);
-        assert_eq!(previous_settings.sidebar_width, 216.);
+        assert_eq!(previous_settings.sidebar_width, 200.);
         assert_eq!(previous_settings.theme, "Startpoint");
         let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/verification")
@@ -2319,12 +2319,18 @@ mod tests {
                         recents_journal: true,
                         sidebar_visible: true,
                         sidebar_width: 320.,
+                        library_layout: LibraryLayout::Covers,
+                        library_density: LibraryDensity::Large,
+                        library_details: false,
+                        library_last_played: false,
+                        library_sources: true,
+                        library_favourite_badges: false,
                     },
                 },
                 6 => Command::LaunchGame { game_id },
                 7..=10 => Command::SetAppearance {
                     settings: AppearanceSettings {
-                        sidebar_width: [191., 401., f32::NAN, f32::INFINITY][step - 7],
+                        sidebar_width: [175., 401., f32::NAN, f32::INFINITY][step - 7],
                         ..AppearanceSettings::default()
                     },
                 },
@@ -2629,6 +2635,12 @@ mod tests {
                 recents_journal: true,
                 sidebar_visible: true,
                 sidebar_width: 320.,
+                library_layout: LibraryLayout::Covers,
+                library_density: LibraryDensity::Large,
+                library_details: false,
+                library_last_played: false,
+                library_sources: true,
+                library_favourite_badges: false,
             }
         );
         let mut store = Store::open(&paths).expect("migrated store");

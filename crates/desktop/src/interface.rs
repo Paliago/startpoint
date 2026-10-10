@@ -1,6 +1,7 @@
 use crate::{
     appearance,
     image_cache::ArtworkImageCache,
+    library_layout::{CONTENT_TOP, DETAIL_WIDTH, Geometry as LibraryGeometry, filter_reveal},
     recents_fade::RecentsFade,
     theme,
     theme_editor::{Editor, EditorEvent},
@@ -14,7 +15,7 @@ use gpui_component::{
     ThemeColor,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
-    menu::{DropdownMenu, PopupMenuItem},
+    menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
     spinner::Spinner,
     switch::Switch,
     tooltip::Tooltip,
@@ -22,7 +23,8 @@ use gpui_component::{
 use startpoint_sdk::{
     AppEvent, AppearanceMode, AppearanceSettings, Application as LauncherApplication, ArtworkAsset,
     ArtworkCandidate, ArtworkGame, ArtworkKind, Command, CredentialStatus, ExecutableLaunch, Game,
-    GameId, JobId, JobState, LaunchTarget, Snapshot, StartScreen, UserMetadata,
+    GameId, JobId, JobState, LaunchTarget, LibraryDensity, LibraryLayout, Snapshot, StartScreen,
+    UserMetadata,
 };
 use std::{
     collections::BTreeMap,
@@ -41,7 +43,7 @@ struct LauncherTitleBar {
 }
 
 impl RenderOnce for LauncherTitleBar {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         #[cfg(target_os = "windows")]
         {
             div()
@@ -51,7 +53,7 @@ impl RenderOnce for LauncherTitleBar {
                 .px(px(8.))
                 .flex()
                 .items_center()
-                .bg(cx.theme().title_bar)
+                .bg(rgba(0x00000000))
                 .child(
                     div()
                         .id("title-bar-content")
@@ -64,8 +66,8 @@ impl RenderOnce for LauncherTitleBar {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            let _ = cx;
             TitleBar::new()
+                .bg(rgba(0x00000000))
                 .h(px(HEADER_HEIGHT))
                 .pl(px(8.))
                 .pr(px(8.))
@@ -180,15 +182,24 @@ enum LibraryFilter {
     Installed,
     All,
     Favourites,
+    Manual,
     Hidden,
 }
 
 impl LibraryFilter {
+    fn visible_in_navigation(self, count: usize) -> bool {
+        match self {
+            Self::Hidden => false,
+            Self::Favourites | Self::Manual => count > 0,
+            Self::Installed | Self::All => true,
+        }
+    }
     fn label(self) -> &'static str {
         match self {
             Self::Installed => "Installed",
             Self::All => "All games",
             Self::Favourites => "Favourites",
+            Self::Manual => "Manually added",
             Self::Hidden => "Hidden",
         }
     }
@@ -199,6 +210,7 @@ impl LibraryFilter {
             Self::Installed => !game.hidden && game.available,
             Self::All => !game.hidden,
             Self::Favourites => !game.hidden && game.favourite,
+            Self::Manual => !game.hidden && game.provider_id == "manual",
         }
     }
 }
@@ -210,6 +222,18 @@ enum DetailTab {
     Launch,
     Artwork,
     Journal,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LibraryGameAction {
+    Launch,
+    Edit(DetailTab),
+    Favourite,
+    Hidden,
+    Completed,
+    Reidentify,
+    Reveal,
+    Remove,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -236,6 +260,7 @@ enum LauncherCommand {
     DitherArtwork,
     Activity,
     CustomizeRecents,
+    CustomizeLibrary,
 }
 
 #[derive(Clone)]
@@ -282,10 +307,13 @@ pub struct LauncherView {
     sidebar_resize_focus: FocusHandle,
     appearance_save: Option<Task<()>>,
     window_should_move: bool,
+    window_memory: crate::window_state::Memory,
     screen: StartScreen,
     settings_open: bool,
     jobs_open: bool,
     detail_tab: DetailTab,
+    detail_closed: bool,
+    editor_focus: FocusHandle,
     detail_return_screen: Option<StartScreen>,
     artwork_kind: ArtworkKind,
     artwork_images: Vec<ArtworkCandidate>,
@@ -320,7 +348,11 @@ pub struct LauncherView {
     thumbnails: Entity<ArtworkImageCache>,
     full_resolution_images: Entity<ArtworkImageCache>,
     focus: FocusHandle,
-    list_scroll: UniformListScrollHandle,
+    library_list: ListState,
+    library_list_key: Option<(LibraryGeometry, usize)>,
+    library_reveal: Option<usize>,
+    favourites_available: bool,
+    favourites_transition: Option<(f32, Instant)>,
     artwork_texture: Arc<Image>,
     carousel_elapsed: Duration,
     carousel_tick: Option<Instant>,
@@ -349,6 +381,15 @@ impl LauncherView {
         });
         let appearance_subscription = cx.observe_window_appearance(window, |view, window, cx| {
             view.apply_appearance(window, cx);
+        });
+        let mut window_memory = crate::window_state::Memory::new(&snapshot.paths.data_directory);
+        window_memory.capture(window, cx);
+        let bounds_subscription = cx.observe_window_bounds(window, |view, window, cx| {
+            view.window_memory.capture(window, cx);
+        });
+        let quit_subscription = cx.on_app_quit(|view, _| {
+            view.window_memory.flush();
+            async {}
         });
         let appearance_settings = snapshot.settings.appearance.clone();
         let appearance_loaded = snapshot.ready;
@@ -380,10 +421,13 @@ impl LauncherView {
             sidebar_resize_focus: cx.focus_handle(),
             appearance_save: None,
             window_should_move: false,
+            window_memory,
             screen,
             settings_open: false,
             jobs_open: false,
             detail_tab: DetailTab::Overview,
+            detail_closed: false,
+            editor_focus: cx.focus_handle(),
             detail_return_screen: None,
             artwork_kind: ArtworkKind::Cover,
             artwork_images: Vec::new(),
@@ -427,7 +471,11 @@ impl LauncherView {
             full_resolution_images: cx
                 .new(|cx| ArtworkImageCache::new(3, 128 * 1024 * 1024, 3840 * 2160 * 4, cx)),
             focus: cx.focus_handle(),
-            list_scroll: UniformListScrollHandle::new(),
+            library_list: ListState::new(1, ListAlignment::Top, px(400.)),
+            library_list_key: None,
+            library_reveal: None,
+            favourites_available: false,
+            favourites_transition: None,
             artwork_texture: Arc::new(Image::from_bytes(
                 ImageFormat::Svg,
                 include_bytes!("../assets/dither.svg").to_vec(),
@@ -438,7 +486,13 @@ impl LauncherView {
             carousel_focus: cx.focus_handle(),
             carousel_transition: None,
             carousel_image_ready: false,
-            _subscriptions: vec![subscription, appearance_subscription, key_subscription],
+            _subscriptions: vec![
+                subscription,
+                appearance_subscription,
+                key_subscription,
+                bounds_subscription,
+                quit_subscription,
+            ],
         };
         view.filter(cx);
         view.ensure_selection(window, cx);
@@ -688,6 +742,16 @@ impl LauncherView {
     }
 
     fn filter(&mut self, _: &App) {
+        let previous = self
+            .visible
+            .iter()
+            .map(|game| game.id.clone())
+            .collect::<Vec<_>>();
+        if self.library_filter == LibraryFilter::Favourites && self.favourite_count() == 0
+            || self.library_filter == LibraryFilter::Manual && self.manual_count() == 0
+        {
+            self.library_filter = LibraryFilter::Installed;
+        }
         self.visible = self
             .snapshot
             .games
@@ -709,6 +773,10 @@ impl LauncherView {
             self.visible
                 .sort_by_key(|game| std::cmp::Reverse(game.last_launched.unwrap_or(0)));
         }
+        if !previous.iter().eq(self.visible.iter().map(|game| &game.id)) {
+            self.library_list_key = None;
+        }
+        self.library_list.splice(0..1, 1);
     }
 
     fn recent_games(&self) -> Vec<&Game> {
@@ -767,6 +835,7 @@ impl LauncherView {
         self.carousel_image_ready = false;
         self.cancel_artwork();
         self.selected = Some(id);
+        self.detail_closed = false;
         self.settings_open = false;
         self.detail_tab = DetailTab::Overview;
         self.artwork_images.clear();
@@ -1425,6 +1494,11 @@ impl LauncherView {
                 LauncherCommand::CustomizeRecents,
             ),
             (
+                "Customize Library".into(),
+                IconName::Palette.into(),
+                LauncherCommand::CustomizeLibrary,
+            ),
+            (
                 "Add a game…".into(),
                 IconName::Plus.into(),
                 LauncherCommand::AddGame,
@@ -1527,10 +1601,7 @@ impl LauncherView {
                     .iter()
                     .position(|game| self.selected.as_ref() == Some(&game.id))
                 {
-                    self.list_scroll.scroll_to_item(
-                        index / self.library_columns(window),
-                        ScrollStrategy::Center,
-                    );
+                    self.library_reveal = Some(index);
                 }
             }
             LauncherCommand::LaunchGame(game_id) => {
@@ -1584,6 +1655,10 @@ impl LauncherView {
                 self.switch_screen(StartScreen::Recents, window, cx);
                 self.customization_open = true;
             }
+            LauncherCommand::CustomizeLibrary => {
+                self.switch_screen(StartScreen::Library, window, cx);
+                self.customization_open = true;
+            }
         }
         cx.notify();
     }
@@ -1606,11 +1681,11 @@ impl LauncherView {
         } else if self.settings_open {
             self.settings_open = false;
         } else if self.detail_tab != DetailTab::Overview {
-            self.detail_tab = DetailTab::Overview;
-            self.cancel_artwork();
-            if let Some(screen) = self.detail_return_screen.take() {
-                self.screen = screen;
-            }
+            self.close_editor(window, cx);
+            return;
+        } else if self.screen == StartScreen::Library && self.shows_library_details() {
+            self.close_detail_pane(window, cx);
+            return;
         }
         self.ensure_selection(window, cx);
         self.focus.focus(window);
@@ -1687,8 +1762,7 @@ impl LauncherView {
         let id = games[index].id.clone();
         self.select_game(id, window, cx);
         if self.screen == StartScreen::Library {
-            self.list_scroll
-                .scroll_to_item(index / self.library_columns(window), ScrollStrategy::Center);
+            self.library_reveal = Some(index);
         }
         self.focus.focus(window);
     }
@@ -1705,19 +1779,108 @@ impl LauncherView {
         self.detail_tab = DetailTab::Overview;
         self.detail_return_screen = None;
         self.cancel_artwork();
-        if screen == StartScreen::Recents && self.source_filter.take().is_some() {
-            self.filter(cx);
+        if screen == StartScreen::Recents {
+            let had_source = self.source_filter.take().is_some();
+            let was_hidden = self.library_filter == LibraryFilter::Hidden;
+            if was_hidden {
+                self.library_filter = LibraryFilter::Installed;
+                self.collection_filter = None;
+            }
+            if had_source || was_hidden {
+                self.filter(cx);
+            }
         }
         self.ensure_selection(window, cx);
         self.focus.focus(window);
         cx.notify();
     }
 
-    fn library_columns(&self, window: &Window) -> usize {
-        let width = window.viewport_size().width
-            - px(460.)
-            - px(self.appearance.sidebar_width * self.sidebar_progress());
-        if width >= px(650.) { 2 } else { 1 }
+    fn shows_library_details(&self) -> bool {
+        self.selected.is_some() && self.appearance.library_details && !self.detail_closed
+    }
+
+    fn editor_is_modal(&self) -> bool {
+        self.detail_tab != DetailTab::Overview && !self.shows_library_details()
+    }
+
+    fn close_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.detail_tab = DetailTab::Overview;
+        self.cancel_artwork();
+        self.reidentifying = false;
+        if let Some(screen) = self.detail_return_screen.take() {
+            self.screen = screen;
+        }
+        self.ensure_selection(window, cx);
+        self.focus.focus(window);
+        cx.notify();
+    }
+
+    fn close_detail_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_editor(window, cx);
+        self.detail_closed = true;
+        cx.notify();
+    }
+
+    fn library_geometry(&self, window: &Window) -> LibraryGeometry {
+        let details = if self.screen == StartScreen::Library && self.shows_library_details() {
+            DETAIL_WIDTH
+        } else {
+            0.
+        };
+        LibraryGeometry::new(
+            f32::from(window.viewport_size().width)
+                - details
+                - self.appearance.sidebar_width * self.sidebar_progress(),
+            &self.appearance,
+            f32::from(window.rem_size()),
+        )
+    }
+
+    fn prepare_library(&mut self, window: &Window) {
+        let geometry = self.library_geometry(window);
+        let key = (geometry, self.visible.len());
+        if self.library_list_key != Some(key) {
+            let previous = self
+                .library_list_key
+                .map(|_| self.library_list.logical_scroll_top());
+            self.library_list
+                .reset(1 + self.visible.len().div_ceil(geometry.columns).max(1));
+            if let Some(previous) = previous {
+                self.library_list.scroll_to(previous);
+            }
+            self.library_list_key = Some(key);
+        }
+        if let Some(index) = self.library_reveal.take() {
+            self.library_list.scroll_to(ListOffset {
+                item_ix: 1 + index / geometry.columns,
+                offset_in_item: -px(CONTENT_TOP),
+            });
+        }
+    }
+
+    fn favourite_count(&self) -> usize {
+        self.snapshot
+            .games
+            .iter()
+            .filter(|game| !game.hidden && game.favourite)
+            .count()
+    }
+
+    fn manual_count(&self) -> usize {
+        self.snapshot
+            .games
+            .iter()
+            .filter(|game| !game.hidden && game.provider_id == "manual")
+            .count()
+    }
+
+    fn favourites_progress(&self) -> f32 {
+        self.favourites_transition
+            .map(|(from, started)| {
+                let progress = (started.elapsed().as_secs_f32() / 0.22).clamp(0., 1.);
+                filter_reveal(from, self.favourites_available, progress)
+            })
+            .unwrap_or(if self.favourites_available { 1. } else { 0. })
     }
 
     fn open_details(&mut self, tab: DetailTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -1725,7 +1888,7 @@ impl LauncherView {
             return;
         }
         let previous = self.screen;
-        if self.screen != StartScreen::Library {
+        if self.screen != StartScreen::Library && self.shows_library_details() {
             self.switch_screen(StartScreen::Library, window, cx);
         }
         if self.detail_tab == DetailTab::Overview {
@@ -1733,7 +1896,11 @@ impl LauncherView {
             self.detail_return_screen = Some(previous);
         }
         self.settings_open = false;
+        self.customization_open = false;
         self.detail_tab = tab;
+        if self.editor_is_modal() {
+            self.editor_focus.focus(window);
+        }
         cx.notify();
     }
 
@@ -1782,7 +1949,7 @@ impl LauncherView {
     }
 
     fn resize_sidebar(&mut self, width: f32, window: &mut Window, cx: &mut Context<Self>) {
-        self.appearance.sidebar_width = width.clamp(192., 400.);
+        self.appearance.sidebar_width = width.clamp(176., 400.);
         self.schedule_appearance_save(window, cx);
     }
 
@@ -1806,6 +1973,16 @@ impl LauncherView {
         cx: &mut Context<Self>,
     ) {
         self.appearance_save = None;
+        let relayout = crate::library_layout::resets_scroll(&self.appearance, &settings);
+        if self.appearance.library_layout != settings.library_layout
+            || self.appearance.library_density != settings.library_density
+            || self.appearance.library_details != settings.library_details
+        {
+            crate::diagnostics::record(&format!(
+                "library layout={:?} size={:?} details={}",
+                settings.library_layout, settings.library_density, settings.library_details
+            ));
+        }
         if let Some(id) = self.submit(
             Command::SetAppearance {
                 settings: settings.clone(),
@@ -1819,6 +1996,14 @@ impl LauncherView {
                 self.cancel_artwork();
             }
             self.appearance = settings;
+            if relayout {
+                self.library_list_key = None;
+                self.library_reveal = None;
+                self.library_list.scroll_to(ListOffset {
+                    item_ix: 0,
+                    offset_in_item: px(0.),
+                });
+            }
             self.apply_appearance(window, cx);
             cx.notify();
         }
@@ -1923,7 +2108,7 @@ impl LauncherView {
             .iter()
             .filter(|game| !game.hidden && game.favourite)
             .count();
-        let mut sources = BTreeMap::from([("manual".to_string(), 0)]);
+        let mut sources = BTreeMap::from([("manual".to_string(), self.manual_count())]);
         for provider in &self.snapshot.providers {
             if matches!(provider.id.as_str(), "steam" | "epic" | "gog" | "example") {
                 sources.insert(provider.id.clone(), 0);
@@ -1933,7 +2118,7 @@ impl LauncherView {
             .snapshot
             .games
             .iter()
-            .filter(|game| !game.hidden && game.available)
+            .filter(|game| !game.hidden && game.available && game.provider_id != "manual")
         {
             *sources.entry(game.provider_id.clone()).or_insert(0) += 1;
         }
@@ -1946,13 +2131,14 @@ impl LauncherView {
             .bg(cx.theme().sidebar)
             .flex()
             .flex_col()
-            .px_3()
+            .px_2()
             .pb_4()
             .pt(px(HEADER_HEIGHT + 16.))
-            .gap_2()
+            .gap(px(3.))
             .child(eyebrow("LIBRARY"))
             .child(
                 Button::new("all-games")
+                    .map(|button| snug_sidebar_button(button, IconName::FolderClosed))
                     .h(px(36.))
                     .ghost()
                     .label(format!("Installed   {installed}"))
@@ -1974,26 +2160,41 @@ impl LauncherView {
                         cx.notify();
                     })),
             )
-            .child(
-                Button::new("favourites")
-                    .h(px(36.))
-                    .ghost()
-                    .label(format!("Favourites   {favourites}"))
-                    .selected(self.library_filter == LibraryFilter::Favourites)
-                    .border_0()
-                    .w_full()
-                    .on_click(cx.listener(|view, _, window, cx| {
-                        view.library_filter = LibraryFilter::Favourites;
-                        view.source_filter = None;
-                        view.collection_filter = None;
-                        view.settings_open = false;
-                        view.filter(cx);
-                        view.ensure_selection(window, cx);
-                        cx.notify();
-                    })),
+            .when(
+                favourites > 0 || self.favourites_transition.is_some(),
+                |sidebar| {
+                    sidebar.child(
+                        div()
+                            .h(px(36. * self.favourites_progress()))
+                            .flex_shrink_0()
+                            .overflow_hidden()
+                            .opacity(self.favourites_progress())
+                            .child(
+                                Button::new("favourites")
+                                    .map(|button| snug_sidebar_button(button, IconName::Star))
+                                    .h(px(36.))
+                                    .ghost()
+                                    .label(format!("Favourites   {favourites}"))
+                                    .disabled(favourites == 0)
+                                    .selected(self.library_filter == LibraryFilter::Favourites)
+                                    .border_0()
+                                    .w_full()
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.library_filter = LibraryFilter::Favourites;
+                                        view.source_filter = None;
+                                        view.collection_filter = None;
+                                        view.settings_open = false;
+                                        view.filter(cx);
+                                        view.ensure_selection(window, cx);
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                },
             )
             .child(
                 Button::new("hidden-games")
+                    .map(|button| snug_sidebar_button(button, IconName::EyeOff))
                     .h(px(36.))
                     .ghost()
                     .border_0()
@@ -2014,41 +2215,69 @@ impl LauncherView {
                         view.switch_screen(StartScreen::Library, window, cx);
                     })),
             )
-            .child(div().mt_6().child(eyebrow("SOURCES")))
-            .children(sources.into_iter().map(|(source, count)| {
-                let name = self
-                    .snapshot
-                    .providers
-                    .iter()
-                    .find(|provider| provider.id == source)
-                    .map(|provider| provider.name.clone())
-                    .unwrap_or_else(|| {
-                        if source == "manual" {
-                            "Manually added".into()
-                        } else {
-                            source.clone()
-                        }
-                    });
-                Button::new(SharedString::from(format!("source-{source}")))
-                    .h(px(36.))
-                    .ghost()
-                    .label(format!("{name}   {count}"))
-                    .selected(self.source_filter.as_ref() == Some(&source))
-                    .border_0()
-                    .w_full()
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        view.source_filter = Some(source.clone());
-                        view.collection_filter = None;
-                        view.library_filter = LibraryFilter::Installed;
-                        view.settings_open = false;
-                        view.filter(cx);
-                        view.ensure_selection(window, cx);
-                        cx.notify();
-                    }))
-            }))
+            .child(div().mt_4().child(eyebrow("SOURCES")))
+            .children(
+                sources
+                    .into_iter()
+                    .filter(|(source, count)| source != "manual" || *count > 0)
+                    .map(|(source, count)| {
+                        let name = self
+                            .snapshot
+                            .providers
+                            .iter()
+                            .find(|provider| provider.id == source)
+                            .map(|provider| provider.name.clone())
+                            .unwrap_or_else(|| {
+                                if source == "manual" {
+                                    "Manually added".into()
+                                } else {
+                                    source.clone()
+                                }
+                            });
+                        Button::new(SharedString::from(format!("source-{source}")))
+                            .map(|button| {
+                                snug_sidebar_button(
+                                    button,
+                                    if source == "manual" {
+                                        IconName::Plus
+                                    } else {
+                                        IconName::Folder
+                                    },
+                                )
+                            })
+                            .h(px(36.))
+                            .ghost()
+                            .label(format!("{name}   {count}"))
+                            .selected(
+                                self.source_filter.as_ref() == Some(&source)
+                                    || source == "manual"
+                                        && self.library_filter == LibraryFilter::Manual,
+                            )
+                            .border_0()
+                            .w_full()
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                view.source_filter = if source == "manual" {
+                                    None
+                                } else {
+                                    Some(source.clone())
+                                };
+                                view.collection_filter = None;
+                                view.library_filter = if source == "manual" {
+                                    LibraryFilter::Manual
+                                } else {
+                                    LibraryFilter::Installed
+                                };
+                                view.settings_open = false;
+                                view.filter(cx);
+                                view.ensure_selection(window, cx);
+                                cx.notify();
+                            }))
+                    }),
+            )
             .when(unavailable > 0, |sidebar| {
                 sidebar.child(
                     Button::new("unavailable")
+                        .map(|button| snug_sidebar_button(button, IconName::FolderOpen))
                         .h(px(36.))
                         .ghost()
                         .label(format!("All saved   {}", installed + unavailable))
@@ -2068,10 +2297,11 @@ impl LauncherView {
             })
             .when(!self.collection_totals().is_empty(), |sidebar| {
                 sidebar
-                    .child(div().mt_6().child(eyebrow("COLLECTIONS")))
+                    .child(div().mt_4().child(eyebrow("COLLECTIONS")))
                     .children(self.collection_totals().into_iter().map(
                         |(name, (completed, total))| {
                             Button::new(SharedString::from(format!("collection-{name}")))
+                                .map(|button| snug_sidebar_button(button, IconName::FolderClosed))
                                 .h(px(36.))
                                 .ghost()
                                 .w_full()
@@ -2092,6 +2322,7 @@ impl LauncherView {
             .child(div().flex_1())
             .child(
                 Button::new("settings")
+                    .map(|button| snug_sidebar_button(button, IconName::Settings))
                     .h(px(36.))
                     .ghost()
                     .label("Settings")
@@ -2105,20 +2336,28 @@ impl LauncherView {
             .into_any_element()
     }
 
-    fn game_row(&self, game: &Game, cx: &mut Context<Self>) -> AnyElement {
+    fn game_row(
+        &self,
+        game: &Game,
+        geometry: LibraryGeometry,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // ponytail: long labels clip to one line; restore ellipses after GPUI fixes width-sensitive text caching.
         let id = game.id.clone();
+        let launch_id = id.clone();
+        let group = SharedString::from(format!("library-hover-{}", id.0));
         let selected = self.selected.as_ref() == Some(&id);
         let cover = game
             .artwork
             .get(&ArtworkKind::Background)
             .or_else(|| game.artwork.get(&ArtworkKind::Cover))
             .or_else(|| game.artwork.get(&ArtworkKind::Icon));
-        div()
+        let row = div()
             .id(SharedString::from(id.0.clone()))
+            .group(group.clone())
             .flex_1()
             .min_w_0()
-            .h(px(84.))
+            .h(px(geometry.row_height - geometry.gap))
             .flex()
             .items_center()
             .gap_3()
@@ -2130,8 +2369,8 @@ impl LauncherView {
             .hover(|style| style.bg(cx.theme().muted))
             .child(
                 div()
-                    .w(px(116.))
-                    .h(px(64.))
+                    .w(px(geometry.artwork_height * 1.8125))
+                    .h(px(geometry.artwork_height))
                     .flex_shrink_0()
                     .rounded(px(6.))
                     .overflow_hidden()
@@ -2160,13 +2399,19 @@ impl LauncherView {
                             .overflow_hidden()
                             .child(game.title().to_string()),
                     )
-                    .child(hint(&last_played(game))),
+                    .when(
+                        self.appearance.library_last_played || self.appearance.library_sources,
+                        |caption| caption.child(hint(&self.library_subtitle(game))),
+                    ),
             )
-            .when(game.favourite, |row| {
+            .when(self.appearance.library_favourite_badges, |row| {
                 row.child(
-                    Icon::new(IconName::Star)
-                        .small()
-                        .text_color(cx.theme().primary),
+                    div()
+                        .when(!game.favourite, |star| {
+                            star.opacity(0.)
+                                .group_hover(group.clone(), |style| style.opacity(1.))
+                        })
+                        .child(self.library_favourite_button(game, cx)),
                 )
             })
             .when(selected, |row| {
@@ -2180,181 +2425,123 @@ impl LauncherView {
                 view.select_game(id.clone(), window, cx);
                 view.focus.focus(window);
             }))
-            .into_any_element()
+            .on_double_click(cx.listener(move |view, _, window, cx| {
+                view.run_library_game_action(&launch_id, LibraryGameAction::Launch, window, cx)
+            }));
+        self.with_library_context_menu(game, row, cx)
     }
 
     fn library(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let columns = self.library_columns(window);
-        let count = self.visible.len();
-        let rows = count.div_ceil(columns);
-        let content = if !self.snapshot.ready {
-            div()
-                .flex_1()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap_3()
-                .when(self.snapshot.initialization_error.is_none(), |view| {
-                    view.child(Spinner::new())
-                })
-                .child(
-                    self.snapshot
-                        .initialization_error
-                        .clone()
-                        .unwrap_or_else(|| "Opening your cached library…".into()),
-                )
-                .into_any_element()
-        } else if count == 0 {
-            div()
-                .flex_1()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap_4()
-                .px_8()
-                .child(
-                    div()
-                        .w(px(80.))
-                        .h(px(100.))
-                        .rounded(px(7.))
-                        .border_1()
-                        .border_color(cx.theme().primary)
-                        .bg(cx.theme().muted)
+        let geometry = self.library_geometry(window);
+        list(
+            self.library_list.clone(),
+            cx.processor(move |view, row: usize, window, cx| {
+                if row == 0 {
+                    return view.library_header(window, cx);
+                }
+                if !view.snapshot.ready || view.visible.is_empty() {
+                    return div()
+                        .w_full()
+                        .h(px(320.))
                         .flex()
+                        .flex_col()
                         .items_center()
                         .justify_center()
-                        .child(div().w_8().h_1().bg(cx.theme().primary)),
-                )
-                .child(div().text_2xl().child(if self.snapshot.games.is_empty() {
-                    "No games yet"
-                } else {
-                    "No games in this view"
-                }))
-                .child(
-                    Button::new("empty-add")
-                        .h(px(36.))
-                        .primary()
-                        .label("Add a game")
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.pick(PickerPurpose::AddGame, window, cx)
-                        })),
-                )
-                .into_any_element()
-        } else {
-            uniform_list(
-                "game-list",
-                rows,
-                cx.processor(move |view, range: std::ops::Range<usize>, _, cx| {
-                    range
-                        .map(|row| {
-                            let mut line = div().flex().gap_3().h(px(88.)).w_full();
-                            for column in 0..columns {
-                                if let Some(game) = view.visible.get(row * columns + column) {
-                                    line = line.child(view.game_row(game, cx));
-                                } else {
-                                    line = line.child(div().flex_1().min_w_0());
-                                }
-                            }
-                            line
+                        .gap_4()
+                        .px_5()
+                        .when(
+                            !view.snapshot.ready && view.snapshot.initialization_error.is_none(),
+                            |content| content.child(Spinner::new()),
+                        )
+                        .child(div().text_lg().child(if !view.snapshot.ready {
+                            view.snapshot
+                                .initialization_error
+                                .clone()
+                                .unwrap_or_else(|| "Opening your cached library…".into())
+                        } else if view.snapshot.games.is_empty() {
+                            "No games yet".into()
+                        } else {
+                            "No games in this view".into()
+                        }))
+                        .when(view.snapshot.ready, |content| {
+                            content.child(
+                                Button::new("empty-add")
+                                    .primary()
+                                    .label("Add a game")
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.pick(PickerPurpose::AddGame, window, cx)
+                                    })),
+                            )
                         })
-                        .collect()
-                }),
-            )
-            .track_scroll(self.list_scroll.clone())
-            .flex_1()
-            .min_h_0()
-            .w_full()
-            .into_any_element()
-        };
+                        .into_any_element();
+                }
+                let mut line = div()
+                    .w_full()
+                    .h(px(geometry.row_height))
+                    .px(px(20.))
+                    .flex()
+                    .gap(px(geometry.gap));
+                for column in 0..geometry.columns {
+                    if let Some(game) = view.visible.get((row - 1) * geometry.columns + column) {
+                        line = line.child(view.library_card(game, geometry, window, cx));
+                    } else {
+                        line = line.child(div().flex_1().min_w_0());
+                    }
+                }
+                line.into_any_element()
+            }),
+        )
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .into_any_element()
+    }
+
+    fn library_header(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let title = self
+            .collection_filter
+            .clone()
+            .or_else(|| {
+                self.source_filter
+                    .as_deref()
+                    .map(source_name)
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| {
+                if self.library_filter == LibraryFilter::Hidden {
+                    "Hidden games"
+                } else {
+                    "Library"
+                }
+                .into()
+            });
         div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
+            .w_full()
             .flex()
             .flex_col()
             .gap_3()
+            .px(px(20.))
+            .pt(px(CONTENT_TOP))
+            .pb_4()
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .h(px(44.))
-                    .flex_shrink_0()
                     .gap_2()
                     .child(
                         div()
-                            .flex()
-                            .gap_1()
-                            .p_1()
-                            .rounded_lg()
-                            .bg(cx.theme().muted.opacity(0.7))
-                            .children(
-                                [
-                                    (
-                                        LibraryFilter::Installed,
-                                        "Installed",
-                                        self.snapshot
-                                            .games
-                                            .iter()
-                                            .filter(|game| !game.hidden && game.available)
-                                            .count(),
-                                    ),
-                                    (
-                                        LibraryFilter::All,
-                                        "All games",
-                                        self.snapshot
-                                            .games
-                                            .iter()
-                                            .filter(|game| !game.hidden)
-                                            .count(),
-                                    ),
-                                    (
-                                        LibraryFilter::Favourites,
-                                        "Favourites",
-                                        self.snapshot
-                                            .games
-                                            .iter()
-                                            .filter(|game| !game.hidden && game.favourite)
-                                            .count(),
-                                    ),
-                                    (
-                                        LibraryFilter::Hidden,
-                                        "Hidden",
-                                        self.snapshot
-                                            .games
-                                            .iter()
-                                            .filter(|game| game.hidden)
-                                            .count(),
-                                    ),
-                                ]
-                                .into_iter()
-                                .map(|(filter, label, count)| {
-                                    Button::new(label)
-                                        .ghost()
-                                        .h(px(36.))
-                                        .label(format!("{label}  {count}"))
-                                        .selected(self.library_filter == filter)
-                                        .border_0()
-                                        .when(self.library_filter == filter, |button| {
-                                            button.bg(cx.theme().secondary)
-                                        })
-                                        .on_click(cx.listener(move |view, _, window, cx| {
-                                            view.library_filter = filter;
-                                            view.source_filter = None;
-                                            view.collection_filter = None;
-                                            view.filter(cx);
-                                            view.ensure_selection(window, cx);
-                                            cx.notify();
-                                        }))
-                                }),
-                            ),
+                            .min_w_0()
+                            .flex_1()
+                            .text_2xl()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title),
                     )
                     .child(
                         Button::new("sort-library")
                             .ghost()
-                            .h(px(36.))
+                            .h(px(32.))
+                            .px_2()
                             .label(if self.sort_recent { "Recent" } else { "A–Z" })
                             .icon(IconName::ChevronsUpDown)
                             .tooltip("Switch between recent launches and title order")
@@ -2365,19 +2552,421 @@ impl LauncherView {
                             })),
                     ),
             )
-            .when_some(self.source_filter.clone(), |library, source| {
-                library.child(hint(&format!("Source: {source}")))
+            .child(
+                div().flex().flex_wrap().items_center().gap_0().children(
+                    [
+                        LibraryFilter::Installed,
+                        LibraryFilter::All,
+                        LibraryFilter::Favourites,
+                        LibraryFilter::Manual,
+                    ]
+                    .into_iter()
+                    .filter(|filter| {
+                        (*filter == LibraryFilter::Favourites
+                            && self.favourites_transition.is_some())
+                            || filter.visible_in_navigation(
+                                self.snapshot
+                                    .games
+                                    .iter()
+                                    .filter(|game| filter.includes(game))
+                                    .count(),
+                            )
+                    })
+                    .map(|filter| {
+                        let count = self
+                            .snapshot
+                            .games
+                            .iter()
+                            .filter(|game| filter.includes(game))
+                            .count();
+                        let label = format!("{}  {count}", filter.label());
+                        let width = filter_button_width(&label, window);
+                        let selected = self.library_filter == filter
+                            && self.source_filter.is_none()
+                            && self.collection_filter.is_none();
+                        let button = Button::new(filter.label())
+                            .ghost()
+                            .h(px(32.))
+                            .px_2()
+                            .label(label)
+                            .disabled(filter == LibraryFilter::Favourites && count == 0)
+                            .selected(selected)
+                            .border_0()
+                            .when(selected, |button| button.bg(cx.theme().secondary))
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                view.library_filter = filter;
+                                view.source_filter = None;
+                                view.collection_filter = None;
+                                view.filter(cx);
+                                view.ensure_selection(window, cx);
+                                cx.notify();
+                            }));
+                        let progress = if filter == LibraryFilter::Favourites {
+                            self.favourites_progress()
+                        } else {
+                            1.
+                        };
+                        // Animate the trailing gap too; removing a zero-width wrapper
+                        // must not make neighboring buttons jump at the last frame.
+                        let extent = width + window.rem_size() * 0.25;
+                        {
+                            div()
+                                .w(extent * progress)
+                                .flex_shrink_0()
+                                .overflow_hidden()
+                                .opacity(progress)
+                                .child(button.w(width))
+                                .into_any_element()
+                        }
+                    }),
+                ),
+            )
+            .into_any_element()
+    }
+
+    fn library_card(
+        &self,
+        game: &Game,
+        geometry: LibraryGeometry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if self.appearance.library_layout == LibraryLayout::Pills {
+            return self.game_row(game, geometry, cx);
+        }
+        let id = game.id.clone();
+        let launch_id = id.clone();
+        let group = SharedString::from(format!("library-hover-{}", id.0));
+        let selected = self.selected.as_ref() == Some(&id);
+        let compact = self.appearance.library_layout == LibraryLayout::Compact;
+        let cover = if self.appearance.library_layout == LibraryLayout::Tiles {
+            game.artwork
+                .get(&ArtworkKind::Background)
+                .or_else(|| game.artwork.get(&ArtworkKind::Cover))
+        } else {
+            game.artwork
+                .get(&ArtworkKind::Cover)
+                .or_else(|| game.artwork.get(&ArtworkKind::Background))
+        }
+        .or_else(|| game.artwork.get(&ArtworkKind::Icon));
+        let artwork = div()
+            .relative()
+            .overflow_hidden()
+            .rounded(px(8.))
+            .bg(cx.theme().muted)
+            .h(px(geometry.artwork_height))
+            .flex_shrink_0()
+            .when(compact, |art| {
+                art.w(px(geometry.artwork_height)).flex_shrink_0()
             })
-            .when_some(self.collection_filter.clone(), |library, collection| {
-                library.child(hint(&format!("Collection: {collection}")))
+            .when(!compact, |art| art.w_full())
+            .child(match cover {
+                Some(asset) => {
+                    image(asset.thumbnail_path.clone(), ObjectFit::Cover, cx).into_any_element()
+                }
+                None => placeholder("", cx.theme().colors).into_any_element(),
             })
-            .child(content)
+            .when(
+                !compact && self.appearance.library_favourite_badges,
+                |art| {
+                    art.child(
+                        div()
+                            .absolute()
+                            .top(px(6.))
+                            .right(px(6.))
+                            .when(!game.favourite, |star| {
+                                star.opacity(0.)
+                                    .group_hover(group.clone(), |style| style.opacity(1.))
+                            })
+                            .child(self.library_favourite_button(game, cx)),
+                    )
+                },
+            )
+            .when(!compact, |art| {
+                let play_id = game.id.clone();
+                let menu_game = game.clone();
+                let owner = cx.weak_entity();
+                art.child(
+                    div()
+                        .absolute()
+                        .bottom(px(6.))
+                        .left(px(6.))
+                        .right(px(6.))
+                        .flex()
+                        .justify_between()
+                        .opacity(0.)
+                        .group_hover(group.clone(), |style| style.opacity(1.))
+                        .child(
+                            Button::new(SharedString::from(format!("card-play-{}", game.id.0)))
+                                .ghost()
+                                .size(px(28.))
+                                .p_0()
+                                .icon(Icon::default().path("icons/play.svg"))
+                                .bg(cx.theme().background.alpha(0.96))
+                                .tooltip("Play game · double-click the card to launch")
+                                .disabled(!game.available && game.launch_override.is_none())
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(cx.listener(move |view, _, window, cx| {
+                                    cx.stop_propagation();
+                                    view.run_library_game_action(
+                                        &play_id,
+                                        LibraryGameAction::Launch,
+                                        window,
+                                        cx,
+                                    );
+                                })),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("card-manage-{}", game.id.0)))
+                                .ghost()
+                                .size(px(28.))
+                                .p_0()
+                                .icon(IconName::Ellipsis)
+                                .bg(cx.theme().background.alpha(0.96))
+                                .tooltip("Manage game")
+                                .on_click(|_, _, cx| cx.stop_propagation())
+                                .dropdown_menu(move |menu, _, _| {
+                                    library_game_menu(menu, &menu_game, owner.clone())
+                                }),
+                        ),
+                )
+            });
+        let caption = div()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(4.))
+            .when(compact, |caption| caption.flex_1())
+            .when(!compact, |caption| {
+                caption
+                    .w_full()
+                    .px_1()
+                    .h(px(geometry.caption_height))
+                    .flex_shrink_0()
+            })
+            .child(recents_title(
+                SharedString::from(format!("library-title-{}", id.0)),
+                game.title(),
+                px(geometry.title_font_size),
+                FontWeight::SEMIBOLD,
+                window,
+                cx,
+            ))
+            .when(compact, |caption| {
+                let launches = self
+                    .snapshot
+                    .activity
+                    .iter()
+                    .map(|day| day.games.get(&game.id).copied().unwrap_or(0))
+                    .fold(0u32, u32::saturating_add);
+                let summary = compact_summary(game, launches);
+                caption.child(library_metadata(&summary, geometry))
+            })
+            .when(!compact && self.appearance.library_last_played, |caption| {
+                caption.child(library_metadata(&last_played(game), geometry))
+            })
+            .when(!compact && self.appearance.library_sources, |caption| {
+                caption.child(library_metadata(source_name(&game.provider_id), geometry))
+            });
+        let card = div()
+            .id(SharedString::from(format!("library-card-{}", id.0)))
+            .group(group.clone())
+            .flex_1()
+            .min_w_0()
+            .h(px(geometry.row_height - geometry.gap))
+            .flex()
+            .gap(px(6.))
+            .rounded(px(10.))
+            .p(px(4.))
+            .when(compact, |card| card.flex_row().items_center().px_2())
+            .when(!compact, |card| card.flex_col())
+            .when(selected, |card| card.bg(cx.theme().accent))
+            .hover(|card| card.bg(cx.theme().muted))
+            .cursor_pointer()
+            .child(artwork)
+            .child(caption)
+            .when(compact, |card| {
+                card.child(
+                    div()
+                        .w(window.rem_size() * 10.5)
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(library_metadata(
+                            &library_source_status(game, self.appearance.library_sources),
+                            geometry,
+                        ))
+                        .when(self.appearance.library_last_played, |column| {
+                            column.child(library_metadata(&last_played(game), geometry))
+                        }),
+                )
+            })
+            .when(
+                compact && self.appearance.library_favourite_badges,
+                |card| {
+                    card.child(
+                        div()
+                            .when(!game.favourite, |star| {
+                                star.opacity(0.)
+                                    .group_hover(group.clone(), |style| style.opacity(1.))
+                            })
+                            .child(self.library_favourite_button(game, cx)),
+                    )
+                },
+            )
+            .on_click(cx.listener(move |view, _, window, cx| {
+                view.select_game(id.clone(), window, cx);
+                view.focus.focus(window);
+            }))
+            .on_double_click(cx.listener(move |view, _, window, cx| {
+                view.run_library_game_action(&launch_id, LibraryGameAction::Launch, window, cx)
+            }));
+        self.with_library_context_menu(game, card, cx)
+    }
+
+    fn library_subtitle(&self, game: &Game) -> String {
+        library_subtitle(
+            game,
+            self.appearance.library_last_played,
+            self.appearance.library_sources,
+        )
+    }
+
+    fn run_library_game_action(
+        &mut self,
+        id: &GameId,
+        action: LibraryGameAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(game) = self
+            .api
+            .snapshot()
+            .games
+            .iter()
+            .find(|game| &game.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        match action {
+            LibraryGameAction::Launch => {
+                if game.available || game.launch_override.is_some() {
+                    self.submit(Command::LaunchGame { game_id: game.id }, cx);
+                }
+            }
+            LibraryGameAction::Favourite => {
+                self.submit(
+                    Command::SetFavourite {
+                        game_id: game.id,
+                        favourite: !game.favourite,
+                    },
+                    cx,
+                );
+            }
+            LibraryGameAction::Hidden => {
+                self.submit(
+                    Command::SetHidden {
+                        game_id: game.id,
+                        hidden: !game.hidden,
+                    },
+                    cx,
+                );
+            }
+            LibraryGameAction::Completed => {
+                self.submit(
+                    Command::SetGameProgress {
+                        game_id: game.id,
+                        collections: game.collections,
+                        completed: !game.completed,
+                    },
+                    cx,
+                );
+            }
+            LibraryGameAction::Reveal => cx.reveal_path(&game.install_directory),
+            LibraryGameAction::Edit(tab) => {
+                if self.selected.as_ref() != Some(id) {
+                    self.select_game(id.clone(), window, cx);
+                }
+                self.open_details(tab, window, cx);
+            }
+            LibraryGameAction::Reidentify => {
+                if self.selected.as_ref() != Some(id) {
+                    self.select_game(id.clone(), window, cx);
+                }
+                self.begin_reidentify(window, cx);
+            }
+            LibraryGameAction::Remove => {
+                if game.provider_id == "manual" {
+                    if self.selected.as_ref() != Some(id) {
+                        self.select_game(id.clone(), window, cx);
+                    }
+                    self.remove_manual_game(window, cx);
+                }
+            }
+        }
+    }
+
+    fn library_favourite_button(&self, game: &Game, cx: &mut Context<Self>) -> Button {
+        let id = game.id.clone();
+        Button::new(SharedString::from(format!("star-{}", id.0)))
+            .ghost()
+            .size(px(26.))
+            .p_0()
+            .border_0()
+            .rounded_full()
+            .icon(if game.favourite {
+                Icon::default().path("icons/star-filled.svg")
+            } else {
+                Icon::new(IconName::Star)
+            })
+            .bg(cx.theme().background.alpha(0.96))
+            .text_color(cx.theme().foreground)
+            .tooltip(if game.favourite {
+                "Remove from favourites"
+            } else {
+                "Add to favourites"
+            })
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |view, _, window, cx| {
+                cx.stop_propagation();
+                view.run_library_game_action(&id, LibraryGameAction::Favourite, window, cx);
+            }))
+    }
+
+    fn with_library_context_menu<E>(
+        &self,
+        game: &Game,
+        card: E,
+        cx: &mut Context<Self>,
+    ) -> AnyElement
+    where
+        E: ParentElement + Styled + IntoElement + 'static,
+    {
+        let owner = cx.weak_entity();
+        let game = game.clone();
+        // Give every context-menu wrapper its own scope; the extension's internal
+        // element id is otherwise identical for each sibling card in a grid row.
+        div()
+            .id(SharedString::from(format!(
+                "library-menu-scope-{}",
+                game.id.0
+            )))
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .child(
+                card.context_menu(move |menu, _, _| library_game_menu(menu, &game, owner.clone())),
+            )
             .into_any_element()
     }
 
     fn navigation_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let view = cx.weak_entity();
         let selected_filter = self.library_filter;
+        let favourites_available = self.favourite_count() > 0;
+        let manual_available = self.manual_count() > 0;
         div()
             .id("navigation-controls")
             .occlude()
@@ -2429,8 +3018,13 @@ impl LauncherView {
                                 LibraryFilter::Installed,
                                 LibraryFilter::All,
                                 LibraryFilter::Favourites,
-                                LibraryFilter::Hidden,
+                                LibraryFilter::Manual,
                             ] {
+                                if filter == LibraryFilter::Favourites && !favourites_available
+                                    || filter == LibraryFilter::Manual && !manual_available
+                                {
+                                    continue;
+                                }
                                 let view = view.clone();
                                 menu = menu.item(
                                     PopupMenuItem::element(move |_, _| {
@@ -2633,7 +3227,6 @@ impl LauncherView {
         let Some(game) = self.selected_game().filter(|_| self.snapshot.ready) else {
             return div()
                 .size_full()
-                .p_5()
                 .child(self.library(window, cx))
                 .into_any_element();
         };
@@ -3203,13 +3796,22 @@ impl LauncherView {
                             .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(|_, _, cx| cx.stop_propagation())
                             .when(
-                                self.screen == StartScreen::Recents && !self.settings_open,
+                                matches!(self.screen, StartScreen::Recents | StartScreen::Library)
+                                    && !self.settings_open,
                                 |controls| {
                                     controls.child(
                                         self.toolbar_button(
-                                            "customize-recents",
+                                            if self.screen == StartScreen::Library {
+                                                "customize-library"
+                                            } else {
+                                                "customize-recents"
+                                            },
                                             IconName::Palette,
-                                            "Customize Recents",
+                                            if self.screen == StartScreen::Library {
+                                                "Customize Library"
+                                            } else {
+                                                "Customize Recents"
+                                            },
                                         )
                                         .selected(self.customization_open)
                                         .disabled(
@@ -3301,7 +3903,7 @@ impl LauncherView {
                 hero.child(
                     div()
                         .absolute()
-                        .top(px(56.))
+                        .top(px(CONTENT_TOP + 48.))
                         .left_5()
                         .right_5()
                         .h(px(64.))
@@ -3311,9 +3913,9 @@ impl LauncherView {
             .child(
                 div()
                     .absolute()
-                    .top_4()
+                    .top(px(CONTENT_TOP))
                     .left_4()
-                    .right_4()
+                    .right(px(52.))
                     .flex()
                     .items_center()
                     .justify_between()
@@ -3455,12 +4057,38 @@ impl LauncherView {
     fn details(&self, game: &Game, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         if self.detail_tab == DetailTab::Overview {
             return div()
-                .w(px(380.))
+                .relative()
+                .w(px(DETAIL_WIDTH))
                 .flex_shrink_0()
                 .h_full()
-                .child(self.hero(game, window, cx))
+                .child(
+                    div()
+                        .id("overview-scroll")
+                        .size_full()
+                        .overflow_y_scroll()
+                        .child(
+                            div()
+                                .w_full()
+                                .h(window.viewport_size().height.max(px(620.)))
+                                .child(self.hero(game, window, cx)),
+                        ),
+                )
+                .child(
+                    div().absolute().top(px(CONTENT_TOP)).right(px(12.)).child(
+                        Button::new("close-detail-pane")
+                            .ghost()
+                            .size(px(32.))
+                            .icon(IconName::Close)
+                            .bg(cx.theme().popover.alpha(0.94))
+                            .tooltip("Close detail pane")
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.close_detail_pane(window, cx)
+                            })),
+                    ),
+                )
                 .into_any_element();
         }
+        let modal = self.editor_is_modal();
         let game_id = game.id.clone();
         let favourite_id = game_id.clone();
         let favourite = game.favourite;
@@ -3503,74 +4131,49 @@ impl LauncherView {
             DetailTab::Journal => self.game_journal(game, cx),
         };
         div()
-            .w(px(380.))
+            .id("details-shell")
+            .when(modal, |panel| panel.w_full())
+            .when(!modal, |panel| panel.w(px(DETAIL_WIDTH)))
             .flex_shrink_0()
             .h_full()
-            .bg(cx.theme().secondary.opacity(0.7))
             .flex()
             .flex_col()
-            .p_5()
-            .gap_4()
-            .child(div().text_2xl().child(game.title().to_string()))
+            .bg(cx.theme().secondary.opacity(0.7))
             .child(
                 div()
                     .flex()
+                    .items_center()
                     .gap_2()
+                    .p_5()
+                    .pt(px(if modal { 20. } else { CONTENT_TOP }))
+                    .flex_shrink_0()
                     .child(
-                        Button::new("details-play")
-                            .h(px(36.))
-                            .primary()
-                            .label("Play game")
-                            .disabled(!game.available && game.launch_override.is_none())
-                            .on_click(cx.listener(|view, _, _, cx| {
-                                if let Some(game_id) = view.selected.clone() {
-                                    view.submit(Command::LaunchGame { game_id }, cx);
-                                }
-                            })),
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_2xl()
+                            .line_clamp(1)
+                            .overflow_hidden()
+                            .child(game.title().to_string()),
                     )
                     .child(
-                        Button::new("details-favourite")
-                            .h(px(36.))
-                            .label(if favourite {
-                                "Unfavourite"
+                        Button::new("close-game-editor")
+                            .ghost()
+                            .size(px(32.))
+                            .icon(IconName::Close)
+                            .tooltip(if modal {
+                                "Close game editor"
                             } else {
-                                "Favourite"
+                                "Close detail pane"
                             })
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                view.submit(
-                                    Command::SetFavourite {
-                                        game_id: favourite_id.clone(),
-                                        favourite: !favourite,
-                                    },
-                                    cx,
-                                );
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                if modal {
+                                    view.close_editor(window, cx);
+                                } else {
+                                    view.close_detail_pane(window, cx);
+                                }
                             })),
                     ),
-            )
-            .child(
-                div().w_full().flex().flex_wrap().gap_1().children(
-                    [
-                        (DetailTab::Overview, "Overview"),
-                        (DetailTab::Metadata, "Metadata"),
-                        (DetailTab::Artwork, "Images"),
-                        (DetailTab::Launch, "Launch"),
-                        (DetailTab::Journal, "Journal"),
-                    ]
-                    .into_iter()
-                    .map(|(tab, label)| {
-                        Button::new(label)
-                            .ghost()
-                            .h(px(36.))
-                            .px_3()
-                            .label(label)
-                            .selected(self.detail_tab == tab)
-                            .border_0()
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                view.detail_tab = tab;
-                                cx.notify();
-                            }))
-                    }),
-                ),
             )
             .child(
                 div()
@@ -3579,7 +4182,130 @@ impl LauncherView {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .child(content),
+                    .child(
+                        div()
+                            .w_full()
+                            .flex_shrink_0()
+                            .flex()
+                            .flex_col()
+                            .p_5()
+                            .pt_0()
+                            .gap_4()
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("details-play")
+                                            .h(px(36.))
+                                            .primary()
+                                            .label("Play game")
+                                            .disabled(
+                                                !game.available && game.launch_override.is_none(),
+                                            )
+                                            .on_click(cx.listener(|view, _, _, cx| {
+                                                if let Some(game_id) = view.selected.clone() {
+                                                    view.submit(
+                                                        Command::LaunchGame { game_id },
+                                                        cx,
+                                                    );
+                                                }
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("details-favourite")
+                                            .h(px(36.))
+                                            .label(if favourite {
+                                                "Unfavourite"
+                                            } else {
+                                                "Favourite"
+                                            })
+                                            .on_click(cx.listener(move |view, _, _, cx| {
+                                                view.submit(
+                                                    Command::SetFavourite {
+                                                        game_id: favourite_id.clone(),
+                                                        favourite: !favourite,
+                                                    },
+                                                    cx,
+                                                );
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                div().w_full().flex().flex_wrap().gap_1().children(
+                                    [
+                                        (DetailTab::Overview, "Overview"),
+                                        (DetailTab::Metadata, "Metadata"),
+                                        (DetailTab::Artwork, "Images"),
+                                        (DetailTab::Launch, "Launch"),
+                                        (DetailTab::Journal, "Journal"),
+                                    ]
+                                    .into_iter()
+                                    .filter(|(tab, _)| !modal || *tab != DetailTab::Overview)
+                                    .map(|(tab, label)| {
+                                        Button::new(label)
+                                            .ghost()
+                                            .h(px(36.))
+                                            .px_3()
+                                            .label(label)
+                                            .selected(self.detail_tab == tab)
+                                            .border_0()
+                                            .on_click(cx.listener(move |view, _, window, cx| {
+                                                if tab == DetailTab::Overview {
+                                                    view.close_editor(window, cx);
+                                                } else {
+                                                    view.detail_tab = tab;
+                                                    cx.notify();
+                                                }
+                                            }))
+                                    }),
+                                ),
+                            )
+                            .child(div().w_full().child(content)),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn game_editor_modal(
+        &self,
+        game: &Game,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        div()
+            .id("game-editor-backdrop")
+            .absolute()
+            .top(px(CONTENT_TOP))
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .occlude()
+            .bg(gpui::black().alpha(0.45))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _, window, cx| {
+                    view.close_editor(window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .child(
+                div()
+                    .id("game-editor-modal")
+                    .track_focus(&self.editor_focus)
+                    .tab_group()
+                    .w(px(680.).min(window.viewport_size().width - px(48.)))
+                    .h((window.viewport_size().height - px(CONTENT_TOP + 32.)).min(px(820.)))
+                    .rounded(cx.theme().radius_lg)
+                    .overflow_hidden()
+                    .shadow_lg()
+                    .occlude()
+                    .bg(cx.theme().background)
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(self.details(game, window, cx)),
             )
             .into_any_element()
     }
@@ -3957,6 +4683,9 @@ impl LauncherView {
     }
 
     fn customization(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.screen == StartScreen::Library {
+            return self.library_customization(window, cx);
+        }
         let saving = self
             .theme_editor
             .as_ref()
@@ -4120,6 +4849,157 @@ impl LauncherView {
         }
         div()
             .id("recents-customization")
+            .absolute()
+            .top(px(HEADER_HEIGHT + 8.))
+            .right(px(12.))
+            .w(px(320.))
+            .max_h(window.viewport_size().height - px(HEADER_HEIGHT + 24.))
+            .overflow_y_scroll()
+            .occlude()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .rounded(cx.theme().radius_lg)
+            .bg(cx.theme().background)
+            .shadow_lg()
+            .p_4()
+            .child(panel)
+            .into_any_element()
+    }
+
+    fn library_customization(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let panel = div()
+            .w_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(eyebrow("CUSTOMIZE LIBRARY"))
+                    .child(
+                        Button::new("close-library-customization")
+                            .ghost()
+                            .size(px(32.))
+                            .icon(IconName::Close)
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.customization_open = false;
+                                view.focus.focus(window);
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(eyebrow("LAYOUT"))
+            .children(
+                [
+                    LibraryLayout::Pills,
+                    LibraryLayout::Covers,
+                    LibraryLayout::Tiles,
+                    LibraryLayout::Compact,
+                ]
+                .into_iter()
+                .map(|layout| {
+                    Button::new(layout.label())
+                        .h(px(36.))
+                        .w_full()
+                        .label(layout.label())
+                        .selected(self.appearance.library_layout == layout)
+                        .on_click(cx.listener(move |view, _, window, cx| {
+                            view.set_appearance(
+                                AppearanceSettings {
+                                    library_layout: layout,
+                                    ..view.appearance.clone()
+                                },
+                                window,
+                                cx,
+                            );
+                            view.library_reveal = view
+                                .visible
+                                .iter()
+                                .position(|game| view.selected.as_ref() == Some(&game.id));
+                        }))
+                }),
+            )
+            .child(eyebrow("SIZE & SPACING"))
+            .child(
+                div().flex().gap_1().children(
+                    [
+                        LibraryDensity::Small,
+                        LibraryDensity::Medium,
+                        LibraryDensity::Large,
+                    ]
+                    .into_iter()
+                    .map(|density| {
+                        Button::new(density.label())
+                            .h(px(32.))
+                            .px_3()
+                            .label(density.label())
+                            .selected(self.appearance.library_density == density)
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                view.set_appearance(
+                                    AppearanceSettings {
+                                        library_density: density,
+                                        ..view.appearance.clone()
+                                    },
+                                    window,
+                                    cx,
+                                )
+                            }))
+                    }),
+                ),
+            )
+            .child(eyebrow("DISPLAY"))
+            .children(
+                [
+                    (
+                        "library-details",
+                        "Game detail panel",
+                        self.appearance.library_details,
+                    ),
+                    (
+                        "library-last-played",
+                        "Last played",
+                        self.appearance.library_last_played,
+                    ),
+                    (
+                        "library-sources",
+                        "Source labels",
+                        self.appearance.library_sources,
+                    ),
+                    (
+                        "library-favourites",
+                        "Favourite stars",
+                        self.appearance.library_favourite_badges,
+                    ),
+                    (
+                        "library-dither",
+                        "Detail artwork dithering",
+                        self.appearance.dither_artwork,
+                    ),
+                ]
+                .into_iter()
+                .map(|(id, label, checked)| {
+                    Switch::new(id)
+                        .label(label)
+                        .checked(checked)
+                        .on_click(cx.listener(move |view, enabled, window, cx| {
+                            let mut settings = view.appearance.clone();
+                            match id {
+                                "library-details" => settings.library_details = *enabled,
+                                "library-last-played" => settings.library_last_played = *enabled,
+                                "library-sources" => settings.library_sources = *enabled,
+                                "library-favourites" => {
+                                    settings.library_favourite_badges = *enabled
+                                }
+                                _ => settings.dither_artwork = *enabled,
+                            }
+                            view.set_appearance(settings, window, cx);
+                        }))
+                }),
+            );
+        div()
+            .id("library-customization")
             .absolute()
             .top(px(HEADER_HEIGHT + 8.))
             .right(px(12.))
@@ -4653,7 +5533,7 @@ impl LauncherView {
 
     fn activity_overview(&self, cx: &mut Context<Self>) -> AnyElement {
         div().id("library-activity").size_full().overflow_y_scroll().px_8().pb_8()
-            .child(div().w_full().max_w(px(1100.)).mx_auto().flex().flex_col().gap_5()
+            .child(div().w_full().max_w(px(1100.)).mx_auto().pt(px(CONTENT_TOP)).flex().flex_col().gap_5()
                 .child(div().text_3xl().child("Your activity"))
                 .child(hint("Launches recorded through Startpoint, not playtime. Existing last-played dates are not retroactively counted."))
                 .child(div().w_full().flex().flex_wrap().items_start().gap_4()
@@ -4685,11 +5565,12 @@ impl LauncherView {
             .h_full()
             .overflow_y_scroll()
             .px_8()
-            .py_4()
+            .pb_8()
             .child(
                 div()
                     .w(content_width.min(px(800.)))
                     .mx_auto()
+                    .pt(px(CONTENT_TOP))
                     .flex()
                     .flex_col()
                     .gap_5()
@@ -5057,6 +5938,8 @@ impl LauncherView {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 Input::new(&self.command_search)
+                    .appearance(false)
+                    .focus_bordered(false)
                     .large()
                     .w_full()
                     .prefix(Icon::new(IconName::Search))
@@ -5104,7 +5987,7 @@ impl LauncherView {
                                         .rounded_md()
                                         .cursor_pointer()
                                         .when(view.command_selected == index, |row| {
-                                            row.bg(cx.theme().accent)
+                                            row.bg(cx.theme().muted)
                                         })
                                         .hover(|row| row.bg(cx.theme().muted))
                                         .child(
@@ -5282,6 +6165,22 @@ impl LauncherView {
 
 impl Render for LauncherView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let favourites = self.favourite_count() > 0;
+        if favourites != self.favourites_available && self.snapshot.ready {
+            let from = self.favourites_progress();
+            self.favourites_transition =
+                (!appearance::reduced_motion()).then(|| (from, Instant::now()));
+        }
+        self.favourites_available = favourites;
+        if let Some((_, started)) = self.favourites_transition {
+            self.library_list.splice(0..1, 1);
+            if started.elapsed() >= Duration::from_millis(220) || appearance::reduced_motion() {
+                self.favourites_transition = None;
+            } else {
+                window.request_animation_frame();
+            }
+        }
+        self.prepare_library(window);
         if self.screen == StartScreen::Recents && !self.settings_open {
             let games = self.recent_games();
             let next = games
@@ -5331,11 +6230,10 @@ impl Render for LauncherView {
                 .min_h_0()
                 .min_w_0()
                 .h_full()
-                .px_5()
-                .pb_4()
-                .gap_5()
                 .child(self.library(window, cx));
-            if let Some(game) = self.selected_game() {
+            if self.shows_library_details()
+                && let Some(game) = self.selected_game()
+            {
                 content = content.child(self.details(&game, window, cx));
             }
             content.into_any_element()
@@ -5401,7 +6299,7 @@ impl Render for LauncherView {
                                                 let width = match event.keystroke.key.as_str() {
                                                     "left" => view.appearance.sidebar_width - 8.,
                                                     "right" => view.appearance.sidebar_width + 8.,
-                                                    "home" => 192.,
+                                                    "home" => 176.,
                                                     "end" => 400.,
                                                     _ => return,
                                                 };
@@ -5427,21 +6325,16 @@ impl Render for LauncherView {
                                 )
                             }),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .when(
-                                self.settings_open || self.screen != StartScreen::Recents,
-                                |main| main.pt(px(HEADER_HEIGHT + 12.)),
-                            )
-                            .child(content),
-                    ),
+                    .child(div().flex_1().min_w_0().h_full().child(content)),
             )
             .child(self.toolbar(sidebar, window, cx))
             .when(self.customization_open, |view| {
                 view.child(self.customization(window, cx))
+            })
+            .when(self.editor_is_modal() && !self.settings_open, |view| {
+                view.when_some(self.selected_game(), |view, game| {
+                    view.child(self.game_editor_modal(&game, window, cx))
+                })
             })
             .when(self.jobs_open, |view| view.child(self.activity(cx)))
             .when(self.command_mode.is_some(), |view| {
@@ -5457,6 +6350,207 @@ fn saved_artwork_match(game: &Game) -> Option<ArtworkGame> {
             id: id.clone(),
             name: game.title().to_string(),
         })
+}
+
+fn library_metadata(text: &str, geometry: LibraryGeometry) -> Div {
+    div()
+        .w_full()
+        .min_w_0()
+        .h(px(geometry.metadata_height))
+        .flex_shrink_0()
+        .text_size(px(geometry.metadata_font_size))
+        .line_height(relative(1.2))
+        .opacity(0.7)
+        .overflow_hidden()
+        .line_clamp(1)
+        .child(text.to_string())
+}
+
+fn filter_button_width(label: &str, window: &Window) -> Pixels {
+    let style = window.text_style();
+    let line = window.text_system().shape_line(
+        label.to_string().into(),
+        window.rem_size(),
+        &[TextRun {
+            len: label.len(),
+            font: style.font(),
+            color: style.color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }],
+        None,
+    );
+    // Medium buttons use one rem of text and px_2 on each side (one rem total).
+    line.width + window.rem_size()
+}
+
+fn library_source_status(game: &Game, source: bool) -> String {
+    let status = if game.available {
+        "Installed"
+    } else {
+        "Unavailable"
+    };
+    if source {
+        format!("{} · {status}", source_name(&game.provider_id))
+    } else {
+        status.into()
+    }
+}
+
+fn library_subtitle(game: &Game, last_launched: bool, source: bool) -> String {
+    let mut parts = Vec::new();
+    if last_launched {
+        let date = last_played(game);
+        if !date.is_empty() {
+            parts.push(date);
+        }
+    }
+    if source {
+        parts.push(source_name(&game.provider_id).to_string());
+    }
+    parts.join(" · ")
+}
+
+fn compact_summary(game: &Game, launches: u32) -> String {
+    let metadata = game.effective_metadata();
+    let mut parts = [metadata.developer, metadata.genres]
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>();
+    parts.extend(game.collections.iter().cloned());
+    if game.completed {
+        parts.push("Completed".into());
+    }
+    parts.push(launch_count(launches));
+    parts.join(" · ")
+}
+
+fn library_game_actions(game: &Game) -> Vec<(&'static str, IconName, LibraryGameAction, bool)> {
+    let mut actions = vec![
+        (
+            "Play game",
+            IconName::ExternalLink,
+            LibraryGameAction::Launch,
+            !game.available && game.launch_override.is_none(),
+        ),
+        (
+            "Edit metadata & collections…",
+            IconName::Settings2,
+            LibraryGameAction::Edit(DetailTab::Metadata),
+            false,
+        ),
+        (
+            "Choose artwork…",
+            IconName::GalleryVerticalEnd,
+            LibraryGameAction::Edit(DetailTab::Artwork),
+            false,
+        ),
+        (
+            "Launch settings…",
+            IconName::SquareTerminal,
+            LibraryGameAction::Edit(DetailTab::Launch),
+            false,
+        ),
+        (
+            "Game journal…",
+            IconName::BookOpen,
+            LibraryGameAction::Edit(DetailTab::Journal),
+            false,
+        ),
+        (
+            "Re-identify game…",
+            IconName::Search,
+            LibraryGameAction::Reidentify,
+            false,
+        ),
+        (
+            if game.favourite {
+                "Remove from favourites"
+            } else {
+                "Add to favourites"
+            },
+            IconName::Star,
+            LibraryGameAction::Favourite,
+            false,
+        ),
+        (
+            if game.completed {
+                "Mark not completed"
+            } else {
+                "Mark completed"
+            },
+            IconName::CircleCheck,
+            LibraryGameAction::Completed,
+            false,
+        ),
+        (
+            if game.hidden {
+                "Unhide game"
+            } else {
+                "Hide from library"
+            },
+            IconName::EyeOff,
+            LibraryGameAction::Hidden,
+            false,
+        ),
+        (
+            "Show install folder",
+            IconName::FolderOpen,
+            LibraryGameAction::Reveal,
+            !game.install_directory.is_dir(),
+        ),
+    ];
+    if game.provider_id == "manual" {
+        actions.push((
+            "Remove from library…",
+            IconName::Delete,
+            LibraryGameAction::Remove,
+            false,
+        ));
+    }
+    actions
+}
+
+fn library_game_menu(
+    mut menu: PopupMenu,
+    game: &Game,
+    owner: WeakEntity<LauncherView>,
+) -> PopupMenu {
+    for (label, icon, action, disabled) in library_game_actions(game) {
+        if matches!(
+            action,
+            LibraryGameAction::Edit(DetailTab::Metadata)
+                | LibraryGameAction::Favourite
+                | LibraryGameAction::Reveal
+                | LibraryGameAction::Remove
+        ) {
+            menu = menu.separator();
+        }
+        let owner = owner.clone();
+        let id = game.id.clone();
+        menu = menu.item(
+            PopupMenuItem::new(label)
+                .icon(icon)
+                .disabled(disabled)
+                .on_click(move |_, window, cx| {
+                    let _ = owner.update(cx, |view, cx| {
+                        view.run_library_game_action(&id, action, window, cx)
+                    });
+                }),
+        );
+    }
+    menu.min_w(px(220.)).max_h(px(520.)).scrollable(true)
+}
+
+fn snug_sidebar_button(mut button: Button, icon: IconName) -> Button {
+    button.style().justify_content = Some(JustifyContent::FlexStart);
+    button
+        .small()
+        .px_2()
+        .rounded(px(6.))
+        .icon(Icon::new(icon).small())
 }
 
 fn reconciled_selection<'a>(
@@ -5475,6 +6569,121 @@ fn reconciled_selection<'a>(
         first.get_or_insert(id);
     }
     first.cloned()
+}
+
+#[cfg(test)]
+#[::core::prelude::v1::test]
+fn optional_library_filters_only_appear_when_populated_and_hidden_stays_in_the_sidebar() {
+    for filter in [LibraryFilter::Favourites, LibraryFilter::Manual] {
+        assert!(!filter.visible_in_navigation(0));
+        assert!(filter.visible_in_navigation(1));
+    }
+    assert!(!LibraryFilter::Hidden.visible_in_navigation(0));
+    assert!(!LibraryFilter::Hidden.visible_in_navigation(10));
+    assert!(LibraryFilter::All.visible_in_navigation(0));
+    assert!(LibraryFilter::Installed.visible_in_navigation(0));
+}
+
+#[cfg(test)]
+fn sample_library_game() -> Game {
+    serde_json::from_value(serde_json::json!({
+        "id": "steam:42", "provider_id": "steam", "source_game_id": "42",
+        "discovered_title": "Menu target", "install_directory": "",
+        "default_launch": { "Uri": "steam://rungameid/42" }, "launch_override": null,
+        "metadata": {}, "favourite": false, "available": true, "last_launched": null,
+        "artwork": {}, "artwork_history": [], "artwork_game_ids": {}
+    }))
+    .unwrap()
+}
+
+#[cfg(test)]
+#[::core::prelude::v1::test]
+fn game_menus_offer_launch_and_editing_without_an_overview_panel() {
+    let mut game = sample_library_game();
+    let menu = library_game_actions(&game);
+    for action in [
+        LibraryGameAction::Launch,
+        LibraryGameAction::Edit(DetailTab::Metadata),
+        LibraryGameAction::Edit(DetailTab::Artwork),
+        LibraryGameAction::Edit(DetailTab::Launch),
+        LibraryGameAction::Edit(DetailTab::Journal),
+        LibraryGameAction::Favourite,
+        LibraryGameAction::Hidden,
+        LibraryGameAction::Completed,
+        LibraryGameAction::Reidentify,
+    ] {
+        assert!(
+            menu.iter()
+                .any(|(_, _, item, disabled)| *item == action && !disabled)
+        );
+    }
+    assert!(
+        !menu
+            .iter()
+            .any(|(_, _, action, _)| *action == LibraryGameAction::Remove)
+    );
+    game.provider_id = "manual".into();
+    game.available = false;
+    game.favourite = true;
+    game.hidden = true;
+    let menu = library_game_actions(&game);
+    assert!(
+        menu.iter()
+            .any(|(_, _, action, disabled)| *action == LibraryGameAction::Launch && *disabled)
+    );
+    assert!(
+        menu.iter()
+            .any(|(_, _, action, disabled)| *action == LibraryGameAction::Remove && !disabled)
+    );
+    assert!(menu.iter().any(
+        |(label, _, action, _)| *action == LibraryGameAction::Favourite
+            && *label == "Remove from favourites"
+    ));
+    assert!(menu.iter().any(
+        |(label, _, action, _)| *action == LibraryGameAction::Hidden && *label == "Unhide game"
+    ));
+}
+
+#[cfg(test)]
+#[::core::prelude::v1::test]
+fn dates_and_sources_are_independent_without_a_fallback_or_duplicate_separator() {
+    let mut game = sample_library_game();
+    assert!(last_played(&game).is_empty());
+    assert!(library_subtitle(&game, true, false).is_empty());
+    assert!(library_subtitle(&game, false, false).is_empty());
+    assert_eq!(library_subtitle(&game, true, true), "Steam");
+    assert_eq!(library_source_status(&game, false), "Installed");
+    assert_eq!(library_source_status(&game, true), "Steam · Installed");
+    game.last_launched = Some(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    );
+    assert_eq!(library_subtitle(&game, false, true), "Steam");
+    assert_eq!(
+        library_subtitle(&game, true, false),
+        "Last launched just now"
+    );
+    assert_eq!(
+        library_subtitle(&game, true, true),
+        "Last launched just now · Steam"
+    );
+}
+
+#[cfg(test)]
+#[::core::prelude::v1::test]
+fn compact_summary_contains_metadata_collections_completion_and_activity() {
+    let mut game = sample_library_game();
+    assert_eq!(compact_summary(&game, 0), "0 launches");
+    game.metadata.developer = Some("Studio".into());
+    game.metadata.genres = Some("Adventure".into());
+    game.collections.insert("Backlog".into());
+    game.completed = true;
+    assert_eq!(
+        compact_summary(&game, 3),
+        "Studio · Adventure · Backlog · Completed · 3 launches"
+    );
 }
 
 #[cfg(test)]
@@ -5513,6 +6722,14 @@ fn hidden_games_are_excluded_from_normal_views_and_restorable_in_hidden_view() {
     assert!(LibraryFilter::Hidden.includes(&game));
     game.hidden = false;
     assert!(LibraryFilter::Installed.includes(&game));
+    game.provider_id = "manual".into();
+    game.available = false;
+    assert!(
+        LibraryFilter::Manual.includes(&game),
+        "manual view includes saved unavailable games"
+    );
+    game.hidden = true;
+    assert!(!LibraryFilter::Manual.includes(&game));
 }
 
 #[cfg(test)]
@@ -5740,15 +6957,7 @@ fn source_name(provider_id: &str) -> &str {
 
 fn last_played(game: &Game) -> String {
     let Some(timestamp) = game.last_launched else {
-        return format!(
-            "{} · {}",
-            source_name(&game.provider_id),
-            if game.available {
-                "Installed"
-            } else {
-                "Unavailable"
-            }
-        );
+        return String::new();
     };
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)

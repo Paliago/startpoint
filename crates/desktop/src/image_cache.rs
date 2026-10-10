@@ -1,6 +1,6 @@
 use gpui::{
     App, Context, Entity, ImageCache, ImageCacheError, RenderImage, Resource, RetainAllImageCache,
-    Window,
+    WeakEntity, Window,
 };
 use std::{collections::VecDeque, sync::Arc};
 
@@ -11,6 +11,9 @@ pub(crate) struct ArtworkImageCache {
     capacity: usize,
     byte_capacity: usize,
     pending_image_bytes: usize,
+    entity: WeakEntity<Self>,
+    frame_resources: Vec<Resource>,
+    cleanup_scheduled: bool,
 }
 
 impl ArtworkImageCache {
@@ -27,6 +30,9 @@ impl ArtworkImageCache {
             capacity: capacity.max(1),
             byte_capacity,
             pending_image_bytes,
+            entity: cx.entity().downgrade(),
+            frame_resources: Vec::new(),
+            cleanup_scheduled: false,
         }
     }
 
@@ -34,6 +40,28 @@ impl ArtworkImageCache {
         for resource in self.failed.drain(..) {
             self.cache
                 .update(cx, |cache, cx| cache.remove(&resource, window, cx));
+        }
+    }
+
+    fn finish_frame(&mut self, window: &mut Window, cx: &mut App) {
+        self.cleanup_scheduled = false;
+        let pinned = std::mem::take(&mut self.frame_resources);
+        let evicted = trim_images(&mut self.recent, self.capacity, self.byte_capacity, &pinned);
+        let changed = !evicted.is_empty();
+        if changed {
+            crate::diagnostics::record(&format!(
+                "image cache frame-boundary trim: {} unused images",
+                evicted.len()
+            ));
+        }
+        for resource in evicted {
+            self.failed.retain(|failed| failed != &resource);
+            self.cache
+                .update(cx, |cache, cx| cache.remove(&resource, window, cx));
+        }
+        // Discard cached scene fragments that could still reference released atlas tiles.
+        if changed {
+            window.refresh();
         }
     }
 }
@@ -56,16 +84,20 @@ impl ImageCache for ArtworkImageCache {
             Some(Err(_)) => 0,
             None => self.pending_image_bytes,
         };
-        for old in retain_image(
-            &mut self.recent,
-            resource,
-            bytes,
-            self.capacity,
-            self.byte_capacity,
-        ) {
-            self.failed.retain(|resource| resource != &old);
-            self.cache
-                .update(cx, |cache, cx| cache.remove(&old, window, cx));
+        touch_image(&mut self.recent, resource, bytes);
+        if !self.frame_resources.contains(resource) {
+            self.frame_resources.push(resource.clone());
+        }
+        if !self.cleanup_scheduled {
+            self.cleanup_scheduled = true;
+            let entity = self.entity.clone();
+            // ImageCache::load runs while GPUI builds a scene. Removing an earlier
+            // image here frees a texture that a later draw in the same frame needs
+            // (DirectXAtlas::texture panics). Trim only at the next frame boundary,
+            // and keep the entire frame's working set even if it exceeds the budget.
+            window.on_next_frame(move |window, cx| {
+                let _ = entity.update(cx, |cache, cx| cache.finish_frame(window, cx));
+            });
         }
         if matches!(result, Some(Err(_))) && !self.failed.iter().any(|failed| failed == resource) {
             self.failed.push(resource.clone());
@@ -74,6 +106,43 @@ impl ImageCache for ArtworkImageCache {
     }
 }
 
+fn touch_image(recent: &mut VecDeque<(Resource, usize)>, resource: &Resource, bytes: usize) {
+    // Linear accounting follows the bounded viewport working set; index if profiling warrants it.
+    if let Some(index) = recent.iter().position(|(item, _)| item == resource) {
+        recent.remove(index);
+    }
+    recent.push_back((resource.clone(), bytes));
+}
+
+fn trim_images(
+    recent: &mut VecDeque<(Resource, usize)>,
+    capacity: usize,
+    byte_capacity: usize,
+    pinned: &[Resource],
+) -> Vec<Resource> {
+    let mut total_bytes = recent
+        .iter()
+        .map(|(_, bytes)| *bytes)
+        .fold(0usize, usize::saturating_add);
+    let mut evicted = Vec::new();
+    // A visible working set can exceed the budget; evict it only after it leaves
+    // the frame. Releasing a still-visible image is unsafe for GPUI's GPU atlas.
+    while recent.len() > 1 && (recent.len() > capacity || total_bytes > byte_capacity) {
+        if let Some(index) = recent
+            .iter()
+            .position(|(resource, _)| !pinned.contains(resource))
+        {
+            let (old, bytes) = recent.remove(index).unwrap();
+            total_bytes = total_bytes.saturating_sub(bytes);
+            evicted.push(old);
+        } else {
+            break;
+        }
+    }
+    evicted
+}
+
+#[cfg(test)]
 fn retain_image(
     recent: &mut VecDeque<(Resource, usize)>,
     resource: &Resource,
@@ -81,24 +150,45 @@ fn retain_image(
     capacity: usize,
     byte_capacity: usize,
 ) -> Vec<Resource> {
-    // ponytail: linear accounting is bounded to 96 images; use an indexed cache if profiling warrants it.
-    if let Some(index) = recent.iter().position(|(item, _)| item == resource) {
-        recent.remove(index);
-    }
-    recent.push_back((resource.clone(), bytes));
-    let mut total_bytes = recent
-        .iter()
-        .map(|(_, bytes)| *bytes)
-        .fold(0usize, usize::saturating_add);
-    let mut evicted = Vec::new();
-    // ponytail: one oversized current image may exceed the budget; core dimension limits bound normal artwork.
-    while recent.len() > 1 && (recent.len() > capacity || total_bytes > byte_capacity) {
-        if let Some((old, bytes)) = recent.pop_front() {
-            total_bytes = total_bytes.saturating_sub(bytes);
-            evicted.push(old);
-        }
-    }
-    evicted
+    touch_image(recent, resource, bytes);
+    trim_images(
+        recent,
+        capacity,
+        byte_capacity,
+        std::slice::from_ref(resource),
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn denser_frames_never_release_textures_already_used_by_that_frame() {
+    use std::path::PathBuf;
+    let first = Resource::from(PathBuf::from("cover-a.png"));
+    let second = Resource::from(PathBuf::from("cover-b.png"));
+    let third = Resource::from(PathBuf::from("cover-c.png"));
+    let mut recent = VecDeque::new();
+    touch_image(&mut recent, &first, 60);
+    touch_image(&mut recent, &second, 60);
+    touch_image(&mut recent, &third, 60);
+    assert!(
+        trim_images(
+            &mut recent,
+            1,
+            100,
+            &[first.clone(), second.clone(), third.clone()]
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        recent.len(),
+        3,
+        "a frame may temporarily exceed the cache budget"
+    );
+    assert_eq!(
+        trim_images(&mut recent, 1, 100, std::slice::from_ref(&third)),
+        [first, second]
+    );
+    assert_eq!(recent.len(), 1);
 }
 
 #[cfg(test)]

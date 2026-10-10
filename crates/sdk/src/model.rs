@@ -223,6 +223,46 @@ impl StartScreen {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryLayout {
+    Pills,
+    #[default]
+    Covers,
+    Tiles,
+    Compact,
+}
+
+impl LibraryLayout {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pills => "Pills",
+            Self::Covers => "Cover grid",
+            Self::Tiles => "Landscape tiles",
+            Self::Compact => "Compact list",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryDensity {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl LibraryDensity {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Small => "Small",
+            Self::Medium => "Medium",
+            Self::Large => "Large",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppearanceSettings {
@@ -237,6 +277,12 @@ pub struct AppearanceSettings {
     pub recents_journal: bool,
     pub sidebar_visible: bool,
     pub sidebar_width: f32,
+    pub library_layout: LibraryLayout,
+    pub library_density: LibraryDensity,
+    pub library_details: bool,
+    pub library_last_played: bool,
+    pub library_sources: bool,
+    pub library_favourite_badges: bool,
 }
 
 impl Default for AppearanceSettings {
@@ -252,7 +298,13 @@ impl Default for AppearanceSettings {
             recents_progress: false,
             recents_journal: false,
             sidebar_visible: false,
-            sidebar_width: 216.,
+            sidebar_width: 200.,
+            library_layout: LibraryLayout::Covers,
+            library_density: LibraryDensity::Medium,
+            library_details: true,
+            library_last_played: true,
+            library_sources: false,
+            library_favourite_badges: true,
         }
     }
 }
