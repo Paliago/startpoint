@@ -1,10 +1,14 @@
-use crate::{appearance, theme};
+use crate::{
+    appearance,
+    components::{button, choice_button, editable_field, segmented_control},
+    theme,
+};
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme, Colorize, Disableable, IconName, Selectable, Sizable, ThemeMode, ThemeSet,
-    button::{Button, ButtonVariants},
+    ActiveTheme, Colorize, Disableable, IconName, Selectable, ThemeMode, ThemeSet,
+    button::ButtonVariants,
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
-    input::{Input, InputEvent, InputState},
+    input::{InputEvent, InputState},
 };
 use std::path::PathBuf;
 
@@ -311,24 +315,10 @@ impl Render for Editor {
                         "Preview without saving. Built-in themes are copied, never overwritten.",
                     ),
             )
-            .child(
-                div().flex().child(
-                    Input::new(&self.name)
-                        .large()
-                        .w_auto()
-                        .flex_1()
-                        .min_w_0()
-                        .disabled(self.saving),
-                ),
-            )
-            .child(div().flex().gap_2().children(
+            .child(editable_field("Theme name", &self.name, self.saving, cx))
+            .child(segmented_control(cx).children(
                 [ThemeMode::Light, ThemeMode::Dark].into_iter().map(|mode| {
-                    Button::new(mode.name())
-                        .h(px(32.))
-                        .px_3()
-                        .label(mode.name())
-                        .selected(self.mode == mode)
-                        .border_0()
+                    choice_button(mode.name(), mode.name(), self.mode == mode, cx)
                         .disabled(self.saving)
                         .on_click(cx.listener(move |editor, _, window, cx| {
                             editor.set_mode(mode, window, cx)
@@ -361,23 +351,7 @@ impl Render for Editor {
                         }
                     )),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(div().text_sm().child("Font family"))
-                    .child(
-                        div().flex().child(
-                            Input::new(&self.font)
-                                .large()
-                                .w_auto()
-                                .flex_1()
-                                .min_w_0()
-                                .disabled(self.saving),
-                        ),
-                    ),
-            )
+            .child(editable_field("Font family", &self.font, self.saving, cx))
             .child(
                 div()
                     .flex()
@@ -393,7 +367,7 @@ impl Render for Editor {
                             .flex()
                             .gap_1()
                             .children([-1., 1.].into_iter().map(|step| {
-                                Button::new(if step < 0. {
+                                button(if step < 0. {
                                     "decrease-font"
                                 } else {
                                     "increase-font"
@@ -435,7 +409,7 @@ impl Render for Editor {
                     .flex()
                     .gap_1()
                     .children([0usize, 4, 8, 12, 16].into_iter().map(|value| {
-                        Button::new(("theme-radius", value))
+                        button(("theme-radius", value))
                             .h(px(32.))
                             .px_3()
                             .label(value.to_string())
@@ -460,7 +434,7 @@ impl Render for Editor {
                 panel.child(div().text_sm().text_color(cx.theme().danger).child(error))
             })
             .child(
-                Button::new("restore-theme-defaults")
+                button("restore-theme-defaults")
                     .h(px(32.))
                     .ghost()
                     .label("Restore defaults")
@@ -473,7 +447,7 @@ impl Render for Editor {
                     .flex()
                     .gap_2()
                     .child(
-                        Button::new("save-theme")
+                        button("save-theme")
                             .primary()
                             .h(px(32.))
                             .px_3()
@@ -486,7 +460,7 @@ impl Render for Editor {
                             .on_click(cx.listener(|editor, _, window, cx| editor.save(window, cx))),
                     )
                     .child(
-                        Button::new("cancel-theme")
+                        button("cancel-theme")
                             .h(px(32.))
                             .px_3()
                             .label("Cancel")

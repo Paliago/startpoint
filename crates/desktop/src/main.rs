@@ -1,12 +1,15 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod appearance;
+mod components;
+mod detail_artwork;
 mod diagnostics;
 #[cfg(test)]
 mod icon_tests;
 mod image_cache;
 mod interface;
 mod library_layout;
+mod logo_cache;
 mod recents_fade;
 mod theme;
 mod theme_editor;
