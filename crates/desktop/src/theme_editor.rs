@@ -17,7 +17,14 @@ pub(crate) enum EditorEvent {
     Closed,
 }
 
-const COLOR_LABELS: [&str; 5] = ["Background", "Text", "Primary", "Surface", "Sidebar"];
+const COLOR_LABELS: [&str; 6] = [
+    "Background",
+    "Text",
+    "Primary",
+    "Surface",
+    "Sidebar",
+    "Border",
+];
 
 pub(crate) struct Editor {
     draft: ThemeSet,
@@ -73,6 +80,7 @@ impl Editor {
             cx.theme().primary,
             cx.theme().secondary,
             cx.theme().sidebar,
+            cx.theme().border,
         ]
         .into_iter()
         .map(|color| cx.new(|cx| ColorPickerState::new(window, cx).default_value(color)))
@@ -133,6 +141,10 @@ impl Editor {
         self.saving
     }
 
+    pub fn focus_name(&self, window: &mut Window, cx: &mut App) {
+        self.name.read(cx).focus_handle(cx).focus(window, cx);
+    }
+
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         appearance::preview(&self.draft, self.mode, window, cx);
         cx.notify();
@@ -147,6 +159,7 @@ impl Editor {
             cx.theme().primary,
             cx.theme().secondary,
             cx.theme().sidebar,
+            cx.theme().border,
         ];
         for (picker, color) in self.colors.iter().zip(values) {
             picker.update(cx, |picker, cx| picker.set_value(color, window, cx));
@@ -215,6 +228,10 @@ impl Editor {
                 colors.muted = Some(hex);
             }
             4 => colors.sidebar = Some(hex),
+            5 => {
+                colors.border = Some(hex.clone());
+                colors.input = Some(hex);
+            }
             _ => return,
         }
         self.apply(window, cx);
@@ -307,14 +324,6 @@ impl Render for Editor {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Theme editor"),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(
-                        "Preview without saving. Built-in themes are copied, never overwritten.",
-                    ),
-            )
             .child(editable_field("Theme name", &self.name, self.saving, cx))
             .child(segmented_control(cx).children(
                 [ThemeMode::Light, ThemeMode::Dark].into_iter().map(|mode| {
@@ -332,7 +341,7 @@ impl Render for Editor {
                     .justify_between()
                     .gap_3()
                     .child(div().text_sm().child(label))
-                    .child(ColorPicker::new(picker).anchor(Corner::TopRight))
+                    .child(ColorPicker::new(picker).anchor(Anchor::TopRight))
             }))
             .child(
                 div()
@@ -436,7 +445,7 @@ impl Render for Editor {
             .child(
                 button("restore-theme-defaults")
                     .h(px(32.))
-                    .ghost()
+                    .secondary()
                     .label("Restore defaults")
                     .tooltip("Reset both light and dark variants to Startpoint defaults. Save theme to keep the changes.")
                     .disabled(self.saving)

@@ -1626,6 +1626,7 @@ fn restore_appearance_settings(
     ]
     .iter()
     .any(|key| document.get(key).is_some());
+    let removed_blur_switch = document.get("backdrop_blur").is_some();
     let mut settings: AppearanceSettings = serde_json::from_value(document)
         .map_err(|error| ApiError::Storage(format!("Invalid appearance settings: {error}")))?;
     if experimental {
@@ -1637,7 +1638,7 @@ fn restore_appearance_settings(
         settings.dither_recents = defaults.dither_recents;
         settings.fade_recents = defaults.fade_recents;
     }
-    Ok((settings, experimental))
+    Ok((settings, experimental || removed_blur_switch))
 }
 
 fn apply_reidentification(game: &mut Game, matched: &ArtworkGame) {
@@ -2237,11 +2238,48 @@ mod tests {
     }
 
     #[test]
+    fn glass_preferences_migrate_and_round_trip_without_resetting_other_preferences() {
+        let old: AppearanceSettings =
+            serde_json::from_str(r#"{"theme":"Custom","mode":"dark","sidebar_width":320}"#)
+                .unwrap();
+        assert!(old.window_translucency);
+        for enabled in [false, true] {
+            let (migrated, changed) = restore_appearance_settings(Some(serde_json::json!({
+                "theme": "Custom", "window_translucency": enabled, "backdrop_blur": !enabled,
+                "fade_recents": false, "dither_recents": false, "start_screen": "library"
+            })))
+            .unwrap();
+            assert!(changed);
+            assert_eq!(migrated.window_translucency, enabled);
+            assert!(!migrated.fade_recents && !migrated.dither_recents);
+            assert_eq!(migrated.start_screen, StartScreen::Library);
+            assert!(
+                serde_json::to_value(migrated)
+                    .unwrap()
+                    .get("backdrop_blur")
+                    .is_none()
+            );
+        }
+        for window_translucency in [false, true] {
+            let chosen = AppearanceSettings {
+                window_translucency,
+                ..old.clone()
+            };
+            let (restored, _) =
+                restore_appearance_settings(Some(serde_json::to_value(&chosen).unwrap())).unwrap();
+            assert_eq!(restored, chosen);
+            assert_eq!(restored.theme, "Custom");
+            assert_eq!(restored.sidebar_width, 320.);
+        }
+    }
+
+    #[test]
     fn application_api_preserves_edits_launch_configuration_and_persistence() {
         let previous_settings: AppearanceSettings =
             serde_json::from_str(r#"{"mode":"dark","dither_artwork":true}"#)
                 .expect("previous appearance settings");
         assert_eq!(previous_settings.start_screen, StartScreen::Recents);
+        assert!(previous_settings.window_translucency);
         assert!(previous_settings.dither_recents && previous_settings.fade_recents);
         assert!(
             !previous_settings.recents_activity
@@ -2310,6 +2348,7 @@ mod tests {
                     settings: AppearanceSettings {
                         theme: "Custom".into(),
                         mode: AppearanceMode::Light,
+                        window_translucency: false,
                         dither_artwork: false,
                         start_screen: StartScreen::Recents,
                         dither_recents: true,
@@ -2626,6 +2665,7 @@ mod tests {
             AppearanceSettings {
                 theme: "Custom".into(),
                 mode: AppearanceMode::Light,
+                window_translucency: false,
                 dither_artwork: false,
                 start_screen: StartScreen::Recents,
                 dither_recents: true,

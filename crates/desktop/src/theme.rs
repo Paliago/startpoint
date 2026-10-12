@@ -140,13 +140,19 @@ impl Catalog {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| error.to_string())?;
-        let path = self.files.get(&key).cloned().unwrap_or_else(|| {
-            directory.join(format!(
-                "theme-{}-{:09}.json",
-                timestamp.as_secs(),
-                timestamp.subsec_nanos()
-            ))
-        });
+        // A custom theme's name can change without leaving its old file behind.
+        // Built-ins have no file and are always saved as new custom copies.
+        let path = self
+            .files
+            .get(&original_name.to_ascii_lowercase())
+            .cloned()
+            .unwrap_or_else(|| {
+                directory.join(format!(
+                    "theme-{}-{:09}.json",
+                    timestamp.as_secs(),
+                    timestamp.subsec_nanos()
+                ))
+            });
         let temporary = path.with_extension(format!("{}.temporary", timestamp.subsec_nanos()));
         let mut file = fs::OpenOptions::new()
             .write(true)
@@ -389,6 +395,28 @@ fn custom_themes_inherit_defaults_and_validate_colors() {
             .font_size,
         Some(20.)
     );
+    let before_rename = Catalog::load(&directory);
+    let original_path = before_rename.files["edited theme"].clone();
+    edited.name = "Renamed theme".into();
+    before_rename
+        .save(&directory, &source(&edited).unwrap(), "Edited theme")
+        .expect("rename custom theme");
+    let renamed = Catalog::load(&directory);
+    assert!(!renamed.contains("Edited theme"));
+    assert_eq!(renamed.files["renamed theme"], original_path);
+    assert_eq!(
+        renamed
+            .configuration("Renamed theme", ThemeMode::Dark)
+            .font_size,
+        Some(20.)
+    );
+    edited.name = "Startpoint".into();
+    assert!(
+        renamed
+            .save(&directory, &source(&edited).unwrap(), "Renamed theme")
+            .is_err()
+    );
+    assert!(Catalog::load(&directory).contains("Renamed theme"));
     assert!(
         catalog
             .save(&directory, DEFAULT_THEME, "Startpoint")

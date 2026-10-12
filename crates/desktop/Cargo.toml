@@ -2,20 +2,22 @@
 name = "startpoint"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.89"
 default-run = "startpoint"
 
 [features]
-runtime-shaders = ["gpui/runtime_shaders"]
+runtime-shaders = ["gpui_platform/runtime_shaders"]
 
 [dependencies]
 startpoint-sdk.workspace = true
 startpoint-core.workspace = true
 serde_json.workspace = true
 chrono = "0.4"
-gpui = "=0.2.2"
-gpui-component = "=0.5.1"
-gpui-component-assets = "=0.5.1"
+# Keep renderer and components on the tested, matching Zeron revisions.
+gpui = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54" }
+gpui_platform = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54", features = ["font-kit", "wayland", "x11"] }
+gpui-component = { git = "https://github.com/zeronsh/gpui-component", rev = "701ca97af7983bf85343d2d1d404ab528b18ec96" }
+gpui-component-assets = { git = "https://github.com/zeronsh/gpui-component", rev = "701ca97af7983bf85343d2d1d404ab528b18ec96" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 raw-window-handle = "0.6"
 log = "=0.4.34"

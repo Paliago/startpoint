@@ -268,6 +268,7 @@ impl LibraryDensity {
 pub struct AppearanceSettings {
     pub theme: String,
     pub mode: AppearanceMode,
+    pub window_translucency: bool,
     pub dither_artwork: bool,
     pub start_screen: StartScreen,
     pub dither_recents: bool,
@@ -290,6 +291,7 @@ impl Default for AppearanceSettings {
         Self {
             theme: "Startpoint".into(),
             mode: AppearanceMode::System,
+            window_translucency: true,
             dither_artwork: true,
             start_screen: StartScreen::Recents,
             dither_recents: true,

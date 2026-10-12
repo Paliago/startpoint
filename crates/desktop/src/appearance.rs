@@ -1,9 +1,12 @@
 use gpui::{App, Hsla, Window, WindowAppearance, WindowBackgroundAppearance};
-use gpui_component::{ActiveTheme, Theme, ThemeConfig, ThemeMode, ThemeSet};
+use gpui_component::{Theme, ThemeConfig, ThemeMode, ThemeSet};
 use startpoint_sdk::{AppearanceMode, AppearanceSettings};
 use std::rc::Rc;
 
 pub(crate) fn apply(settings: &AppearanceSettings, window: Option<&mut Window>, cx: &mut App) {
+    cx.set_global(crate::glass::Effects {
+        window_translucency: settings.window_translucency,
+    });
     let mode = settings.mode;
     sync_native_appearance(mode);
     let system = window
@@ -73,18 +76,19 @@ fn apply_configurations(
         }
         .into();
     }
+    crate::components::configure_glass_theme(Theme::global_mut(cx));
     if let Some(window) = window {
-        window.set_background_appearance(background());
+        window.set_background_appearance(background(cx));
     }
     cx.refresh_windows();
 }
 
-pub(crate) fn background() -> WindowBackgroundAppearance {
-    WindowBackgroundAppearance::Opaque
+pub(crate) fn background(cx: &App) -> WindowBackgroundAppearance {
+    crate::glass::native_background(crate::glass::effects(cx))
 }
 
 pub(crate) fn surface(cx: &App) -> Hsla {
-    cx.theme().background
+    crate::glass::base(cx)
 }
 
 #[cfg(target_os = "macos")]

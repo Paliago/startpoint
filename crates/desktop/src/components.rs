@@ -1,22 +1,100 @@
 //! Shared presentation primitives. Keep screen-specific state and actions in views.
+use crate::glass::{self, Palette};
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, ThemeColor,
-    button::{Button, ButtonVariants},
-    input::{Input, InputState},
+    button::{Button, ButtonRounded, ButtonVariants},
+    input::{Input, InputState, Textarea, TextareaState},
     menu::{DropdownMenu, PopupMenuItem},
 };
 use std::{path::PathBuf, rc::Rc};
 
 pub(crate) const BUTTON_TEXT_REM: f32 = 0.875;
-pub(crate) const BUTTON_RADIUS: f32 = 9.;
 
-/// Flat, borderless controls with consistent type, spacing and corners.
+/// Resolved render tokens only: never alter the authored theme/configuration.
+/// Native variants still own primary/danger, hover, pressed and disabled behavior.
+pub(crate) fn configure_glass_theme(theme: &mut gpui_component::Theme) {
+    let palette = Palette::from_colors(
+        theme.background,
+        theme.secondary,
+        theme.foreground,
+        theme.border,
+    );
+    theme.tokens.button = palette.button.into();
+    theme.tokens.button_secondary = theme.tokens.button;
+    let hover = theme.secondary_hover.alpha(1.);
+    let active = theme.secondary_active.alpha(1.);
+    theme.tokens.button_hover = hover.into();
+    theme.tokens.button_secondary_hover = theme.tokens.button_hover;
+    theme.tokens.button_active = active.into();
+    theme.tokens.button_secondary_active = theme.tokens.button_active;
+    theme.colors.button_foreground = palette.foreground;
+    theme.colors.button_secondary_foreground = palette.foreground;
+    for token in [
+        &mut theme.tokens.button_primary,
+        &mut theme.tokens.button_primary_hover,
+        &mut theme.tokens.button_primary_active,
+        &mut theme.tokens.button_danger,
+        &mut theme.tokens.button_danger_hover,
+        &mut theme.tokens.button_danger_active,
+        &mut theme.tokens.button_warning,
+        &mut theme.tokens.button_warning_hover,
+        &mut theme.tokens.button_warning_active,
+        &mut theme.tokens.button_success,
+        &mut theme.tokens.button_success_hover,
+        &mut theme.tokens.button_success_active,
+        &mut theme.tokens.button_info,
+        &mut theme.tokens.button_info_hover,
+        &mut theme.tokens.button_info_active,
+    ] {
+        token.color.a = 1.;
+        token.background = token.color.into();
+    }
+    theme.tokens.popover = theme.popover.alpha(1.).into();
+    theme.colors.popover_foreground.a = 1.;
+    theme.colors.foreground.a = 1.;
+}
+
+pub(crate) fn glass_panel<T: Styled + IntoElement>(panel: T, cx: &App) -> glass::Frosted {
+    glass_panel_with_blur(panel, glass::BLUR_RADIUS, cx)
+}
+
+pub(crate) fn glass_panel_with_blur<T: Styled + IntoElement>(
+    panel: T,
+    blur: f32,
+    cx: &App,
+) -> glass::Frosted {
+    let radius = f32::from(cx.theme().radius_lg);
+    glass::frosted(radius, blur, glass::surface(panel, radius, cx))
+}
+
+pub(crate) fn style_input<T: Styled>(input: T, cx: &App) -> T {
+    let palette = Palette::of(cx);
+    input
+        .rounded(cx.theme().radius)
+        .bg(palette.input)
+        .text_color(palette.foreground)
+        .border_1()
+        .border_color(cx.theme().border)
+        .shadow(vec![BoxShadow {
+            color: palette.shadow,
+            offset: point(px(0.), px(1.)),
+            blur_radius: px(3.),
+            spread_radius: px(0.),
+            inset: true,
+        }])
+}
+
+pub(crate) fn input(state: &Entity<InputState>, cx: &App) -> Input {
+    style_input(Input::new(state).focus_bordered(false), cx)
+}
+
+/// Flat, borderless controls with compact, theme-scaled corners.
 /// Native GPUI variants retain their hover, pressed, disabled and focus behavior.
 pub(crate) fn button(id: impl Into<ElementId>) -> Button {
     Button::new(id)
         .small()
-        .rounded(px(BUTTON_RADIUS))
+        .rounded(ButtonRounded::Small)
         .font_weight(FontWeight::MEDIUM)
         .border_0()
         .shadow_none()
@@ -29,11 +107,39 @@ pub(crate) fn icon_button(
     tooltip: impl Into<SharedString>,
 ) -> Button {
     button(id)
-        .ghost()
+        .secondary()
         .size(px(32.))
         .p_0()
         .icon(icon)
         .tooltip(tooltip)
+}
+
+/// Top chrome belongs to one shared glass island, not separate button plates.
+/// Ghost controls keep native hover/pressed/disabled and keyboard-focus behavior.
+/// Ordinary actions, fields and opened dropdown menus remain opaque.
+pub(crate) fn chrome_button(id: impl Into<ElementId>) -> Button {
+    button(id).ghost()
+}
+
+pub(crate) fn chrome_choice_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+    cx: &App,
+) -> Button {
+    let palette = Palette::of(cx);
+    chrome_button(id)
+        .h(px(32.))
+        .px_3()
+        .label(label)
+        .selected(selected)
+        .text_color(palette.foreground)
+        .when(selected, |button| button.bg(palette.input))
+        .hover(|button| {
+            button
+                .bg(cx.theme().secondary_hover.alpha(1.))
+                .text_color(palette.foreground)
+        })
 }
 
 pub(crate) fn choice_button(
@@ -43,16 +149,25 @@ pub(crate) fn choice_button(
     cx: &App,
 ) -> Button {
     button(id)
-        .ghost()
+        .secondary()
         .h(px(30.))
         .px_3()
-        .rounded(px(7.))
         .label(label)
         .selected(selected)
+        .text_color(if selected {
+            Palette::of(cx).foreground
+        } else {
+            Palette::of(cx).muted
+        })
         .when(selected, |button| {
             button
-                .bg(cx.theme().background.alpha(0.96))
-                .text_color(cx.theme().foreground)
+                .bg(Palette::of(cx).input)
+                .text_color(Palette::of(cx).foreground)
+        })
+        .hover(|button| {
+            button
+                .bg(cx.theme().secondary_hover.alpha(1.))
+                .text_color(Palette::of(cx).foreground)
         })
 }
 
@@ -62,12 +177,27 @@ pub(crate) fn segmented_control(cx: &App) -> Div {
         .flex_wrap()
         .items_center()
         .gap(px(2.))
-        .p(px(3.))
-        .rounded(px(10.))
-        .bg(cx.theme().secondary.alpha(0.65))
+        .p(px(2.))
+        .rounded(cx.theme().radius)
+        .bg(Palette::of(cx).input)
         .map(|mut control| {
             control.style().align_self = Some(AlignSelf::FlexStart);
             control
+        })
+}
+
+/// Keyboard-selected and hovered command rows use the same text and plate as tabs.
+pub(crate) fn navigation_row(id: impl Into<ElementId>, selected: bool, cx: &App) -> Stateful<Div> {
+    let palette = Palette::of(cx);
+    div()
+        .id(id)
+        .rounded(cx.theme().radius)
+        .cursor_pointer()
+        .text_color(palette.foreground)
+        .when(selected, |row| row.bg(palette.input))
+        .hover(|row| {
+            row.bg(cx.theme().secondary_hover.alpha(1.))
+                .text_color(palette.foreground)
         })
 }
 
@@ -108,22 +238,74 @@ pub(crate) fn choice_dropdown<T: Clone + PartialEq + 'static>(
         })
 }
 
-pub(crate) fn snug_sidebar_button(mut button: Button, icon: IconName) -> Button {
+pub(crate) fn snug_sidebar_button(mut button: Button, icon: IconName, cx: &App) -> Button {
     button.style().justify_content = Some(JustifyContent::FlexStart);
     button
         .small()
+        .ghost()
         .px_2()
-        .rounded(px(BUTTON_RADIUS))
+        .font_weight(FontWeight::NORMAL)
         .icon(Icon::new(icon).small())
+        .hover(|button| button.text_color(Palette::of(cx).foreground))
 }
 
-pub(crate) fn field(label: &str, state: &Entity<InputState>, cx: &App) -> Div {
+pub(crate) fn sidebar_label(label: impl Into<SharedString>) -> Div {
+    // Expand inside Button's centered content row to anchor its icon and label.
+    div()
+        .flex_1()
+        .min_w_0()
+        .text_left()
+        .truncate()
+        .child(label.into())
+}
+
+pub(crate) trait EditableFieldState: Sized + 'static {
+    fn control(state: &Entity<Self>, disabled: bool, cx: &App) -> AnyElement;
+    fn replace(state: &Entity<Self>, value: &str, window: &mut Window, cx: &mut App);
+}
+
+impl EditableFieldState for InputState {
+    fn control(state: &Entity<Self>, disabled: bool, cx: &App) -> AnyElement {
+        input(state, cx)
+            .large()
+            .w_auto()
+            .flex_1()
+            .min_w_0()
+            .disabled(disabled)
+            .into_any_element()
+    }
+
+    fn replace(state: &Entity<Self>, value: &str, window: &mut Window, cx: &mut App) {
+        state.update(cx, |state, cx| {
+            state.set_value(value.to_string(), window, cx)
+        });
+    }
+}
+
+impl EditableFieldState for TextareaState {
+    fn control(state: &Entity<Self>, disabled: bool, cx: &App) -> AnyElement {
+        style_input(Textarea::new(state).bordered(false), cx)
+            .w_auto()
+            .flex_1()
+            .min_w_0()
+            .disabled(disabled)
+            .into_any_element()
+    }
+
+    fn replace(state: &Entity<Self>, value: &str, window: &mut Window, cx: &mut App) {
+        state.update(cx, |state, cx| {
+            state.set_value(value.to_string(), window, cx)
+        });
+    }
+}
+
+pub(crate) fn field<S: EditableFieldState>(label: &str, state: &Entity<S>, cx: &App) -> Div {
     editable_field(label, state, false, cx)
 }
 
-pub(crate) fn editable_field(
+pub(crate) fn editable_field<S: EditableFieldState>(
     label: &str,
-    state: &Entity<InputState>,
+    state: &Entity<S>,
     disabled: bool,
     cx: &App,
 ) -> Div {
@@ -139,16 +321,7 @@ pub(crate) fn editable_field(
                 .font_weight(FontWeight::MEDIUM)
                 .child(label.to_string()),
         )
-        .child(
-            div().flex().child(
-                Input::new(state)
-                    .large()
-                    .w_auto()
-                    .flex_1()
-                    .min_w_0()
-                    .disabled(disabled),
-            ),
-        )
+        .child(div().flex().child(S::control(state, disabled, cx)))
 }
 
 pub(crate) fn eyebrow(label: &str) -> Div {
@@ -168,8 +341,21 @@ pub(crate) fn widget_surface(cx: &App) -> Div {
         .flex_1()
         .min_w(px(280.))
         .p_4()
-        .rounded(cx.theme().radius_lg)
-        .bg(cx.theme().background.alpha(0.96))
+        .rounded(px(12.))
+        .bg(Palette::of(cx).surface)
+}
+
+/// Place after the app toolbar so both the dimming and hit testing cover it.
+pub(crate) fn modal_backdrop(id: impl Into<ElementId>) -> Stateful<Div> {
+    div()
+        .id(id)
+        .absolute()
+        .inset_0()
+        .occlude()
+        .bg(gpui::black().alpha(0.45))
+        .flex()
+        .items_center()
+        .justify_center()
 }
 
 /// A common floating customization surface, with geometry supplied by its screen.
@@ -178,7 +364,7 @@ pub(crate) fn floating_panel(
     top: f32,
     width: f32,
     window: &Window,
-    cx: &App,
+    _cx: &App,
 ) -> Stateful<Div> {
     div()
         .id(id)
@@ -191,10 +377,6 @@ pub(crate) fn floating_panel(
         .occlude()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .rounded(px(12.))
-        .bg(cx.theme().popover)
-        .border_1()
-        .border_color(cx.theme().border.alpha(0.5))
-        .shadow_md()
         .p_4()
 }
 
@@ -231,6 +413,16 @@ mod tests {
     use super::*;
 
     #[::core::prelude::v1::test]
+    fn modal_backdrop_covers_every_edge_including_the_toolbar() {
+        let mut backdrop = modal_backdrop("test-backdrop");
+        let style = backdrop.style();
+        assert_eq!(style.inset.top, Some(px(0.).into()));
+        assert_eq!(style.inset.bottom, Some(px(0.).into()));
+        assert_eq!(style.inset.left, Some(px(0.).into()));
+        assert_eq!(style.inset.right, Some(px(0.).into()));
+    }
+
+    #[::core::prelude::v1::test]
     fn shared_buttons_are_flat_without_forcing_label_padding_onto_icon_buttons() {
         let mut button = button("test");
         let style = button.style();
@@ -238,5 +430,113 @@ mod tests {
         assert!(style.box_shadow.as_ref().is_some_and(Vec::is_empty));
         assert!(style.padding.left.is_none());
         assert!(style.size.height.is_none());
+        assert!(
+            style.corner_radii.top_left.is_none(),
+            "use the live theme radius"
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn top_chrome_controls_have_no_individual_plate_or_shadow() {
+        let mut control = chrome_button("top-chrome");
+        let style = control.style();
+        assert!(
+            style.background.is_none(),
+            "the shared island owns the fill"
+        );
+        assert_eq!(style.border_widths.top, Some(px(0.).into()));
+        assert!(style.box_shadow.as_ref().is_some_and(Vec::is_empty));
+        assert!(style.opacity.is_none(), "do not fade control text or icons");
+    }
+
+    #[::core::prelude::v1::test]
+    fn smoke_tokens_preserve_authored_theme_and_accent_roles() {
+        let mut theme = gpui_component::Theme::default();
+        let authored = serde_json::to_value(&theme.dark_theme).unwrap();
+        let original_background = theme.background;
+        let original_primary = theme.primary;
+        let original_primary_text = theme.button_primary_foreground;
+        let original_ring = theme.ring;
+        configure_glass_theme(&mut theme);
+        assert_eq!(theme.background, original_background);
+        assert_eq!(theme.primary, original_primary);
+        assert_eq!(theme.button_primary_foreground, original_primary_text);
+        assert_eq!(theme.ring, original_ring);
+        assert_eq!(serde_json::to_value(&theme.dark_theme).unwrap(), authored);
+        assert_eq!(theme.tokens.button.color.a, 1.);
+        assert_eq!(theme.button_foreground.a, 1.);
+        assert_eq!(
+            theme.tokens.button.background,
+            theme.tokens.button.color.into()
+        );
+        assert!(
+            theme.focus_ring,
+            "button keyboard-focus indicators remain available"
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn control_and_menu_fills_stay_flat_opaque_and_readable_in_every_builtin_theme() {
+        let catalog = crate::theme::Catalog::default();
+        let mut theme = gpui_component::Theme::default();
+        for set in &catalog.themes {
+            for mode in [
+                gpui_component::ThemeMode::Light,
+                gpui_component::ThemeMode::Dark,
+            ] {
+                theme.apply_config(&catalog.configuration(&set.name, mode));
+                configure_glass_theme(&mut theme);
+                for token in [
+                    theme.tokens.button,
+                    theme.tokens.button_hover,
+                    theme.tokens.button_active,
+                    theme.tokens.button_secondary,
+                    theme.tokens.button_primary,
+                    theme.tokens.button_primary_hover,
+                    theme.tokens.button_primary_active,
+                    theme.tokens.button_secondary_hover,
+                    theme.tokens.button_secondary_active,
+                    theme.tokens.button_danger,
+                    theme.tokens.button_danger_hover,
+                    theme.tokens.button_danger_active,
+                    theme.tokens.button_warning,
+                    theme.tokens.button_warning_hover,
+                    theme.tokens.button_warning_active,
+                    theme.tokens.button_success,
+                    theme.tokens.button_success_hover,
+                    theme.tokens.button_success_active,
+                    theme.tokens.button_info,
+                    theme.tokens.button_info_hover,
+                    theme.tokens.button_info_active,
+                    theme.tokens.popover,
+                ] {
+                    assert_eq!(token.color.a, 1., "{} {}", set.name, mode.name());
+                    assert_eq!(
+                        token.background,
+                        token.color.into(),
+                        "no gradients on {} {}",
+                        set.name,
+                        mode.name()
+                    );
+                }
+                for (background, foreground) in [
+                    (theme.tokens.button.color, theme.button_foreground),
+                    (theme.tokens.button_hover.color, theme.button_foreground),
+                    (theme.tokens.button_active.color, theme.button_foreground),
+                    (
+                        theme.tokens.button_primary.color,
+                        theme.button_primary_foreground,
+                    ),
+                    (theme.tokens.popover.color, theme.popover_foreground),
+                ] {
+                    assert!(
+                        crate::theme::contrast(background, foreground) >= 4.5,
+                        "{} {}",
+                        set.name,
+                        mode.name()
+                    );
+                }
+            }
+        }
     }
 }

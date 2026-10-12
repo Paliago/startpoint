@@ -5,7 +5,7 @@ Steam, Epic, GOG and manual games; editable metadata, artwork, themes and local 
 
 ## Run
 
-Rust 1.88+. Windows requires MSVC, Visual Studio Build Tools (**Desktop development with C++**) and the Windows SDK.
+Rust 1.89+ (tested with stable 1.99). Windows requires MSVC, Visual Studio Build Tools (**Desktop development with C++**) and the Windows SDK.
 
 ```sh
 cargo run --locked -- --example-library
@@ -38,6 +38,20 @@ The detail overview uses a game's logo instead of its text title when available.
 
 Logos are centered using their visible artwork rather than transparent file padding, and their display height adapts to fit the available width. Normalized copies are prepared off the UI thread in the logo cache; originals and artwork history are unchanged. Extremely tall logos are height-limited to keep the description and launch controls visible. Favourite and game options sit beside Start game, with last-launched information beneath the action row.
 
+## Smoked glass
+
+Top toolbar controls share their glass island's background instead of individual button fills. Only the selected navigation tab and hover/pressed states have a separate highlight; labels and icons remain sharp. Regular buttons and opened dropdown menus retain their opaque fills.
+
+The app uses shared, theme-aware smoked-glass panels and **flat, borderless controls**. Floating navigation, the **Ctrl+K / Cmd+K** command palette, the metadata/images/launch/journal modal, customization panels, notifications and Recents widgets share 18px backdrop blur, 85% tint, pale hairlines, soft shadows and faint inset highlights. Buttons have solid fills, no gradients or shadows, compact theme-scaled corners, and distinct hover/pressed states. Sidebar navigation uses plain rows with no resting fill, highlighting only hovered/selected items. Inputs are darker and recessed without outer focus rings. Regular buttons, dropdown menus and fields stay opaque while containing panels are glass. Top navigation shares its island's resting background and highlights hovered/selected tabs separately. Keyboard-focus indicators on buttons are retained, and modal dimming covers the entire app.
+
+In **Settings → Appearance**, the single saved **Translucency & blur** switch controls native-window translucency and panel blur together. Transparency always uses Windows Acrylic or macOS vibrancy, never a sharp desktop backdrop. Disabling it makes the shell/panels opaque. Unsupported native-translucency platforms retain an opaque base. The shell tint preserves theme hues and increases coverage when necessary for contrast. Window dragging and native caption actions are unchanged.
+
+Recents composites artwork, ordered dithering and its settled fade off-thread, then applies shell translucency once to the result. Even its solid-colour footer stays translucent; images on disk are never modified. The three-backdrop cache retains visible/crossfading/preloaded frames and evicts only at frame boundaries. Right-click the Recents backdrop or a game card for the same game actions as Library.
+
+**Edit theme…** previews colour and corner-radius changes live on shared controls and glass panels. **Border** affects field edges and panel hairlines; buttons intentionally have no borders. **Rename theme…** focuses the custom theme's name in the editor. Saving renames its existing file's theme without leaving an old duplicate; built-ins are always copied. Sidebar labels and icons align to the left. The component comparison page has been removed.
+
+The desktop pins matching revisions of [Zeron's ZUI renderer](https://github.com/zeronsh/zui) and [component fork](https://github.com/zeronsh/gpui-component) for per-panel blur on Windows Direct3D and macOS Metal. Shared smoke styling and paint-layer ordering live in `crates/desktop/src/glass.rs`; the existing frame-safe artwork cache remains in use.
+
 ## Check
 
 ```sh
@@ -46,7 +60,7 @@ cargo test --locked --workspace
 
 Code: `crates/sdk` (API), `crates/core` (backend), `crates/desktop` (GPUI).
 
-Shared desktop presentation lives in `crates/desktop/src/components.rs`: flat buttons, icon buttons, segmented choices, checked dropdowns, labeled fields, floating panels, section labels, widget surfaces and image fallbacks. Views keep their own state/action wiring. `detail_artwork.rs` centralizes the overview's clean-background and logo/title selection.
+Shared desktop presentation lives in `crates/desktop/src/components.rs`: smoke button tokens, borderless buttons, icon buttons, navigation choices, dropdowns, recessed inputs/textareas, glass panels, section labels, widget surfaces and image fallbacks. `glass.rs` owns theme-derived materials, global effect policy and ordered blur painting. Views keep their own state/action wiring. `detail_artwork.rs` centralizes the overview's clean-background and logo/title selection.
 
 ## Launcher icon
 

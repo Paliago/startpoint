@@ -4,6 +4,7 @@ mod appearance;
 mod components;
 mod detail_artwork;
 mod diagnostics;
+mod glass;
 #[cfg(test)]
 mod icon_tests;
 mod image_cache;
@@ -107,7 +108,7 @@ fn main() {
         }
         return;
     }
-    Application::new()
+    gpui_platform::application()
         .with_assets(LauncherAssets)
         .run(move |cx| {
             gpui_component::init(cx);
@@ -162,6 +163,7 @@ fn main() {
             cx.set_menus(vec![
                 Menu {
                     name: "Startpoint".into(),
+                    disabled: false,
                     items: vec![
                         MenuItem::action("Settings…", interface::OpenSettings),
                         MenuItem::separator(),
@@ -170,6 +172,7 @@ fn main() {
                 },
                 Menu {
                     name: "Edit".into(),
+                    disabled: false,
                     items: vec![
                         MenuItem::os_action("Undo", gpui_component::input::Undo, OsAction::Undo),
                         MenuItem::os_action("Redo", gpui_component::input::Redo, OsAction::Redo),
@@ -186,6 +189,7 @@ fn main() {
                 },
                 Menu {
                     name: "Library".into(),
+                    disabled: false,
                     items: vec![
                         MenuItem::action("Find a game", interface::FocusSearch),
                         MenuItem::action("Actions…", interface::OpenCommands),
@@ -211,21 +215,23 @@ fn main() {
                         appears_transparent: true,
                         traffic_light_position: Some(point(px(18.), px(14.))),
                     }),
-                    window_background: appearance::background(),
+                    window_background: appearance::background(cx),
                     app_id: Some("startpoint".into()),
                     ..Default::default()
                 },
                 move |window, cx| {
                     appearance::configure_window(window);
                     let view = cx.new(|cx| interface::LauncherView::new(api, window, cx));
-                    cx.new(|cx| Root::new(view, window, cx))
+                    // LauncherView owns the window tint; an opaque Root would hide
+                    // Acrylic/vibrancy and stacking two tints would flatten the glass.
+                    cx.new(|cx| Root::new(view, window, cx).bg(gpui::transparent_black()))
                 },
             ) {
                 diagnostics::record("window creation failed");
                 eprintln!("Could not open the Startpoint window: {error}");
                 cx.quit();
             }
-            cx.on_window_closed(|cx| {
+            cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
                 }
