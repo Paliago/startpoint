@@ -22,6 +22,12 @@ On macOS without the Metal compiler, add `--features runtime-shaders` to Cargo c
 **Actions → Windows test executable → Run workflow**: choose a branch. For branches without the workflow, run from `main` and fill in `branch`.
 Download and extract the run's artifact for `startpoint.exe` (unsigned; retained seven days).
 
+## Distribution and updates
+
+The **Windows release** workflow packages a version-tagged Windows installer and self-updating portable ZIP. Packaged releases check for updates in the background after launch; use **Download update** then **Restart to update** in the toolbar or Settings. Development/example builds and standalone test executables do not check for updates.
+
+See [release setup, signing and testing](docs/releases.md) for the public release repository configuration (source can stay private), publishing and local packaging. No release has to be published to use the existing test-executable workflow.
+
 ## Library views
 
 **Cover grid** is the default. Use the palette button in the Library toolbar and its **Layout** dropdown to choose **Pills**, **Cover grid**, **Landscape tiles** or **Compact list**. Size/spacing, source labels, last-played dates, favourite buttons and the right-hand detail panel are configurable and saved automatically. Previously saved layout choices are kept.
@@ -44,13 +50,33 @@ Top toolbar controls share their glass island's background instead of individual
 
 The app uses shared, theme-aware smoked-glass panels and **flat, borderless controls**. Floating navigation, the **Ctrl+K / Cmd+K** command palette, the metadata/images/launch/journal modal, customization panels, notifications and Recents widgets share 18px backdrop blur, 85% tint, pale hairlines, soft shadows and faint inset highlights. Buttons have solid fills, no gradients or shadows, compact theme-scaled corners, and distinct hover/pressed states. Sidebar navigation uses plain rows with no resting fill, highlighting only hovered/selected items. Inputs are darker and recessed without outer focus rings. Regular buttons, dropdown menus and fields stay opaque while containing panels are glass. Top navigation shares its island's resting background and highlights hovered/selected tabs separately. Keyboard-focus indicators on buttons are retained, and modal dimming covers the entire app.
 
-In **Settings → Appearance**, the single saved **Translucency & blur** switch controls native-window translucency and panel blur together. Transparency always uses Windows Acrylic or macOS vibrancy, never a sharp desktop backdrop. Disabling it makes the shell/panels opaque. Unsupported native-translucency platforms retain an opaque base. The shell tint preserves theme hues and increases coverage when necessary for contrast. Window dragging and native caption actions are unchanged.
+**Customize Library** and **Customize Recents** contain theme selection/editing, a **Colour mode** dropdown (System/Light/Dark), separate saved **Translucency** and **Backdrop blur** switches, and a **Translucency** amount slider. Library artwork dithering lives only in Customize Library. Blur can be disabled without turning off transparency; native windows then use a sharp transparent backdrop instead of Acrylic/vibrancy. Disabling translucency makes the shell/panels opaque without losing the saved amount. Unsupported native-translucency platforms retain an opaque base. Regular buttons, menus, fields, text and icons remain opaque.
+
+The amount slider has a visible **20% default notch**, calibrated to preserve the previous theme-aware glass appearance. Pointer adjustment snaps within two percentage points of it, and **Default** restores it. Click the slider or Tab to it, then use **Left/Right** or **Up/Down** for 1% steps, **Shift+arrow** for 5% steps, and **Home/End** for the endpoints. Keyboard adjustment can always leave the notch. Changes preview immediately and are saved after a short pause or on pointer release. Recents reuses its composited artwork texture while adjusting the amount, rather than decoding artwork on every slider movement. Window dragging and native caption actions are unchanged.
 
 Recents composites artwork, ordered dithering and its settled fade off-thread, then applies shell translucency once to the result. Even its solid-colour footer stays translucent; images on disk are never modified. The three-backdrop cache retains visible/crossfading/preloaded frames and evicts only at frame boundaries. Right-click the Recents backdrop or a game card for the same game actions as Library.
 
 **Edit theme…** previews colour and corner-radius changes live on shared controls and glass panels. **Border** affects field edges and panel hairlines; buttons intentionally have no borders. **Rename theme…** focuses the custom theme's name in the editor. Saving renames its existing file's theme without leaving an old duplicate; built-ins are always copied. Sidebar labels and icons align to the left. The component comparison page has been removed.
 
 The desktop pins matching revisions of [Zeron's ZUI renderer](https://github.com/zeronsh/zui) and [component fork](https://github.com/zeronsh/gpui-component) for per-panel blur on Windows Direct3D and macOS Metal. Shared smoke styling and paint-layer ordering live in `crates/desktop/src/glass.rs`; the existing frame-safe artwork cache remains in use.
+
+## Settings and UI vocabulary
+
+Settings contains **Startup**, **SteamGridDB API key**, **Game discovery**, **Local storage**, and **Updates**, in that order. Preferred start screen is a dropdown; appearance belongs in customization. The key acquisition action is a text link; verification/unlocking and removal are in the key's Options menu. Discovery and storage use path rows with directory actions beside their paths. Automatic discovery shows the resolved Steam root, Epic manifest search directory, and GOG search/known installer locations; resolving them happens on the runtime worker. Recents always uses visible installed games in recent-launch order, without a Library filter dropdown or changes to the saved Library filters.
+
+Use these names when discussing the UI:
+
+| Name | Meaning / shared code |
+| --- | --- |
+| **Screen tabs** | Recents / Library / Activity; `navigation_tab` |
+| **Toolbar island** | Shared glass container for toolbar icons |
+| **Icon button** | Square action target, 32×32 in the toolbar, including the notification bell; `icon_button` |
+| **Action button** | Flat text action with symmetric 12px side padding; `button` |
+| **Choice group** | Related options with an accent-selected choice; `choice_group` / `choice_button` |
+| **Choice dropdown** | Opaque trigger plus check-marked menu choices; `choice_dropdown` |
+| **Path row** | Label/path at left, directory actions at right; `path_row` |
+| **Glass panel** | Containing smoked-glass surface; `glass_panel` |
+| **Customize panel** | Floating appearance and screen-layout controls; `floating_panel` |
 
 ## Check
 
@@ -77,10 +103,6 @@ cargo run --locked --release -p startpoint --example generate_icon
 
 Session logs are written to the application's data directory under `diagnostics` (Windows: `%LOCALAPPDATA%\Startpoint\data\diagnostics`). The latest ten sessions are retained, with routine logs limited to 2 MiB each. They record action labels, job states, GPUI warning/error locations and Rust panic backtraces. Arbitrary error/panic messages and command contents are omitted to avoid recording credentials or personal library data. Paths may still appear in stack traces. Logs are local only.
 
-After a crash, collect logs and Windows crash reports without launching the app:
+After a crash, collect the session logs and Windows Event Viewer crash report without launching the app. Review before sharing, and keep the matching `.exe` and `.pdb` privately before rebuilding. A panic hook cannot capture every native crash or forced termination. Windows minidumps can contain secrets from memory and should not be shared without review.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/Collect-Diagnostics.ps1 -Executable target/release/startpoint.exe
-```
-
-The script creates a dated folder and ZIP in your temporary directory; review before sharing. Keep the matching `.exe` and `.pdb` privately before rebuilding. A panic hook cannot capture every native crash or forced termination. To opt into Windows minidumps, run `scripts/Enable-CrashDumps.ps1` in an **administrator PowerShell**; it affects only `startpoint.exe`, keeps up to three minidumps and never uploads them. Pass `-Disable` to remove its settings. Dumps can contain secrets from memory and are **excluded** from collected bundles unless you explicitly pass `-IncludeDumps`.
+PowerShell diagnostic/packaging helpers are local-only: `*.ps1` is ignored by Git and these files are not distributed through GitHub or build artifacts.

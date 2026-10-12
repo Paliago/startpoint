@@ -14,6 +14,9 @@ mod logo_cache;
 mod recents_fade;
 mod theme;
 mod theme_editor;
+mod translucency_slider;
+#[cfg(feature = "self-update")]
+mod updater;
 mod window_state;
 
 use gpui::{prelude::*, *};
@@ -55,6 +58,17 @@ impl AssetSource for LauncherAssets {
 }
 
 fn main() {
+    // Handle installer hooks before diagnostics, database initialization or UI.
+    // This performs local housekeeping only; online checks start after the window opens.
+    #[cfg(feature = "self-update")]
+    velopack::VelopackApp::build()
+        .set_auto_apply_on_startup(
+            cfg!(target_os = "windows")
+                && !cfg!(debug_assertions)
+                && !std::env::args()
+                    .any(|arg| matches!(arg.as_str(), "--example-library" | "--diagnostics")),
+        )
+        .run();
     let _diagnostics = diagnostics::initialize();
     let example_library = std::env::args().any(|argument| argument == "--example-library");
     let application = if example_library {

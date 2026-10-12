@@ -1,10 +1,10 @@
 use crate::{
     appearance,
     components::{
-        BUTTON_TEXT_REM, EditableFieldState, button, choice_button, choice_dropdown, chrome_button,
-        chrome_choice_button, eyebrow, field, floating_panel, glass_panel, glass_panel_with_blur,
-        hint, icon_button, image, input, modal_backdrop, navigation_row, placeholder,
-        segmented_control, sidebar_label, snug_sidebar_button, widget_surface,
+        BUTTON_TEXT_REM, EditableFieldState, button, choice_button, choice_dropdown, choice_group,
+        eyebrow, field, floating_panel, glass_panel, glass_panel_with_blur, hint, icon_button,
+        image, input, modal_backdrop, navigation_row, navigation_tab, path_row, placeholder,
+        sidebar_label, snug_sidebar_button, widget_surface,
     },
     image_cache::ArtworkImageCache,
     library_layout::{CONTENT_TOP, DETAIL_WIDTH, Geometry as LibraryGeometry, filter_reveal},
@@ -20,6 +20,7 @@ use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, InteractiveElementExt as _, Selectable, Sizable,
     button::{Button, ButtonVariants},
     input::{InputEvent, InputState, TextareaState},
+    link::Link,
     menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
     spinner::Spinner,
     switch::Switch,
@@ -301,6 +302,8 @@ enum PickerPurpose {
 
 pub struct LauncherView {
     api: LauncherApplication,
+    #[cfg(feature = "self-update")]
+    updater: Entity<crate::updater::Updater>,
     snapshot: Snapshot,
     command_search: Entity<InputState>,
     command_mode: Option<CommandMode>,
@@ -314,6 +317,7 @@ pub struct LauncherView {
     library_filter: LibraryFilter,
     sort_recent: bool,
     appearance: AppearanceSettings,
+    translucency_slider: Entity<crate::translucency_slider::AmountSlider>,
     recents_fade: Entity<RecentsFade>,
     appearance_loaded: bool,
     appearance_job: Option<JobId>,
@@ -412,12 +416,68 @@ impl LauncherView {
             async {}
         });
         let appearance_settings = snapshot.settings.appearance.clone();
+        let translucency_slider = cx.new(|cx| {
+            crate::translucency_slider::AmountSlider::new(
+                appearance_settings.translucency_amount,
+                window,
+                cx,
+            )
+        });
+        let translucency_subscription = cx.subscribe_in(
+            &translucency_slider,
+            window,
+            |view, _, event, window, cx| match event {
+                crate::translucency_slider::Event::Changed(amount) => {
+                    view.appearance.translucency_amount = *amount;
+                    appearance::update_effects(&view.appearance, cx);
+                    view.schedule_appearance_save(window, cx);
+                }
+                crate::translucency_slider::Event::Released => {
+                    if view.appearance_save.is_some() {
+                        view.set_appearance(view.appearance.clone(), window, cx);
+                    }
+                }
+            },
+        );
         let appearance_loaded = snapshot.ready;
         appearance::apply(&appearance_settings, Some(window), cx);
         let screen = appearance_settings.start_screen;
         let logos = cx.new(|_| crate::logo_cache::LogoCache::new(&snapshot.paths.cache_directory));
+        let subscriptions = vec![
+            subscription,
+            appearance_subscription,
+            key_subscription,
+            bounds_subscription,
+            quit_subscription,
+            translucency_subscription,
+        ];
+        #[cfg(feature = "self-update")]
+        let updater = cx.new(|cx| crate::updater::Updater::new(window, cx));
+        #[cfg(feature = "self-update")]
+        let subscriptions = {
+            let mut subscriptions = subscriptions;
+            subscriptions.push(cx.observe(&updater, |_, _, cx| cx.notify()));
+            subscriptions.push(cx.subscribe_in(
+                &updater,
+                window,
+                |view, updater, event, window, cx| match event {
+                    crate::updater::Event::RestartRequested => {
+                        if view.can_restart_for_update() {
+                            updater.update(cx, |updater, cx| updater.restart(window, cx));
+                        }
+                    }
+                    crate::updater::Event::RestartPrepared => {
+                        view.window_memory.flush();
+                        cx.quit();
+                    }
+                },
+            ));
+            subscriptions
+        };
         let mut view = Self {
             api,
+            #[cfg(feature = "self-update")]
+            updater,
             snapshot,
             command_search,
             command_mode: None,
@@ -431,6 +491,7 @@ impl LauncherView {
             library_filter: LibraryFilter::Installed,
             sort_recent: true,
             appearance: appearance_settings,
+            translucency_slider,
             recents_fade: cx.new(|_| RecentsFade::default()),
             appearance_loaded,
             appearance_job: None,
@@ -509,13 +570,7 @@ impl LauncherView {
             carousel_focus: cx.focus_handle(),
             carousel_transition: None,
             carousel_image_ready: false,
-            _subscriptions: vec![
-                subscription,
-                appearance_subscription,
-                key_subscription,
-                bounds_subscription,
-                quit_subscription,
-            ],
+            _subscriptions: subscriptions,
         };
         view.filter(cx);
         view.ensure_selection(window, cx);
@@ -805,10 +860,7 @@ impl LauncherView {
     }
 
     fn recent_games(&self) -> Vec<&Game> {
-        let mut games = self.visible.iter().collect::<Vec<_>>();
-        games.sort_by_key(|game| std::cmp::Reverse(game.last_launched.unwrap_or(0)));
-        games.truncate(5);
-        games
+        installed_recents(&self.snapshot.games)
     }
 
     fn displayed_games(&self) -> Vec<&Game> {
@@ -1091,7 +1143,15 @@ impl LauncherView {
                         | CredentialStatus::Unavailable(_) => cx.theme().warning,
                         _ => cx.theme().muted_foreground,
                     }))
-                    .child(status.label())
+                    .child(match status {
+                        CredentialStatus::Missing => "No key saved",
+                        CredentialStatus::Stored => "Key saved",
+                        CredentialStatus::Checking => "Checking…",
+                        CredentialStatus::Verified => "Connected",
+                        CredentialStatus::Invalid => "Key rejected",
+                        CredentialStatus::Locked => "Unlock required",
+                        CredentialStatus::Unavailable(_) => "Connection unavailable",
+                    })
                     .when(*status == CredentialStatus::Checking, |row| {
                         row.child(Spinner::new().small().color(cx.theme().primary))
                     }),
@@ -1803,17 +1863,6 @@ impl LauncherView {
         self.close_theme_editor(window, cx);
         self.detail_tab = DetailTab::Overview;
         self.cancel_artwork();
-        if screen == StartScreen::Recents {
-            let had_source = self.source_filter.take().is_some();
-            let was_hidden = self.library_filter == LibraryFilter::Hidden;
-            if was_hidden {
-                self.library_filter = LibraryFilter::Installed;
-                self.collection_filter = None;
-            }
-            if had_source || was_hidden {
-                self.filter(cx);
-            }
-        }
         self.ensure_selection(window, cx);
         self.focus.focus(window, cx);
         cx.notify();
@@ -1821,6 +1870,17 @@ impl LauncherView {
 
     fn shows_library_details(&self) -> bool {
         self.selected.is_some() && self.appearance.library_details && !self.detail_closed
+    }
+
+    #[cfg(feature = "self-update")]
+    fn can_restart_for_update(&self) -> bool {
+        let snapshot = self.api.snapshot();
+        snapshot.ready
+            && !snapshot.jobs.iter().any(|job| job.state.active())
+            && !self.editor_is_modal()
+            && self.theme_editor.is_none()
+            && !self.credential_editing
+            && self.appearance_save.is_none()
     }
 
     fn editor_is_modal(&self) -> bool {
@@ -2077,7 +2137,15 @@ impl LauncherView {
         if self.theme_editor.is_some() || self.themes_loading {
             return;
         }
-        self.switch_screen(StartScreen::Recents, window, cx);
+        self.switch_screen(
+            if self.screen == StartScreen::Library {
+                StartScreen::Library
+            } else {
+                StartScreen::Recents
+            },
+            window,
+            cx,
+        );
         self.customization_open = true;
         let selected = self.appearance.theme.clone();
         let directory = self.snapshot.paths.data_directory.join("themes");
@@ -2719,7 +2787,8 @@ impl LauncherView {
                         .child(
                             button(SharedString::from(format!("card-play-{}", game.id.0)))
                                 .secondary()
-                                .size(px(28.))
+                                .w(px(28.))
+                                .h(px(28.))
                                 .p_0()
                                 .icon(Icon::default().path("icons/play.svg"))
                                 .bg(crate::glass::Palette::of(cx).button)
@@ -2739,7 +2808,8 @@ impl LauncherView {
                         .child(
                             button(SharedString::from(format!("card-manage-{}", game.id.0)))
                                 .secondary()
-                                .size(px(28.))
+                                .w(px(28.))
+                                .h(px(28.))
                                 .p_0()
                                 .icon(IconName::Ellipsis)
                                 .bg(crate::glass::Palette::of(cx).button)
@@ -2932,7 +3002,8 @@ impl LauncherView {
         let id = game.id.clone();
         button(SharedString::from(format!("star-{}", id.0)))
             .secondary()
-            .size(px(26.))
+            .w(px(26.))
+            .h(px(26.))
             .p_0()
             .border_0()
             .icon(if game.favourite {
@@ -2993,10 +3064,6 @@ impl LauncherView {
     }
 
     fn navigation_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let view = cx.weak_entity();
-        let selected_filter = self.library_filter;
-        let favourites_available = self.favourite_count() > 0;
-        let manual_available = self.manual_count() > 0;
         glass_panel(
             div()
                 .id("navigation-controls")
@@ -3020,7 +3087,7 @@ impl LauncherView {
                         ]
                         .into_iter()
                         .map(|screen| {
-                            chrome_choice_button(
+                            navigation_tab(
                                 SharedString::from(format!("view-{}", screen.label())),
                                 screen.label(),
                                 self.screen == screen,
@@ -3036,56 +3103,7 @@ impl LauncherView {
                             ))
                         }),
                     ),
-                )
-                .when(self.screen == StartScreen::Recents, |bar| {
-                    bar.child(
-                        chrome_button("recents-filter")
-                            .h(px(32.))
-                            .px_3()
-                            .border_0()
-                            .label(selected_filter.label())
-                            .dropdown_caret(true)
-                            .dropdown_menu(move |mut menu, _, _| {
-                                for filter in [
-                                    LibraryFilter::Installed,
-                                    LibraryFilter::All,
-                                    LibraryFilter::Favourites,
-                                    LibraryFilter::Manual,
-                                ] {
-                                    if filter == LibraryFilter::Favourites && !favourites_available
-                                        || filter == LibraryFilter::Manual && !manual_available
-                                    {
-                                        continue;
-                                    }
-                                    let view = view.clone();
-                                    menu =
-                                        menu.item(
-                                            PopupMenuItem::element(move |_, _| {
-                                                div()
-                                                    .h(px(36.))
-                                                    .flex()
-                                                    .items_center()
-                                                    .text_base()
-                                                    .child(filter.label())
-                                            })
-                                            .checked(filter == selected_filter)
-                                            .on_click(move |_, window, cx| {
-                                                let _ = view.update(cx, |view, cx| {
-                                                    view.library_filter = filter;
-                                                    view.source_filter = None;
-                                                    view.collection_filter = None;
-                                                    view.filter(cx);
-                                                    view.ensure_selection(window, cx);
-                                                    view.focus.focus(window, cx);
-                                                    cx.notify();
-                                                });
-                                            }),
-                                        );
-                                }
-                                menu.min_w(px(180.))
-                            }),
-                    )
-                }),
+                ),
             cx,
         )
         .into_any_element()
@@ -3245,7 +3263,7 @@ impl LauncherView {
             .artwork
             .get(&ArtworkKind::Background)
             .or_else(|| game.artwork.get(&ArtworkKind::Cover));
-        let color = appearance::surface(cx);
+        let color = cx.theme().background.alpha(1.);
         // Use the settled sidebar width, not every intermediate animation frame.
         let sidebar = if self.appearance.sidebar_visible {
             self.appearance.sidebar_width
@@ -3282,8 +3300,8 @@ impl LauncherView {
             .absolute()
             .inset_0()
             .overflow_hidden()
-            .opacity(opacity)
-            .when(image.is_none(), |background| background.bg(color))
+            .opacity(opacity * color.a)
+            .when(image.is_none(), |background| background.bg(color.alpha(1.)))
             .when_some(image, |background, image| {
                 background.child(img(image).size_full().object_fit(ObjectFit::Cover))
             })
@@ -3441,7 +3459,7 @@ impl LauncherView {
                                             .child(
                                                 button("edit-recent-game")
                                                     .secondary()
-                                                    .size(px(36.))
+                                                    .w(px(36.)).h(px(36.)).p_0()
                                                     .icon(IconName::Ellipsis)
                                                     .tooltip(
                                                         "Edit metadata, artwork or launch options",
@@ -3460,7 +3478,7 @@ impl LauncherView {
                                             .child(
                                                 button("pause-recents")
                                                     .secondary()
-                                                    .size(px(36.))
+                                                    .w(px(36.)).h(px(36.)).p_0()
                                                     .icon(Icon::default().path(if paused {
                                                         "icons/play.svg"
                                                     } else {
@@ -3488,7 +3506,7 @@ impl LauncherView {
                                             .child(
                                                 button("previous-recent")
                                                     .secondary()
-                                                    .size(px(36.))
+                                                    .w(px(36.)).h(px(36.)).p_0()
                                                     .icon(IconName::ChevronLeft)
                                                     .tooltip("Previous game")
                                                     .bg(crate::glass::Palette::of(cx).button)
@@ -3507,7 +3525,7 @@ impl LauncherView {
                                                         .border_0()
                                                         .p_0()
                                                         .tooltip(game.title().to_string())
-                                                        .size(px(28.))
+                                                        .w(px(28.)).h(px(28.))
                                                         .flex()
                                                         .items_center()
                                                         .justify_center()
@@ -3540,7 +3558,7 @@ impl LauncherView {
                                             .child(
                                                 button("next-recent")
                                                     .secondary()
-                                                    .size(px(36.))
+                                                    .w(px(36.)).h(px(36.)).p_0()
                                                     .icon(IconName::ChevronRight)
                                                     .tooltip("Next game")
                                                     .bg(crate::glass::Palette::of(cx).button)
@@ -3635,31 +3653,33 @@ impl LauncherView {
             .or_else(|| active.first())
             .map(|job| job.label.clone())
             .unwrap_or_else(|| "Activity and notifications".into());
-        chrome_button("background-jobs")
-            .border_0()
-            .h(px(32.))
-            .px_2()
-            .icon(IconName::Bell)
-            .tooltip(self.notice.clone().unwrap_or(tooltip))
-            .selected(self.jobs_open)
-            .when(self.notice.is_some(), |button| {
-                button.text_color(cx.theme().primary)
-            })
-            .when(busy, |button| {
-                button.child(Spinner::new().small().color(cx.theme().primary))
-            })
-            .when(self.notice.is_some() || !active.is_empty(), |button| {
-                button.child(
-                    div()
-                        .text_xs()
-                        .child((active.len() + usize::from(self.notice.is_some())).to_string()),
-                )
-            })
-            .on_click(cx.listener(|view, _, window, cx| {
-                view.jobs_open = !view.jobs_open;
-                view.focus.focus(window, cx);
-                cx.notify();
-            }))
+        self.toolbar_button(
+            "background-jobs",
+            IconName::Bell,
+            "Activity and notifications",
+        )
+        .tooltip(self.notice.clone().unwrap_or(tooltip))
+        .selected(self.jobs_open)
+        .relative()
+        .when(self.notice.is_some(), |button| {
+            button.text_color(cx.theme().primary)
+        })
+        .when(busy || self.notice.is_some(), |button| {
+            button.child(
+                div()
+                    .absolute()
+                    .right(px(3.))
+                    .top(px(3.))
+                    .size(px(5.))
+                    .rounded_full()
+                    .bg(cx.theme().primary),
+            )
+        })
+        .on_click(cx.listener(|view, _, window, cx| {
+            view.jobs_open = !view.jobs_open;
+            view.focus.focus(window, cx);
+            cx.notify();
+        }))
     }
 
     fn toolbar_button(
@@ -3824,9 +3844,23 @@ impl LauncherView {
                         )
                     })
                     .child(div().flex_1())
+                    .map(|bar| {
+                        #[cfg(feature = "self-update")]
+                        {
+                            let restart_allowed = self.can_restart_for_update();
+                            bar.child(
+                                self.updater
+                                    .update(cx, |updater, cx| updater.badge(restart_allowed, cx)),
+                            )
+                        }
+                        #[cfg(not(feature = "self-update"))]
+                        {
+                            bar
+                        }
+                    })
                     .child(glass_panel(
                         div()
-                            .id("library-controls")
+                            .id("action-toolbar-island")
                             .occlude()
                             .h(px(36.))
                             .px(px(6.))
@@ -4008,7 +4042,8 @@ impl LauncherView {
                                     .child(self.start_button(game, cx).w_auto().flex_1().min_w_0())
                                     .child(
                                         self.library_favourite_button(game, cx)
-                                            .size(px(44.))
+                                            .w(px(44.))
+                                            .h(px(44.))
                                             .bg(cx.theme().secondary),
                                     )
                                     .child(
@@ -4017,7 +4052,8 @@ impl LauncherView {
                                             IconName::Ellipsis,
                                             "Edit metadata, artwork or launch options",
                                         )
-                                        .size(px(44.))
+                                        .w(px(44.))
+                                        .h(px(44.))
                                         .bg(cx.theme().secondary)
                                         .on_click(
                                             cx.listener(|view, _, window, cx| {
@@ -4157,10 +4193,7 @@ impl LauncherView {
                             .child(game.title().to_string()),
                     )
                     .child(
-                        button("close-game-editor")
-                            .secondary()
-                            .size(px(32.))
-                            .icon(IconName::Close)
+                        icon_button("close-game-editor", IconName::Close, "Close game editor")
                             .tooltip("Close game editor")
                             .on_click(
                                 cx.listener(|view, _, window, cx| view.close_editor(window, cx)),
@@ -4223,7 +4256,7 @@ impl LauncherView {
                                             })),
                                     ),
                             )
-                            .child(segmented_control(cx).w_full().children(
+                            .child(choice_group(cx).w_full().children(
                                 DetailTab::EDITORS.into_iter().map(|(tab, label)| {
                                     choice_button(label, label, self.detail_tab == tab, cx)
                                         .on_click(cx.listener(move |view, _, _, cx| {
@@ -4287,7 +4320,7 @@ impl LauncherView {
             .flex_col()
             .gap_4()
             .child(
-                segmented_control(cx).children(
+                choice_group(cx).children(
                     [
                         ArtworkKind::Cover,
                         ArtworkKind::Background,
@@ -4621,6 +4654,143 @@ impl LauncherView {
             .child(selector)
     }
 
+    fn glass_controls(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                Switch::new("window-translucency")
+                    .checked(self.appearance.window_translucency)
+                    .label("Translucency")
+                    .disabled(
+                        !self.snapshot.ready
+                            || !cfg!(any(target_os = "windows", target_os = "macos")),
+                    )
+                    .on_click(cx.listener(|view, enabled, window, cx| {
+                        view.set_appearance(
+                            AppearanceSettings {
+                                window_translucency: *enabled,
+                                ..view.appearance.clone()
+                            },
+                            window,
+                            cx,
+                        );
+                    })),
+            )
+            .child(
+                Switch::new("backdrop-blur")
+                    .checked(self.appearance.backdrop_blur)
+                    .label("Backdrop blur")
+                    .disabled(!self.snapshot.ready)
+                    .on_click(cx.listener(|view, enabled, window, cx| {
+                        view.set_appearance(
+                            AppearanceSettings {
+                                backdrop_blur: *enabled,
+                                ..view.appearance.clone()
+                            },
+                            window,
+                            cx,
+                        );
+                    })),
+            )
+            .child(self.translucency_slider.clone())
+    }
+
+    fn appearance_controls(&self, cx: &mut Context<Self>) -> Div {
+        let catalog = cx.global::<theme::Catalog>();
+        let warnings = catalog.warnings.clone();
+        let missing = !catalog.contains(&self.appearance.theme);
+        let custom = catalog
+            .files
+            .contains_key(&self.appearance.theme.to_ascii_lowercase());
+        let themes = self.snapshot.paths.data_directory.join("themes");
+        let owner = cx.weak_entity();
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(eyebrow("APPEARANCE"))
+            .child(self.theme_selector(cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        button("edit-theme")
+                            .icon(IconName::Palette)
+                            .label("Edit theme…")
+                            .disabled(!self.snapshot.ready || self.themes_loading)
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.open_theme_editor(window, cx)
+                            })),
+                    )
+                    .when(custom, |row| {
+                        row.child(
+                            button("rename-theme")
+                                .label("Rename…")
+                                .disabled(!self.snapshot.ready || self.themes_loading)
+                                .on_click(cx.listener(|view, _, window, cx| {
+                                    view.open_theme_editor(window, cx);
+                                    if let Some(editor) = &view.theme_editor {
+                                        editor
+                                            .update(cx, |editor, cx| editor.focus_name(window, cx));
+                                    }
+                                })),
+                        )
+                    })
+                    .child(
+                        icon_button("open-themes", IconName::Folder, "Open themes directory")
+                            .on_click(move |_, _, cx| cx.reveal_path(&themes)),
+                    )
+                    .child(
+                        icon_button(
+                            "reload-themes",
+                            Icon::default().path("icons/refresh.svg"),
+                            "Reload themes",
+                        )
+                        .disabled(self.themes_loading)
+                        .on_click(
+                            cx.listener(|view, _, window, cx| view.reload_themes(window, cx)),
+                        ),
+                    ),
+            )
+            .when(missing && !self.themes_loading, |panel| {
+                panel.child(hint("Selected theme unavailable; using Startpoint."))
+            })
+            .children(warnings.iter().map(|warning| hint(warning)))
+            .child(eyebrow("COLOUR MODE"))
+            .child(choice_dropdown(
+                "colour-mode",
+                self.appearance.mode,
+                [
+                    AppearanceMode::System,
+                    AppearanceMode::Light,
+                    AppearanceMode::Dark,
+                ]
+                .into_iter()
+                .map(|mode| (mode, mode.label().into()))
+                .collect(),
+                self.snapshot.ready,
+                move |mode, window, cx| {
+                    let _ = owner.update(cx, |view, cx| {
+                        view.set_appearance(
+                            AppearanceSettings {
+                                mode,
+                                ..view.appearance.clone()
+                            },
+                            window,
+                            cx,
+                        )
+                    });
+                },
+            ))
+            .child(self.glass_controls(cx))
+    }
+
     fn customization(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         if self.screen == StartScreen::Library {
             return self.library_customization(window, cx);
@@ -4644,72 +4814,26 @@ impl LauncherView {
                     .justify_between()
                     .child(eyebrow("CUSTOMIZE RECENTS"))
                     .child(
-                        button("close-customization")
-                            .size(px(32.))
-                            .icon(IconName::Close)
-                            .tooltip("Close customization")
-                            .disabled(saving)
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.close_theme_editor(window, cx);
-                                view.customization_open = false;
-                                view.focus.focus(window, cx);
-                                cx.notify();
-                            })),
+                        icon_button(
+                            "close-customization",
+                            IconName::Close,
+                            "Close customization",
+                        )
+                        .tooltip("Close customization")
+                        .disabled(saving)
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.close_theme_editor(window, cx);
+                            view.customization_open = false;
+                            view.focus.focus(window, cx);
+                            cx.notify();
+                        })),
                     ),
             );
         if let Some(editor) = &self.theme_editor {
             panel = panel.child(editor.clone());
         } else {
             panel = panel
-                .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(self.theme_selector(cx))
-                        .child(
-                            button("edit-theme")
-                                .h(px(32.))
-                                .px_2()
-                                .icon(IconName::Palette)
-                                .label("Edit theme…")
-                                .disabled(!self.snapshot.ready || self.themes_loading)
-                                .on_click(cx.listener(|view, _, window, cx| {
-                                    view.open_theme_editor(window, cx)
-                                })),
-                        ),
-                )
-                .child(
-                    segmented_control(cx).children(
-                        [
-                            AppearanceMode::System,
-                            AppearanceMode::Light,
-                            AppearanceMode::Dark,
-                        ]
-                        .into_iter()
-                        .map(|mode| {
-                            choice_button(
-                                mode.label(),
-                                mode.label(),
-                                self.appearance.mode == mode,
-                                cx,
-                            )
-                            .on_click(cx.listener(
-                                move |view, _, window, cx| {
-                                    view.set_appearance(
-                                        AppearanceSettings {
-                                            mode,
-                                            ..view.appearance.clone()
-                                        },
-                                        window,
-                                        cx,
-                                    );
-                                },
-                            ))
-                        }),
-                    ),
-                )
+                .child(self.appearance_controls(cx))
                 .child(eyebrow("ARTWORK"))
                 .child(
                     Switch::new("recents-dithering")
@@ -4801,6 +4925,10 @@ impl LauncherView {
     }
 
     fn library_customization(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let saving = self
+            .theme_editor
+            .as_ref()
+            .is_some_and(|editor| editor.read(cx).is_saving());
         let panel = div()
             .w_full()
             .flex_shrink_0()
@@ -4814,127 +4942,139 @@ impl LauncherView {
                     .justify_between()
                     .child(eyebrow("CUSTOMIZE LIBRARY"))
                     .child(
-                        button("close-library-customization")
-                            .secondary()
-                            .size(px(32.))
-                            .icon(IconName::Close)
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.customization_open = false;
-                                view.focus.focus(window, cx);
-                                cx.notify();
-                            })),
+                        icon_button(
+                            "close-library-customization",
+                            IconName::Close,
+                            "Close customization",
+                        )
+                        .disabled(saving)
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.close_theme_editor(window, cx);
+                            view.customization_open = false;
+                            view.focus.focus(window, cx);
+                            cx.notify();
+                        })),
                     ),
             )
-            .child(eyebrow("LAYOUT"))
-            .child({
-                let view = cx.weak_entity();
-                choice_dropdown(
-                    "library-layout",
-                    self.appearance.library_layout,
-                    [
-                        LibraryLayout::Pills,
-                        LibraryLayout::Covers,
-                        LibraryLayout::Tiles,
-                        LibraryLayout::Compact,
-                    ]
-                    .into_iter()
-                    .map(|layout| (layout, layout.label().into()))
-                    .collect(),
-                    self.snapshot.ready,
-                    move |layout, window, cx| {
-                        let _ = view.update(cx, |view, cx| {
-                            view.set_appearance(
-                                AppearanceSettings {
-                                    library_layout: layout,
-                                    ..view.appearance.clone()
-                                },
-                                window,
-                                cx,
-                            )
-                        });
-                    },
-                )
+            .when_some(self.theme_editor.clone(), |panel, editor| {
+                panel.child(editor)
             })
-            .child(eyebrow("SIZE & SPACING"))
-            .child(
-                segmented_control(cx).children(
-                    [
-                        LibraryDensity::Small,
-                        LibraryDensity::Medium,
-                        LibraryDensity::Large,
-                    ]
-                    .into_iter()
-                    .map(|density| {
-                        choice_button(
-                            density.label(),
-                            density.label(),
-                            self.appearance.library_density == density,
-                            cx,
+            .when(self.theme_editor.is_none(), |panel| {
+                panel
+                    .child(self.appearance_controls(cx))
+                    .child(eyebrow("LAYOUT"))
+                    .child({
+                        let view = cx.weak_entity();
+                        choice_dropdown(
+                            "library-layout",
+                            self.appearance.library_layout,
+                            [
+                                LibraryLayout::Pills,
+                                LibraryLayout::Covers,
+                                LibraryLayout::Tiles,
+                                LibraryLayout::Compact,
+                            ]
+                            .into_iter()
+                            .map(|layout| (layout, layout.label().into()))
+                            .collect(),
+                            self.snapshot.ready,
+                            move |layout, window, cx| {
+                                let _ = view.update(cx, |view, cx| {
+                                    view.set_appearance(
+                                        AppearanceSettings {
+                                            library_layout: layout,
+                                            ..view.appearance.clone()
+                                        },
+                                        window,
+                                        cx,
+                                    )
+                                });
+                            },
                         )
-                        .on_click(cx.listener(
-                            move |view, _, window, cx| {
-                                view.set_appearance(
-                                    AppearanceSettings {
-                                        library_density: density,
-                                        ..view.appearance.clone()
-                                    },
-                                    window,
+                    })
+                    .child(eyebrow("SIZE & SPACING"))
+                    .child(
+                        choice_group(cx).children(
+                            [
+                                LibraryDensity::Small,
+                                LibraryDensity::Medium,
+                                LibraryDensity::Large,
+                            ]
+                            .into_iter()
+                            .map(|density| {
+                                choice_button(
+                                    density.label(),
+                                    density.label(),
+                                    self.appearance.library_density == density,
                                     cx,
                                 )
-                            },
-                        ))
-                    }),
-                ),
-            )
-            .child(eyebrow("DISPLAY"))
-            .children(
-                [
-                    (
-                        "library-details",
-                        "Game detail panel",
-                        self.appearance.library_details,
-                    ),
-                    (
-                        "library-last-played",
-                        "Last played",
-                        self.appearance.library_last_played,
-                    ),
-                    (
-                        "library-sources",
-                        "Source labels",
-                        self.appearance.library_sources,
-                    ),
-                    (
-                        "library-favourites",
-                        "Favourite stars",
-                        self.appearance.library_favourite_badges,
-                    ),
-                    (
-                        "library-dither",
-                        "Detail artwork dithering",
-                        self.appearance.dither_artwork,
-                    ),
-                ]
-                .into_iter()
-                .map(|(id, label, checked)| {
-                    Switch::new(id)
-                        .label(label)
-                        .checked(checked)
-                        .on_click(cx.listener(move |view, enabled, window, cx| {
-                            let mut settings = view.appearance.clone();
-                            match id {
-                                "library-details" => settings.library_details = *enabled,
-                                "library-last-played" => settings.library_last_played = *enabled,
-                                "library-sources" => settings.library_sources = *enabled,
-                                "library-favourites" => {
-                                    settings.library_favourite_badges = *enabled
-                                }
-                                _ => settings.dither_artwork = *enabled,
-                            }
-                            view.set_appearance(settings, window, cx);
-                        }))
-                }),
-            );
+                                .on_click(cx.listener(
+                                    move |view, _, window, cx| {
+                                        view.set_appearance(
+                                            AppearanceSettings {
+                                                library_density: density,
+                                                ..view.appearance.clone()
+                                            },
+                                            window,
+                                            cx,
+                                        )
+                                    },
+                                ))
+                            }),
+                        ),
+                    )
+                    .child(eyebrow("DISPLAY"))
+                    .children(
+                        [
+                            (
+                                "library-details",
+                                "Game detail panel",
+                                self.appearance.library_details,
+                            ),
+                            (
+                                "library-last-played",
+                                "Last played",
+                                self.appearance.library_last_played,
+                            ),
+                            (
+                                "library-sources",
+                                "Source labels",
+                                self.appearance.library_sources,
+                            ),
+                            (
+                                "library-favourites",
+                                "Favourite stars",
+                                self.appearance.library_favourite_badges,
+                            ),
+                            (
+                                "library-dither",
+                                "Dither Library artwork",
+                                self.appearance.dither_artwork,
+                            ),
+                        ]
+                        .into_iter()
+                        .map(|(id, label, checked)| {
+                            Switch::new(id)
+                                .label(label)
+                                .checked(checked)
+                                .on_click(cx.listener(move |view, enabled, window, cx| {
+                                    let mut settings = view.appearance.clone();
+                                    match id {
+                                        "library-details" => settings.library_details = *enabled,
+                                        "library-last-played" => {
+                                            settings.library_last_played = *enabled
+                                        }
+                                        "library-sources" => settings.library_sources = *enabled,
+                                        "library-favourites" => {
+                                            settings.library_favourite_badges = *enabled
+                                        }
+                                        _ => settings.dither_artwork = *enabled,
+                                    }
+                                    view.set_appearance(settings, window, cx);
+                                }))
+                        }),
+                    )
+            });
         floating_panel(
             "library-customization",
             HEADER_HEIGHT + 8.,
@@ -5108,7 +5248,9 @@ impl LauncherView {
                                 "activity-previous-month"
                             })
                             .secondary()
-                            .size(px(32.))
+                            .w(px(32.))
+                            .h(px(32.))
+                            .p_0()
                             .icon(if forward {
                                 IconName::ChevronRight
                             } else {
@@ -5262,10 +5404,7 @@ impl LauncherView {
                             .child("Game journal"),
                     )
                     .child(
-                        button("write-journal-note")
-                            .secondary()
-                            .size(px(32.))
-                            .icon(IconName::Plus)
+                        icon_button("write-journal-note", IconName::Plus, "Write a game note")
                             .tooltip("Write a game note")
                             .disabled(self.selected.is_none())
                             .on_click(cx.listener(|view, _, window, cx| {
@@ -5461,6 +5600,96 @@ impl LauncherView {
             .into_any_element()
     }
 
+    fn discovery_rows(
+        &self,
+        provider: &'static str,
+        name: &'static str,
+        configured: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let paths = self
+            .snapshot
+            .settings
+            .discovery_directories
+            .get(provider)
+            .cloned()
+            .unwrap_or_default();
+        let paths = if paths.is_empty() {
+            vec![None]
+        } else {
+            paths.into_iter().map(Some).collect()
+        };
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .children(paths.into_iter().enumerate().map(|(index, path)| {
+                let label = format!(
+                    "{name} · {}",
+                    if configured { "Custom" } else { "Automatic" }
+                );
+                let displayed = path
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "No directory detected".into());
+                let actions = div()
+                    .when_some(path, |actions, path| {
+                        actions.child(
+                            icon_button(
+                                SharedString::from(format!("open-{provider}-{index}")),
+                                IconName::Folder,
+                                "Open directory",
+                            )
+                            .on_click(move |_, _, cx| cx.reveal_path(&path)),
+                        )
+                    })
+                    .when(index == 0, |actions| {
+                        actions
+                            .child(
+                                button(SharedString::from(format!("choose-{provider}")))
+                                    .label("Change…")
+                                    .disabled(!self.snapshot.ready)
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        view.pick(
+                                            match provider {
+                                                "steam" => PickerPurpose::SteamDirectory,
+                                                "epic" => PickerPurpose::EpicDirectory,
+                                                _ => PickerPurpose::GogDirectory,
+                                            },
+                                            window,
+                                            cx,
+                                        )
+                                    })),
+                            )
+                            .when(configured, |actions| {
+                                actions.child(
+                                    button(SharedString::from(format!("reset-{provider}")))
+                                        .label("Auto")
+                                        .disabled(!self.snapshot.ready)
+                                        .on_click(cx.listener(move |view, _, _, cx| {
+                                            view.submit(
+                                                match provider {
+                                                    "steam" => Command::SetSteamDirectory {
+                                                        directory: None,
+                                                    },
+                                                    "epic" => Command::SetEpicDirectory {
+                                                        directory: None,
+                                                    },
+                                                    _ => {
+                                                        Command::SetGogDirectory { directory: None }
+                                                    }
+                                                },
+                                                cx,
+                                            );
+                                        })),
+                                )
+                            })
+                    });
+                path_row(label, displayed, actions, cx)
+            }))
+    }
+
     fn settings(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let key_configured = self
             .snapshot
@@ -5469,13 +5698,6 @@ impl LauncherView {
             .contains("steamgriddb");
         let data_directory = self.snapshot.paths.data_directory.clone();
         let cache_directory = self.snapshot.paths.cache_directory.clone();
-        let theme_directory = data_directory.join("themes");
-        let catalog = cx.global::<theme::Catalog>();
-        let theme_warnings = catalog.warnings.clone();
-        let theme_missing = !catalog.contains(&self.appearance.theme);
-        let custom_theme = catalog
-            .files
-            .contains_key(&self.appearance.theme.to_ascii_lowercase());
         let content_width = window.viewport_size().width
             - px(self.appearance.sidebar_width * self.sidebar_progress())
             - window.rem_size() * 4.;
@@ -5496,159 +5718,53 @@ impl LauncherView {
                     .flex_col()
                     .gap_5()
                     .child(div().text_3xl().child("Settings"))
-                    .child(div().mt_3().child(eyebrow("START SCREEN")))
-                    .child(
-                        segmented_control(cx).children(
-                            [StartScreen::Library, StartScreen::Recents]
-                                .into_iter()
-                                .map(|start_screen| {
-                                    choice_button(SharedString::from(format!(
-                                        "start-screen-{}",
-                                        start_screen.label()
-                                    )), start_screen.label(), self.appearance.start_screen == start_screen, cx)
-                                    .disabled(!self.snapshot.ready)
-                                    .on_click(cx.listener(move |view, _, window, cx| {
-                                        view.set_appearance(
-                                            AppearanceSettings {
-                                                start_screen,
-                                                ..view.appearance.clone()
-                                            },
-                                            window,
-                                            cx,
-                                        );
-                                    }))
-                                }),
-                        ),
-                    )
-                    .child(
-                        button("customize-recents-from-settings")
-                            .h(px(32.))
-                            .px_3()
-                            .map(|mut button| {
-                                button.style().align_self = Some(AlignSelf::FlexStart);
-                                button
-                            })
-                            .label("Customize Recents…")
-                            .icon(IconName::Palette)
-                            .disabled(!self.snapshot.ready)
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.switch_screen(StartScreen::Recents, window, cx);
-                                view.customization_open = true;
-                                cx.notify();
-                            })),
-                    )
-                    .child(div().mt_3().child(eyebrow("APPEARANCE")))
+                    .child(div().mt_3().child(eyebrow("STARTUP")))
                     .child(
                         div()
-                            .w_full()
                             .flex()
-                            .flex_wrap()
-                            .gap_2()
-                            .child(self.theme_selector(cx))
-                            .child(
-                                button("edit-theme-from-settings")
-                                    .h(px(32.))
-                                    .px_3()
-                                    .label("Edit theme…")
-                                    .icon(IconName::Palette)
-                                    .disabled(!self.snapshot.ready || self.themes_loading)
-                                    .on_click(cx.listener(|view, _, window, cx| {
-                                        view.open_theme_editor(window, cx)
-                                    })),
-                            )
-                            .child(
-                                button("rename-theme-from-settings")
-                                    .h(px(32.))
-                                    .px_3()
-                                    .label("Rename theme…")
-                                    .disabled(!self.snapshot.ready || self.themes_loading || !custom_theme)
-                                    .on_click(cx.listener(|view, _, window, cx| {
-                                        view.open_theme_editor(window, cx);
-                                        if let Some(editor) = &view.theme_editor {
-                                            editor.update(cx, |editor, cx| editor.focus_name(window, cx));
-                                        }
-                                    })),
-                            )
-                            .child(
-                                button("open-themes")
-                                    .h(px(32.))
-                                    .px_3()
-                                    .label("Open themes directory")
-                                    .disabled(self.themes_loading)
-                                    .on_click(move |_, _, cx| cx.reveal_path(&theme_directory)),
-                            )
-                            .child(
-                                button("reload-themes")
-                                    .h(px(32.))
-                                    .px_3()
-                                    .label("Reload")
-                                    .icon(Icon::default().path("icons/refresh.svg"))
-                                    .disabled(self.themes_loading)
-                                    .on_click(cx.listener(|view, _, window, cx| {
-                                        view.reload_themes(window, cx)
-                                    })),
-                            ),
-                    )
-                    .when(theme_missing && !self.themes_loading, |settings| {
-                        settings.child(hint("Selected theme unavailable; using Startpoint."))
-                    })
-                    .children(theme_warnings.iter().map(|warning| hint(warning)))
-                    .child(
-                        segmented_control(cx).children(
-                            [
-                                AppearanceMode::System,
-                                AppearanceMode::Light,
-                                AppearanceMode::Dark,
-                            ]
-                            .into_iter()
-                            .map(|mode| {
-                                choice_button(mode.label(), mode.label(), self.appearance.mode == mode, cx)
-                                    .icon(match mode {
-                                        AppearanceMode::System => IconName::Frame,
-                                        AppearanceMode::Light => IconName::Sun,
-                                        AppearanceMode::Dark => IconName::Moon,
-                                    })
-                                    .disabled(!self.snapshot.ready)
-                                    .on_click(cx.listener(move |view, _, window, cx| {
-                                        view.set_appearance(
-                                            AppearanceSettings {
-                                                mode,
-                                                ..view.appearance.clone()
-                                            },
-                                            window,
-                                            cx,
-                                        );
-                                    }))
-                            }),
-                        ),
-                    )
-                    .child(
-                        Switch::new("window-translucency")
-                            .checked(self.appearance.window_translucency)
-                            .label("Translucency & blur")
-                            .disabled(!self.snapshot.ready || !cfg!(any(target_os = "windows", target_os = "macos")))
-                            .on_click(cx.listener(|view, enabled, window, cx| {
-                                view.set_appearance(AppearanceSettings { window_translucency: *enabled, ..view.appearance.clone() }, window, cx);
-                            })),
-                    )
-                    .child(
-                        Switch::new("artwork-dithering")
-                            .checked(self.appearance.dither_artwork)
-                            .label("Dither Library artwork")
-                            .disabled(!self.snapshot.ready)
-                            .on_click(cx.listener(|view, enabled, window, cx| {
-                                view.set_appearance(
-                                    AppearanceSettings {
-                                        dither_artwork: *enabled,
-                                        ..view.appearance.clone()
+                            .items_center()
+                            .gap_4()
+                            .child(div().flex_1().text_sm().child("Preferred start screen"))
+                            .child(div().w(px(200.)).child({
+                                let owner = cx.weak_entity();
+                                choice_dropdown(
+                                    "preferred-start-screen",
+                                    self.appearance.start_screen,
+                                    [StartScreen::Library, StartScreen::Recents]
+                                        .into_iter()
+                                        .map(|screen| (screen, screen.label().into()))
+                                        .collect(),
+                                    self.snapshot.ready,
+                                    move |start_screen, window, cx| {
+                                        let _ = owner.update(cx, |view, cx| {
+                                            view.set_appearance(
+                                                AppearanceSettings {
+                                                    start_screen,
+                                                    ..view.appearance.clone()
+                                                },
+                                                window,
+                                                cx,
+                                            )
+                                        });
                                     },
-                                    window,
-                                    cx,
-                                );
+                                )
                             })),
                     )
                     .child(div().mt_4().child(eyebrow("STEAMGRIDDB API KEY")))
-                    .child(self.credential_status(cx))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_3()
+                            .child(self.credential_status(cx))
+                            .child(
+                                Link::new("get-api-key")
+                                    .text_sm()
+                                    .child("Get a key ↗")
+                                    .href("https://www.steamgriddb.com/profile/preferences"),
+                            ),
+                    )
                     .when(!key_configured || self.credential_editing, |view| {
                         view.child(
                             div().flex().child(
@@ -5701,25 +5817,30 @@ impl LauncherView {
                                         })),
                                 )
                             })
-                            .when(key_configured, |row| {
+                            .when(key_configured && !self.credential_editing, |row| {
                                 row.child(
-                                    button("verify-api-key")
-                                        .h(px(36.))
-                                        .label(
-                                            if self
-                                                .snapshot
-                                                .settings
-                                                .credential_status
-                                                .get("steamgriddb")
-                                                == Some(&CredentialStatus::Locked)
-                                            {
-                                                "Unlock saved key"
-                                            } else {
-                                                "Verify saved key"
-                                            },
-                                        )
+                                    button("edit-api-key")
+                                        .label("Replace key…")
                                         .disabled(
-                                            self.credential_job.is_some()
+                                            !self.snapshot.ready || self.credential_job.is_some(),
+                                        )
+                                        .on_click(cx.listener(|view, _, _, cx| {
+                                            view.credential_editing = !view.credential_editing;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child({
+                                    let verify_owner = cx.weak_entity();
+                                    let remove_owner = verify_owner.clone();
+                                    let locked =
+                                        self.snapshot.settings.credential_status.get("steamgriddb")
+                                            == Some(&CredentialStatus::Locked);
+                                    button("api-key-options")
+                                        .label("Options")
+                                        .dropdown_caret(true)
+                                        .disabled(
+                                            !self.snapshot.ready
+                                                || self.credential_job.is_some()
                                                 || self
                                                     .snapshot
                                                     .settings
@@ -5727,128 +5848,118 @@ impl LauncherView {
                                                     .get("steamgriddb")
                                                     == Some(&CredentialStatus::Checking),
                                         )
-                                        .on_click(cx.listener(|view, _, _, cx| {
-                                            view.credential_job = view.submit(
-                                                Command::VerifyArtworkCredential {
-                                                    provider_id: "steamgriddb".into(),
-                                                },
-                                                cx,
-                                            );
-                                        })),
-                                )
-                                .child(
-                                    button("edit-api-key")
-                                        .h(px(36.))
-                                        .label(if self.credential_editing {
-                                            "Cancel replacement"
-                                        } else {
-                                            "Replace key…"
+                                        .dropdown_menu(move |menu, _, _| {
+                                            let verify_owner = verify_owner.clone();
+                                            let remove_owner = remove_owner.clone();
+                                            menu.item(
+                                                PopupMenuItem::new(if locked {
+                                                    "Unlock saved key"
+                                                } else {
+                                                    "Verify saved key"
+                                                })
+                                                .on_click(move |_, _, cx| {
+                                                    let _ = verify_owner.update(cx, |view, cx| {
+                                                        view.credential_job = view.submit(
+                                                            Command::VerifyArtworkCredential {
+                                                                provider_id: "steamgriddb".into(),
+                                                            },
+                                                            cx,
+                                                        );
+                                                    });
+                                                }),
+                                            )
+                                            .item(
+                                                PopupMenuItem::new("Remove key").on_click(
+                                                    move |_, _, cx| {
+                                                        let _ =
+                                                            remove_owner.update(cx, |view, cx| {
+                                                                view.credential_job = view.submit(
+                                                                    Command::SetArtworkCredential {
+                                                                        provider_id: "steamgriddb"
+                                                                            .into(),
+                                                                        credential: None,
+                                                                    },
+                                                                    cx,
+                                                                );
+                                                            });
+                                                    },
+                                                ),
+                                            )
                                         })
-                                        .on_click(cx.listener(|view, _, _, cx| {
-                                            view.credential_editing = !view.credential_editing;
+                                })
+                            })
+                            .when(self.credential_editing, |row| {
+                                row.child(
+                                    button("cancel-api-key")
+                                        .label("Cancel")
+                                        .disabled(self.credential_job.is_some())
+                                        .on_click(cx.listener(|view, _, window, cx| {
+                                            view.credential_editing = false;
+                                            set_value(&view.api_key, "", window, cx);
                                             cx.notify();
                                         })),
                                 )
-                            })
-                            .child(
-                                button("remove-api-key")
-                                    .h(px(36.))
-                                    .label("Remove key")
-                                    .disabled(!key_configured || self.credential_job.is_some())
-                                    .on_click(cx.listener(|view, _, _, cx| {
-                                        view.credential_job = view.submit(
-                                            Command::SetArtworkCredential {
-                                                provider_id: "steamgriddb".into(),
-                                                credential: None,
-                                            },
-                                            cx,
-                                        );
-                                    })),
-                            )
-                            .child(
-                                button("get-api-key")
-                                    .h(px(36.))
-                                    .label("Get a key ↗")
-                                    .on_click(|_, _, cx| {
-                                        cx.open_url(
-                                            "https://www.steamgriddb.com/profile/preferences",
-                                        )
-                                    }),
-                            ),
+                            }),
                     )
-                    .child(div().mt_5().child(eyebrow("STEAM DISCOVERY")))
-                    .child(hint(
-                        &self
-                            .snapshot
-                            .settings
-                            .steam_directory
-                            .as_ref()
-                            .map(|path| path.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "Automatic detection".into()),
+                    .child(div().mt_5().child(eyebrow("GAME DISCOVERY")))
+                    .child(self.discovery_rows(
+                        "steam",
+                        "Steam",
+                        self.snapshot.settings.steam_directory.is_some(),
+                        cx,
                     ))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(
-                                button("choose-steam")
-                                    .h(px(36.))
-                                    .label("Choose Steam directory…")
-                                    .on_click(cx.listener(|view, _, window, cx| {
-                                        view.pick(PickerPurpose::SteamDirectory, window, cx)
-                                    })),
-                            )
-                            .child(
-                                button("reset-steam")
-                                    .h(px(36.))
-                                    .label("Use automatic detection")
-                                    .on_click(cx.listener(|view, _, _, cx| {
-                                        view.submit(
-                                            Command::SetSteamDirectory { directory: None },
-                                            cx,
-                                        );
-                                    })),
-                            ),
-                    )
-                    .child(div().mt_5().child(eyebrow("EPIC DISCOVERY")))
-                    .child(hint(&self.snapshot.settings.epic_directory.as_ref()
-                        .map(|path| path.to_string_lossy().into_owned()).unwrap_or_else(|| "Automatic detection · Epic launcher manifests".into())))
-                    .child(div().flex().flex_wrap().gap_2()
-                        .child(button("choose-epic").h(px(36.)).label("Choose manifest directory…")
-                            .on_click(cx.listener(|view, _, window, cx| view.pick(PickerPurpose::EpicDirectory, window, cx))))
-                        .child(button("reset-epic").h(px(36.)).label("Use automatic detection")
-                            .on_click(cx.listener(|view, _, _, cx| { view.submit(Command::SetEpicDirectory { directory: None }, cx); }))))
-                    .child(div().mt_5().child(eyebrow("GOG DISCOVERY")))
-                    .child(hint(&self.snapshot.settings.gog_directory.as_ref()
-                        .map(|path| path.to_string_lossy().into_owned()).unwrap_or_else(|| "Automatic detection · Windows installer records or macOS Applications".into())))
-                    .child(div().flex().flex_wrap().gap_2()
-                        .child(button("choose-gog").h(px(36.)).label("Choose games directory…")
-                            .on_click(cx.listener(|view, _, window, cx| view.pick(PickerPurpose::GogDirectory, window, cx))))
-                        .child(button("reset-gog").h(px(36.)).label("Use automatic detection")
-                            .on_click(cx.listener(|view, _, _, cx| { view.submit(Command::SetGogDirectory { directory: None }, cx); }))))
+                    .child(self.discovery_rows(
+                        "epic",
+                        "Epic manifests",
+                        self.snapshot.settings.epic_directory.is_some(),
+                        cx,
+                    ))
+                    .child(self.discovery_rows(
+                        "gog",
+                        "GOG games",
+                        self.snapshot.settings.gog_directory.is_some(),
+                        cx,
+                    ))
                     .child(div().mt_5().child(eyebrow("LOCAL STORAGE")))
-                    .child(hint(&format!(
-                        "Library and selected images\n{}\n\nDisposable thumbnails\n{}",
-                        data_directory.display(),
-                        cache_directory.display()
-                    )))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .child(
-                                button("open-data")
-                                    .h(px(36.))
-                                    .label("Open data directory")
-                                    .on_click(move |_, _, cx| cx.reveal_path(&data_directory)),
+                    .child(path_row(
+                        "Library & artwork",
+                        data_directory.display().to_string(),
+                        div().child(
+                            button("open-data")
+                                .icon(IconName::Folder)
+                                .label("Open directory")
+                                .on_click(move |_, _, cx| cx.reveal_path(&data_directory)),
+                        ),
+                        cx,
+                    ))
+                    .child(path_row(
+                        "Thumbnail cache",
+                        cache_directory.display().to_string(),
+                        div().child(
+                            button("open-cache")
+                                .icon(IconName::Folder)
+                                .label("Open directory")
+                                .on_click(move |_, _, cx| cx.reveal_path(&cache_directory)),
+                        ),
+                        cx,
+                    ))
+                    .child(div().mt_5().child(eyebrow("UPDATES")))
+                    .child(hint(&format!("Version {}", env!("CARGO_PKG_VERSION"))))
+                    .map(|section| {
+                        #[cfg(feature = "self-update")]
+                        {
+                            let restart_allowed = self.can_restart_for_update();
+                            section.child(
+                                self.updater.update(cx, |updater, cx| {
+                                    updater.settings(restart_allowed, cx)
+                                }),
                             )
-                            .child(
-                                button("open-cache")
-                                    .h(px(36.))
-                                    .label("Open cache directory")
-                                    .on_click(move |_, _, cx| cx.reveal_path(&cache_directory)),
-                            ),
-                    ),
+                        }
+                        #[cfg(not(feature = "self-update"))]
+                        {
+                            section.child(hint("Automatic updates unavailable in this build."))
+                        }
+                    }),
             )
             .into_any_element()
     }
@@ -5988,10 +6099,7 @@ impl LauncherView {
                     .justify_between()
                     .child(eyebrow("ACTIVITY & NOTIFICATIONS"))
                     .child(
-                        button("close-activity")
-                            .secondary()
-                            .size(px(32.))
-                            .icon(IconName::Close)
+                        icon_button("close-activity", IconName::Close, "Close activity")
                             .tooltip("Close activity")
                             .on_click(cx.listener(|view, _, _, cx| {
                                 view.jobs_open = false;
@@ -6103,6 +6211,16 @@ impl Render for LauncherView {
             }
         }
         self.prepare_library(window);
+        self.translucency_slider.update(cx, |slider, cx| {
+            slider.sync(
+                self.appearance.translucency_amount,
+                self.snapshot.ready
+                    && self.appearance.window_translucency
+                    && cfg!(any(target_os = "windows", target_os = "macos")),
+                window,
+                cx,
+            )
+        });
         if self.screen == StartScreen::Recents && !self.settings_open {
             let games = self.recent_games();
             let next = games
@@ -6484,6 +6602,18 @@ fn library_game_menu(
     menu.min_w(px(220.)).max_h(px(520.)).scrollable(true)
 }
 
+/// Recents always shows the five most recently launched visible installed games,
+/// regardless of the Library's saved filter, source, collection or sort order.
+fn installed_recents(games: &[Game]) -> Vec<&Game> {
+    let mut recent = games
+        .iter()
+        .filter(|game| game.available && !game.hidden)
+        .collect::<Vec<_>>();
+    recent.sort_by_key(|game| std::cmp::Reverse(game.last_launched.unwrap_or(0)));
+    recent.truncate(5);
+    recent
+}
+
 fn reconciled_selection<'a>(
     selected: Option<&GameId>,
     displayed: impl Iterator<Item = &'a GameId>,
@@ -6548,6 +6678,30 @@ fn sample_library_game() -> Game {
         "artwork": {}, "artwork_history": [], "artwork_game_ids": {}
     }))
     .unwrap()
+}
+
+#[cfg(test)]
+#[::core::prelude::v1::test]
+fn recents_uses_installed_games_not_library_filters_and_orders_by_last_launch() {
+    let mut games = (1..=8)
+        .map(|index| {
+            let mut game = sample_library_game();
+            game.id = GameId(format!("steam:{index}"));
+            game.last_launched = Some(index);
+            game
+        })
+        .collect::<Vec<_>>();
+    games[7].hidden = true;
+    games[6].available = false;
+    games[5].favourite = false;
+    games[5].provider_id = "manual".into();
+    assert_eq!(
+        installed_recents(&games)
+            .into_iter()
+            .map(|game| &game.id.0)
+            .collect::<Vec<_>>(),
+        vec!["steam:6", "steam:5", "steam:4", "steam:3", "steam:2"]
+    );
 }
 
 #[cfg(test)]

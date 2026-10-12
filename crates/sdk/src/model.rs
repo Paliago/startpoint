@@ -269,6 +269,8 @@ pub struct AppearanceSettings {
     pub theme: String,
     pub mode: AppearanceMode,
     pub window_translucency: bool,
+    pub backdrop_blur: bool,
+    pub translucency_amount: f32,
     pub dither_artwork: bool,
     pub start_screen: StartScreen,
     pub dither_recents: bool,
@@ -292,6 +294,8 @@ impl Default for AppearanceSettings {
             theme: "Startpoint".into(),
             mode: AppearanceMode::System,
             window_translucency: true,
+            backdrop_blur: true,
+            translucency_amount: DEFAULT_TRANSLUCENCY_AMOUNT,
             dither_artwork: true,
             start_screen: StartScreen::Recents,
             dither_recents: true,
@@ -311,6 +315,9 @@ impl Default for AppearanceSettings {
     }
 }
 
+/// The settled glass appearance is the slider's default detent.
+pub const DEFAULT_TRANSLUCENCY_AMOUNT: f32 = 0.2;
+
 #[derive(Clone, Debug, Default)]
 pub struct SettingsSnapshot {
     pub configured_credentials: BTreeSet<String>,
@@ -318,6 +325,8 @@ pub struct SettingsSnapshot {
     pub steam_directory: Option<PathBuf>,
     pub epic_directory: Option<PathBuf>,
     pub gog_directory: Option<PathBuf>,
+    /// Resolved discovery locations for display; never persisted as overrides.
+    pub discovery_directories: BTreeMap<String, Vec<PathBuf>>,
     pub appearance: AppearanceSettings,
 }
 

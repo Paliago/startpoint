@@ -112,26 +112,7 @@ impl DiscoveryProvider for EpicProvider {
         context: &JobContext,
     ) -> Result<DiscoveryReport, ApiError> {
         context.report("Reading installed Epic games");
-        let directories = if let Some(directory) = &settings.epic_directory {
-            vec![directory.clone()]
-        } else if cfg!(target_os = "windows") {
-            std::env::var_os("PROGRAMDATA")
-                .map(PathBuf::from)
-                .into_iter()
-                .map(|directory| directory.join("Epic/EpicGamesLauncher/Data/Manifests"))
-                .collect()
-        } else if cfg!(target_os = "macos") {
-            directories::BaseDirs::new()
-                .map(|directories| {
-                    directories
-                        .home_dir()
-                        .join("Library/Application Support/Epic/EpicGamesLauncher/Data/Manifests")
-                })
-                .into_iter()
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let directories = epic_directories(&settings.epic_directory);
         let mut report = empty_report();
         let mut found = false;
         let mut games = BTreeMap::new();
@@ -280,10 +261,8 @@ impl DiscoveryProvider for GogProvider {
         let mut report = empty_report();
         let mut games = BTreeMap::new();
         let mut found = false;
-        let mut directories = Vec::new();
-        if let Some(directory) = &settings.gog_directory {
-            directories.push(directory.clone());
-        } else {
+        let directories = gog_directories(&settings.gog_directory);
+        if settings.gog_directory.is_none() {
             #[cfg(target_os = "windows")]
             {
                 let (registered, present) = gog_registry(context, &mut report)?;
@@ -291,18 +270,6 @@ impl DiscoveryProvider for GogProvider {
                 for directory in registered {
                     context.checkpoint()?;
                     scan_gog_installation(&directory, context, &mut report, &mut games)?;
-                }
-                for variable in ["ProgramFiles(x86)", "ProgramFiles"] {
-                    if let Some(directory) = std::env::var_os(variable) {
-                        directories.push(PathBuf::from(directory).join("GOG Galaxy/Games"));
-                    }
-                }
-            }
-            #[cfg(target_os = "macos")]
-            {
-                directories.push(PathBuf::from("/Applications"));
-                if let Some(base) = directories::BaseDirs::new() {
-                    directories.push(base.home_dir().join("Applications"));
                 }
             }
         }
@@ -335,6 +302,50 @@ impl DiscoveryProvider for GogProvider {
         report.games = games.into_values().collect();
         Ok(report)
     }
+}
+
+pub(crate) fn epic_directories(selected: &Option<PathBuf>) -> Vec<PathBuf> {
+    if let Some(directory) = selected {
+        return vec![directory.clone()];
+    }
+    if cfg!(target_os = "windows") {
+        std::env::var_os("PROGRAMDATA")
+            .map(PathBuf::from)
+            .into_iter()
+            .map(|directory| directory.join("Epic/EpicGamesLauncher/Data/Manifests"))
+            .collect()
+    } else if cfg!(target_os = "macos") {
+        directories::BaseDirs::new()
+            .map(|base| {
+                base.home_dir()
+                    .join("Library/Application Support/Epic/EpicGamesLauncher/Data/Manifests")
+            })
+            .into_iter()
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+pub(crate) fn gog_directories(selected: &Option<PathBuf>) -> Vec<PathBuf> {
+    if let Some(directory) = selected {
+        return vec![directory.clone()];
+    }
+    let mut paths = Vec::new();
+    #[cfg(target_os = "windows")]
+    for variable in ["ProgramFiles(x86)", "ProgramFiles"] {
+        if let Some(directory) = std::env::var_os(variable) {
+            paths.push(PathBuf::from(directory).join("GOG Galaxy/Games"));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        paths.push(PathBuf::from("/Applications"));
+        if let Some(base) = directories::BaseDirs::new() {
+            paths.push(base.home_dir().join("Applications"));
+        }
+    }
+    paths
 }
 
 fn scan_gog_installation(

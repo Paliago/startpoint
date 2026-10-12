@@ -8,12 +8,16 @@ pub(crate) const SURFACE_ALPHA: f32 = 0.85;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Effects {
     pub window_translucency: bool,
+    pub backdrop_blur: bool,
+    pub translucency_amount: f32,
 }
 
 impl Default for Effects {
     fn default() -> Self {
         Self {
             window_translucency: true,
+            backdrop_blur: true,
+            translucency_amount: startpoint_sdk::DEFAULT_TRANSLUCENCY_AMOUNT,
         }
     }
 }
@@ -22,11 +26,26 @@ impl Global for Effects {}
 
 impl Effects {
     fn panel_blur(self, requested: f32) -> f32 {
-        if self.window_translucency {
+        if self.backdrop_blur {
             requested.max(0.)
         } else {
             0.
         }
+    }
+
+    /// Calibrate around the existing theme's tint, preserving the exact current
+    /// appearance at the default notch while allowing lighter/heavier coverage.
+    fn opacity(self, default_alpha: f32) -> f32 {
+        if !self.window_translucency {
+            return 1.;
+        }
+        let amount = if self.translucency_amount.is_finite() {
+            self.translucency_amount.clamp(0., 1.)
+        } else {
+            startpoint_sdk::DEFAULT_TRANSLUCENCY_AMOUNT
+        };
+        (default_alpha * (1. - amount) / (1. - startpoint_sdk::DEFAULT_TRANSLUCENCY_AMOUNT))
+            .clamp(0., 1.)
     }
 }
 
@@ -37,8 +56,10 @@ pub(crate) fn effects(cx: &App) -> Effects {
 pub(crate) fn native_background(effects: Effects) -> WindowBackgroundAppearance {
     if !effects.window_translucency || !cfg!(any(target_os = "windows", target_os = "macos")) {
         WindowBackgroundAppearance::Opaque
-    } else {
+    } else if effects.backdrop_blur {
         WindowBackgroundAppearance::Blurred
+    } else {
+        WindowBackgroundAppearance::Transparent
     }
 }
 
@@ -62,7 +83,11 @@ pub(crate) fn base(cx: &App) -> Hsla {
     let alpha = if effects(cx).window_translucency
         && cfg!(any(target_os = "windows", target_os = "macos"))
     {
-        shell_alpha(theme.background, theme.foreground, theme.muted_foreground)
+        effects(cx).opacity(shell_alpha(
+            theme.background,
+            theme.foreground,
+            theme.muted_foreground,
+        ))
     } else {
         1.
     };
@@ -71,9 +96,11 @@ pub(crate) fn base(cx: &App) -> Hsla {
 
 pub(crate) fn sidebar(cx: &App) -> Hsla {
     // The root already carries the window tint: don't stack two 80% opaque fills.
-    cx.theme()
-        .sidebar
-        .alpha(if base(cx).a < 1. { 0.3 } else { 1. })
+    cx.theme().sidebar.alpha(if base(cx).a < 1. {
+        effects(cx).opacity(0.3)
+    } else {
+        1.
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -126,9 +153,7 @@ impl Palette {
             theme.foreground,
             theme.border,
         );
-        if !effects(cx).window_translucency {
-            palette.surface.a = 1.;
-        }
+        palette.surface.a = effects(cx).opacity(SURFACE_ALPHA);
         palette
     }
 
@@ -251,23 +276,80 @@ mod tests {
     use super::*;
 
     #[::core::prelude::v1::test]
-    fn translucency_always_enables_blur_and_never_uses_a_sharp_native_backdrop() {
+    fn translucency_and_blur_are_independent() {
         for window_translucency in [false, true] {
-            let effects = Effects {
-                window_translucency,
-            };
-            assert_eq!(
-                effects.panel_blur(18.),
-                if window_translucency { 18. } else { 0. }
-            );
-            assert_eq!(effects.panel_blur(0.), 0.);
-            let expected =
-                if !window_translucency || !cfg!(any(target_os = "windows", target_os = "macos")) {
-                    WindowBackgroundAppearance::Opaque
-                } else {
-                    WindowBackgroundAppearance::Blurred
+            for backdrop_blur in [false, true] {
+                let effects = Effects {
+                    window_translucency,
+                    backdrop_blur,
+                    ..Effects::default()
                 };
-            assert_eq!(native_background(effects), expected);
+                assert_eq!(
+                    effects.panel_blur(18.),
+                    if backdrop_blur { 18. } else { 0. }
+                );
+                assert_eq!(effects.panel_blur(0.), 0.);
+                let expected = if !window_translucency
+                    || !cfg!(any(target_os = "windows", target_os = "macos"))
+                {
+                    WindowBackgroundAppearance::Opaque
+                } else if backdrop_blur {
+                    WindowBackgroundAppearance::Blurred
+                } else {
+                    WindowBackgroundAppearance::Transparent
+                };
+                assert_eq!(native_background(effects), expected);
+            }
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn amount_default_preserves_the_existing_material_and_scales_to_both_ends() {
+        for alpha in [0.8, 0.84, 0.85, 0.91, 1.] {
+            let effects = Effects::default();
+            assert!((effects.opacity(alpha) - alpha).abs() < 0.00001);
+            assert_eq!(
+                Effects {
+                    translucency_amount: 0.,
+                    ..effects
+                }
+                .opacity(alpha),
+                1.
+            );
+            assert_eq!(
+                Effects {
+                    translucency_amount: 1.,
+                    ..effects
+                }
+                .opacity(alpha),
+                0.
+            );
+            assert!(
+                Effects {
+                    translucency_amount: 0.6,
+                    ..effects
+                }
+                .opacity(alpha)
+                    < alpha
+            );
+            assert_eq!(
+                Effects {
+                    window_translucency: false,
+                    ..effects
+                }
+                .opacity(alpha),
+                1.
+            );
+            assert!(
+                (Effects {
+                    translucency_amount: f32::NAN,
+                    ..effects
+                }
+                .opacity(alpha)
+                    - alpha)
+                    .abs()
+                    < 0.00001
+            );
         }
     }
 

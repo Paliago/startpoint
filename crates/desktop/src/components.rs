@@ -1,4 +1,6 @@
 //! Shared presentation primitives. Keep screen-specific state and actions in views.
+//! UI vocabulary: action button, icon button, choice group, choice dropdown,
+//! navigation tab, toolbar island, path row, glass panel and customize panel.
 use crate::glass::{self, Palette};
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -22,8 +24,16 @@ pub(crate) fn configure_glass_theme(theme: &mut gpui_component::Theme) {
     );
     theme.tokens.button = palette.button.into();
     theme.tokens.button_secondary = theme.tokens.button;
-    let hover = theme.secondary_hover.alpha(1.);
-    let active = theme.secondary_active.alpha(1.);
+    // Derive interaction emphasis from the same resting fill. Dark controls
+    // brighten when engaged; light controls darken, rather than swapping to a
+    // darker input well that makes selected triggers look inactive.
+    let emphasis = if theme.background.l < 0.5 {
+        white()
+    } else {
+        black()
+    };
+    let hover = palette.button.blend(emphasis.alpha(0.06)).alpha(1.);
+    let active = palette.button.blend(emphasis.alpha(0.12)).alpha(1.);
     theme.tokens.button_hover = hover.into();
     theme.tokens.button_secondary_hover = theme.tokens.button_hover;
     theme.tokens.button_active = active.into();
@@ -51,6 +61,7 @@ pub(crate) fn configure_glass_theme(theme: &mut gpui_component::Theme) {
         token.background = token.color.into();
     }
     theme.tokens.popover = theme.popover.alpha(1.).into();
+    theme.tokens.accent = theme.accent.alpha(1.).into();
     theme.colors.popover_foreground.a = 1.;
     theme.colors.foreground.a = 1.;
 }
@@ -94,6 +105,8 @@ pub(crate) fn input(state: &Entity<InputState>, cx: &App) -> Input {
 pub(crate) fn button(id: impl Into<ElementId>) -> Button {
     Button::new(id)
         .small()
+        .h(px(32.))
+        .px(px(12.))
         .rounded(ButtonRounded::Small)
         .font_weight(FontWeight::MEDIUM)
         .border_0()
@@ -108,7 +121,8 @@ pub(crate) fn icon_button(
 ) -> Button {
     button(id)
         .secondary()
-        .size(px(32.))
+        .w(px(32.))
+        .h(px(32.))
         .p_0()
         .icon(icon)
         .tooltip(tooltip)
@@ -117,31 +131,29 @@ pub(crate) fn icon_button(
 /// Top chrome belongs to one shared glass island, not separate button plates.
 /// Ghost controls keep native hover/pressed/disabled and keyboard-focus behavior.
 /// Ordinary actions, fields and opened dropdown menus remain opaque.
-pub(crate) fn chrome_button(id: impl Into<ElementId>) -> Button {
+pub(crate) fn toolbar_control(id: impl Into<ElementId>) -> Button {
     button(id).ghost()
 }
 
-pub(crate) fn chrome_choice_button(
+pub(crate) fn navigation_tab(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     selected: bool,
     cx: &App,
 ) -> Button {
-    let palette = Palette::of(cx);
-    chrome_button(id)
+    toolbar_control(id)
         .h(px(32.))
         .px_3()
         .label(label)
         .selected(selected)
-        .text_color(palette.foreground)
-        .when(selected, |button| button.bg(palette.input))
-        .hover(|button| {
-            button
-                .bg(cx.theme().secondary_hover.alpha(1.))
-                .text_color(palette.foreground)
+        .toggled(selected)
+        .when(selected, |button| button.primary())
+        .when(!selected, |button| {
+            button.text_color(Palette::of(cx).foreground)
         })
 }
 
+/// Opaque, accent-selected choices. Unselected items share the choice group's fill.
 pub(crate) fn choice_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -149,29 +161,19 @@ pub(crate) fn choice_button(
     cx: &App,
 ) -> Button {
     button(id)
-        .secondary()
+        .ghost()
         .h(px(30.))
         .px_3()
         .label(label)
         .selected(selected)
-        .text_color(if selected {
-            Palette::of(cx).foreground
-        } else {
-            Palette::of(cx).muted
-        })
-        .when(selected, |button| {
-            button
-                .bg(Palette::of(cx).input)
-                .text_color(Palette::of(cx).foreground)
-        })
-        .hover(|button| {
-            button
-                .bg(cx.theme().secondary_hover.alpha(1.))
-                .text_color(Palette::of(cx).foreground)
+        .toggled(selected)
+        .when(selected, |button| button.primary())
+        .when(!selected, |button| {
+            button.text_color(Palette::of(cx).foreground)
         })
 }
 
-pub(crate) fn segmented_control(cx: &App) -> Div {
+pub(crate) fn choice_group(cx: &App) -> Div {
     div()
         .flex()
         .flex_wrap()
@@ -184,6 +186,41 @@ pub(crate) fn segmented_control(cx: &App) -> Div {
             control.style().align_self = Some(AlignSelf::FlexStart);
             control
         })
+}
+
+/// Path row: label and complete, wrapping path at left, directory actions at right.
+pub(crate) fn path_row(
+    label: impl Into<SharedString>,
+    path: impl Into<SharedString>,
+    actions: Div,
+    cx: &App,
+) -> Div {
+    div()
+        .w_full()
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(label.into()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(Palette::of(cx).muted)
+                        .child(path.into()),
+                ),
+        )
+        .child(actions.flex_shrink_0().flex().items_center().gap_2())
 }
 
 /// Keyboard-selected and hovered command rows use the same text and plate as tabs.
@@ -428,8 +465,9 @@ mod tests {
         let style = button.style();
         assert_eq!(style.border_widths.top, Some(px(0.).into()));
         assert!(style.box_shadow.as_ref().is_some_and(Vec::is_empty));
-        assert!(style.padding.left.is_none());
-        assert!(style.size.height.is_none());
+        assert_eq!(style.padding.left, Some(px(12.).into()));
+        assert_eq!(style.padding.right, Some(px(12.).into()));
+        assert_eq!(style.size.height, Some(px(32.).into()));
         assert!(
             style.corner_radii.top_left.is_none(),
             "use the live theme radius"
@@ -437,8 +475,18 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
+    fn icon_buttons_have_equal_hit_targets_without_label_padding() {
+        let mut control = icon_button("bell", IconName::Bell, "Notifications");
+        let style = control.style();
+        assert_eq!(style.size.width, Some(px(32.).into()));
+        assert_eq!(style.size.height, Some(px(32.).into()));
+        assert_eq!(style.padding.left, Some(px(0.).into()));
+        assert_eq!(style.padding.right, Some(px(0.).into()));
+    }
+
+    #[::core::prelude::v1::test]
     fn top_chrome_controls_have_no_individual_plate_or_shadow() {
-        let mut control = chrome_button("top-chrome");
+        let mut control = toolbar_control("top-chrome");
         let style = control.style();
         assert!(
             style.background.is_none(),
@@ -486,6 +534,22 @@ mod tests {
             ] {
                 theme.apply_config(&catalog.configuration(&set.name, mode));
                 configure_glass_theme(&mut theme);
+                let normal = theme.tokens.button.color;
+                let hover = theme.tokens.button_hover.color;
+                let active = theme.tokens.button_active.color;
+                if theme.background.l < 0.5 {
+                    assert!(
+                        normal.l < hover.l && hover.l < active.l,
+                        "dark controls brighten when engaged: {}",
+                        set.name
+                    );
+                } else {
+                    assert!(
+                        normal.l > hover.l && hover.l > active.l,
+                        "light controls darken when engaged: {}",
+                        set.name
+                    );
+                }
                 for token in [
                     theme.tokens.button,
                     theme.tokens.button_hover,

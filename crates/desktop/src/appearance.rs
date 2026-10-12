@@ -3,10 +3,16 @@ use gpui_component::{Theme, ThemeConfig, ThemeMode, ThemeSet};
 use startpoint_sdk::{AppearanceMode, AppearanceSettings};
 use std::rc::Rc;
 
-pub(crate) fn apply(settings: &AppearanceSettings, window: Option<&mut Window>, cx: &mut App) {
+pub(crate) fn update_effects(settings: &AppearanceSettings, cx: &mut App) {
     cx.set_global(crate::glass::Effects {
         window_translucency: settings.window_translucency,
+        backdrop_blur: settings.backdrop_blur,
+        translucency_amount: settings.translucency_amount,
     });
+}
+
+pub(crate) fn apply(settings: &AppearanceSettings, window: Option<&mut Window>, cx: &mut App) {
+    update_effects(settings, cx);
     let mode = settings.mode;
     sync_native_appearance(mode);
     let system = window

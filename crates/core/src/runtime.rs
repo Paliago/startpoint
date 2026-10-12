@@ -337,16 +337,20 @@ impl Shared {
             .store
             .lock()
             .map_err(|_| ApiError::Storage("The database worker failed".into()))? = Some(store);
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.games = games;
-        state.snapshot.settings = SettingsSnapshot {
+        let mut settings = SettingsSnapshot {
             steam_directory,
             epic_directory,
             gog_directory,
             configured_credentials,
             credential_status,
             appearance,
+            discovery_directories: BTreeMap::new(),
         };
+        // Resolve paths outside the state lock: Steam location may read platform settings.
+        settings.discovery_directories = crate::discovery_paths::resolve(&settings, &library);
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.games = games;
+        state.snapshot.settings = settings;
         state.snapshot.ready = true;
         state.snapshot.activity = Arc::new(activity);
         state.snapshot.journal = Arc::new(journal);
@@ -955,6 +959,7 @@ impl Shared {
                         .steam_directory = directory;
                     Ok(())
                 })?;
+                self.refresh_discovery_directories();
                 self.publish(AppEvent::SettingsChanged);
                 Ok(())
             }
@@ -977,6 +982,7 @@ impl Shared {
                         .epic_directory = directory;
                     Ok(())
                 })?;
+                self.refresh_discovery_directories();
                 self.publish(AppEvent::SettingsChanged);
                 Ok(())
             }
@@ -999,6 +1005,7 @@ impl Shared {
                         .gog_directory = directory;
                     Ok(())
                 })?;
+                self.refresh_discovery_directories();
                 self.publish(AppEvent::SettingsChanged);
                 Ok(())
             }
@@ -1016,6 +1023,13 @@ impl Shared {
                 {
                     return Err(ApiError::Validation(
                         "Sidebar width must be between 176 and 400 pixels".into(),
+                    ));
+                }
+                if !settings.translucency_amount.is_finite()
+                    || !(0. ..=1.).contains(&settings.translucency_amount)
+                {
+                    return Err(ApiError::Validation(
+                        "Translucency must be between 0 and 100 percent".into(),
                     ));
                 }
                 self.store(|store| {
@@ -1362,6 +1376,8 @@ impl Shared {
         } else {
             Ok(())
         };
+        self.refresh_discovery_directories();
+        self.publish(AppEvent::SettingsChanged);
         for (id, path) in local_covers {
             context.checkpoint()?;
             if self.game(&id)?.artwork.contains_key(&ArtworkKind::Cover) {
@@ -1434,6 +1450,17 @@ impl Shared {
             context.report("Installed games are up to date");
         }
         Ok(())
+    }
+
+    fn refresh_discovery_directories(&self) {
+        let snapshot = self.snapshot();
+        let directories = crate::discovery_paths::resolve(&snapshot.settings, &snapshot.games);
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .snapshot
+            .settings
+            .discovery_directories = directories;
     }
 
     fn record_launch(&self, game_id: &GameId) -> Result<(), ApiError> {
@@ -1626,9 +1653,17 @@ fn restore_appearance_settings(
     ]
     .iter()
     .any(|key| document.get(key).is_some());
-    let removed_blur_switch = document.get("backdrop_blur").is_some();
+    let combined_glass_switch = document.get("backdrop_blur").is_none();
     let mut settings: AppearanceSettings = serde_json::from_value(document)
         .map_err(|error| ApiError::Storage(format!("Invalid appearance settings: {error}")))?;
+    if combined_glass_switch {
+        settings.backdrop_blur = settings.window_translucency;
+    }
+    let invalid_amount = !settings.translucency_amount.is_finite()
+        || !(0. ..=1.).contains(&settings.translucency_amount);
+    if invalid_amount {
+        settings.translucency_amount = DEFAULT_TRANSLUCENCY_AMOUNT;
+    }
     if experimental {
         // Adopt the settled Recents defaults once, retaining theme/mode/widgets
         // and all other preferences. Saving removes the experimental keys, so
@@ -1638,7 +1673,10 @@ fn restore_appearance_settings(
         settings.dither_recents = defaults.dither_recents;
         settings.fade_recents = defaults.fade_recents;
     }
-    Ok((settings, experimental || removed_blur_switch))
+    Ok((
+        settings,
+        experimental || combined_glass_switch || invalid_amount,
+    ))
 }
 
 fn apply_reidentification(game: &mut Game, matched: &ArtworkGame) {
@@ -2243,33 +2281,51 @@ mod tests {
             serde_json::from_str(r#"{"theme":"Custom","mode":"dark","sidebar_width":320}"#)
                 .unwrap();
         assert!(old.window_translucency);
+        assert!(old.backdrop_blur);
+        assert_eq!(old.translucency_amount, DEFAULT_TRANSLUCENCY_AMOUNT);
         for enabled in [false, true] {
+            let (combined, changed) = restore_appearance_settings(Some(serde_json::json!({
+                "window_translucency": enabled, "theme": "Custom"
+            })))
+            .unwrap();
+            assert!(changed);
+            assert_eq!(combined.window_translucency, enabled);
+            assert_eq!(combined.backdrop_blur, enabled);
+            assert_eq!(combined.translucency_amount, DEFAULT_TRANSLUCENCY_AMOUNT);
             let (migrated, changed) = restore_appearance_settings(Some(serde_json::json!({
                 "theme": "Custom", "window_translucency": enabled, "backdrop_blur": !enabled,
                 "fade_recents": false, "dither_recents": false, "start_screen": "library"
             })))
             .unwrap();
-            assert!(changed);
+            assert!(!changed);
             assert_eq!(migrated.window_translucency, enabled);
+            assert_eq!(migrated.backdrop_blur, !enabled);
             assert!(!migrated.fade_recents && !migrated.dither_recents);
             assert_eq!(migrated.start_screen, StartScreen::Library);
-            assert!(
-                serde_json::to_value(migrated)
-                    .unwrap()
-                    .get("backdrop_blur")
-                    .is_none()
-            );
         }
         for window_translucency in [false, true] {
-            let chosen = AppearanceSettings {
-                window_translucency,
-                ..old.clone()
-            };
-            let (restored, _) =
-                restore_appearance_settings(Some(serde_json::to_value(&chosen).unwrap())).unwrap();
-            assert_eq!(restored, chosen);
-            assert_eq!(restored.theme, "Custom");
-            assert_eq!(restored.sidebar_width, 320.);
+            for backdrop_blur in [false, true] {
+                let chosen = AppearanceSettings {
+                    window_translucency,
+                    backdrop_blur,
+                    translucency_amount: 0.35,
+                    ..old.clone()
+                };
+                let (restored, _) =
+                    restore_appearance_settings(Some(serde_json::to_value(&chosen).unwrap()))
+                        .unwrap();
+                assert_eq!(restored, chosen);
+                assert_eq!(restored.theme, "Custom");
+                assert_eq!(restored.sidebar_width, 320.);
+            }
+        }
+        for amount in [-1., 2.] {
+            let (restored, changed) = restore_appearance_settings(Some(serde_json::json!({
+                "window_translucency": true, "backdrop_blur": false, "translucency_amount": amount
+            })))
+            .unwrap();
+            assert!(changed);
+            assert_eq!(restored.translucency_amount, DEFAULT_TRANSLUCENCY_AMOUNT);
         }
     }
 
@@ -2306,7 +2362,7 @@ mod tests {
             .expect("application");
         let events = api.subscribe();
         let executable = std::env::current_exe().expect("test executable");
-        for step in 0..29 {
+        for step in 0..33 {
             let previous_library = api.snapshot().games;
             let game_id = api
                 .snapshot()
@@ -2349,6 +2405,8 @@ mod tests {
                         theme: "Custom".into(),
                         mode: AppearanceMode::Light,
                         window_translucency: false,
+                        backdrop_blur: true,
+                        translucency_amount: 0.35,
                         dither_artwork: false,
                         start_screen: StartScreen::Recents,
                         dither_recents: true,
@@ -2382,6 +2440,12 @@ mod tests {
                             "x".repeat(81),
                         ][step - 11]
                             .clone(),
+                        ..AppearanceSettings::default()
+                    },
+                },
+                29..=32 => Command::SetAppearance {
+                    settings: AppearanceSettings {
+                        translucency_amount: [-0.1, 1.1, f32::NAN, f32::INFINITY][step - 29],
                         ..AppearanceSettings::default()
                     },
                 },
@@ -2666,6 +2730,8 @@ mod tests {
                 theme: "Custom".into(),
                 mode: AppearanceMode::Light,
                 window_translucency: false,
+                backdrop_blur: true,
+                translucency_amount: 0.35,
                 dither_artwork: false,
                 start_screen: StartScreen::Recents,
                 dither_recents: true,

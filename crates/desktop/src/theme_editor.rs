@@ -1,6 +1,6 @@
 use crate::{
     appearance,
-    components::{button, choice_button, editable_field, segmented_control},
+    components::{button, choice_button, choice_group, editable_field},
     theme,
 };
 use gpui::{prelude::*, *};
@@ -325,7 +325,7 @@ impl Render for Editor {
                     .child("Theme editor"),
             )
             .child(editable_field("Theme name", &self.name, self.saving, cx))
-            .child(segmented_control(cx).children(
+            .child(choice_group(cx).children(
                 [ThemeMode::Light, ThemeMode::Dark].into_iter().map(|mode| {
                     choice_button(mode.name(), mode.name(), self.mode == mode, cx)
                         .disabled(self.saving)
@@ -381,7 +381,7 @@ impl Render for Editor {
                                 } else {
                                     "increase-font"
                                 })
-                                .size(px(32.))
+                                .w(px(32.)).h(px(32.)).p_0()
                                 .icon(if step < 0. {
                                     IconName::Minus
                                 } else {
