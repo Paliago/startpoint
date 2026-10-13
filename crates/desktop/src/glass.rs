@@ -4,6 +4,8 @@ use gpui_component::ActiveTheme;
 
 pub(crate) const BLUR_RADIUS: f32 = 18.;
 pub(crate) const SURFACE_ALPHA: f32 = 0.85;
+/// Resting controls must be visibly separate from both the shell and panel tint.
+pub(crate) const BUTTON_SURFACE_CONTRAST: f32 = 1.8;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Effects {
@@ -126,8 +128,7 @@ impl Palette {
         let mut base = secondary.alpha(1.).blend(background.alpha(0.45));
         // A small saturation lift on the tint, not a hard-coded slate palette.
         base.s = (base.s * 1.08).min(1.);
-        let mut button = base;
-        button.l = (base.l + if dark { 0.055 } else { 0.04 }).min(1.);
+        let button = button_fill(base, background, foreground);
         let mut input = base;
         input.l = (base.l - if dark { 0.055 } else { 0.045 }).max(0.);
         Self {
@@ -183,6 +184,30 @@ impl Palette {
             },
         ]
     }
+}
+
+/// Light controls darken; dark controls brighten. Keep the theme hue and stop
+/// before sacrificing readable labels, even for an unusual custom palette.
+fn button_fill(panel: Hsla, background: Hsla, foreground: Hsla) -> Hsla {
+    let mut fill = panel.alpha(1.);
+    let step = if background.l < 0.5 { 0.01 } else { -0.01 };
+    for _ in 0..100 {
+        if [background.alpha(1.), panel.alpha(1.)]
+            .into_iter()
+            .all(|surface| crate::theme::contrast(fill, surface) >= BUTTON_SURFACE_CONTRAST)
+        {
+            break;
+        }
+        let candidate = Hsla {
+            l: (fill.l + step).clamp(0., 1.),
+            ..fill
+        };
+        if candidate.l == fill.l || crate::theme::contrast(candidate, foreground.alpha(1.)) < 4.5 {
+            break;
+        }
+        fill = candidate;
+    }
+    fill
 }
 
 pub(crate) fn surface<T: Styled>(element: T, radius: f32, cx: &App) -> T {
@@ -396,13 +421,30 @@ mod tests {
             assert_eq!(palette.surface.a, SURFACE_ALPHA);
             assert_eq!(palette.foreground.a, 1.);
             assert!(palette.input.l < palette.surface.l);
-            assert!(palette.button.l > palette.surface.l);
+            if Hsla::from(background).l < 0.5 {
+                assert!(palette.button.l > palette.surface.l);
+            } else {
+                assert!(palette.button.l < palette.surface.l);
+            }
+            for surface in [Hsla::from(background), palette.surface.alpha(1.)] {
+                assert!(crate::theme::contrast(palette.button, surface) >= BUTTON_SURFACE_CONTRAST);
+            }
             assert!((palette.surface.h - Hsla::from(secondary).h).abs() < 0.1);
             let shadows = palette.shadows();
             assert!(!shadows[0].inset);
             assert!(shadows[1].inset && shadows[2].inset);
         }
         assert_eq!(BLUR_RADIUS, 18.);
+    }
+
+    #[::core::prelude::v1::test]
+    fn custom_button_tint_stops_before_labels_lose_contrast() {
+        let panel = Hsla::from(rgb(0x808080));
+        let fill = button_fill(panel, panel, black());
+        assert!(fill.l < panel.l);
+        assert!(crate::theme::contrast(fill, black()) >= 4.5);
+        assert_eq!(fill.a, 1.);
+        assert_eq!(fill.h, panel.h);
     }
 
     fn luminance(color: Hsla) -> f32 {

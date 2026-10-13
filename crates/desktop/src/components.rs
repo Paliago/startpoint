@@ -32,8 +32,23 @@ pub(crate) fn configure_glass_theme(theme: &mut gpui_component::Theme) {
     } else {
         black()
     };
-    let hover = palette.button.blend(emphasis.alpha(0.06)).alpha(1.);
-    let active = palette.button.blend(emphasis.alpha(0.12)).alpha(1.);
+    let mut emphasis_amount: f32 = 0.12;
+    while emphasis_amount > 0.
+        && crate::theme::contrast(
+            palette.button.blend(emphasis.alpha(emphasis_amount)),
+            palette.foreground,
+        ) < 4.5
+    {
+        emphasis_amount = (emphasis_amount - 0.01).max(0.);
+    }
+    let hover = palette
+        .button
+        .blend(emphasis.alpha(emphasis_amount * 0.5))
+        .alpha(1.);
+    let active = palette
+        .button
+        .blend(emphasis.alpha(emphasis_amount))
+        .alpha(1.);
     theme.tokens.button_hover = hover.into();
     theme.tokens.button_secondary_hover = theme.tokens.button_hover;
     theme.tokens.button_active = active.into();
@@ -537,6 +552,22 @@ mod tests {
                 let normal = theme.tokens.button.color;
                 let hover = theme.tokens.button_hover.color;
                 let active = theme.tokens.button_active.color;
+                let panel = Palette::from_colors(
+                    theme.background,
+                    theme.secondary,
+                    theme.foreground,
+                    theme.border,
+                )
+                .surface
+                .alpha(1.);
+                for surface in [theme.background.alpha(1.), panel] {
+                    assert!(
+                        crate::theme::contrast(normal, surface) >= glass::BUTTON_SURFACE_CONTRAST,
+                        "resting button disappears into its surface: {} {}",
+                        set.name,
+                        mode.name()
+                    );
+                }
                 if theme.background.l < 0.5 {
                     assert!(
                         normal.l < hover.l && hover.l < active.l,
