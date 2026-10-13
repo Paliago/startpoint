@@ -76,6 +76,8 @@ The desktop pins matching revisions of [Zeron's ZUI renderer](https://github.com
 
 Settings contains **Startup**, **SteamGridDB API key**, **Game discovery**, **Local storage**, and **Updates**, in that order. Preferred start screen is a dropdown; appearance belongs in customization. The key acquisition action is a text link; verification/unlocking and removal are in the key's Options menu. Discovery and storage use path rows with directory actions beside their paths. Automatic discovery shows the resolved Steam root, Epic manifest search directory, and GOG search/known installer locations; resolving them happens on the runtime worker. Recents always uses visible installed games in recent-launch order, without a Library filter dropdown or changes to the saved Library filters.
 
+Settings and the Activity overview have no active game selection. The action command bar omits launch, hide, favourite, journal and editing commands there; it still offers global navigation and settings actions. Returning to a game page restores the previous selection when it is still available in that view. An explicitly opened game editor has its own selected-game context. Game search can still open a result in Library from any page, and game commands are revalidated on activation to reject stale targets.
+
 Use these names when discussing the UI:
 
 | Name | Meaning / shared code |

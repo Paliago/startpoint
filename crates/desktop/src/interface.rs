@@ -312,6 +312,9 @@ pub struct LauncherView {
     command_previous_focus: Option<FocusHandle>,
     visible: Vec<Game>,
     selected: Option<GameId>,
+    // Remember the game for returning to Library/Recents, without keeping an
+    // active game selection on Settings or the Activity overview.
+    remembered_selection: Option<GameId>,
     source_filter: Option<String>,
     collection_filter: Option<String>,
     library_filter: LibraryFilter,
@@ -486,6 +489,7 @@ impl LauncherView {
             command_previous_focus: None,
             visible: Vec::new(),
             selected: None,
+            remembered_selection: None,
             source_filter: None,
             collection_filter: None,
             library_filter: LibraryFilter::Installed,
@@ -638,9 +642,7 @@ impl LauncherView {
         match event {
             AppEvent::LibraryChanged => {
                 self.filter(cx);
-                if !self.settings_open {
-                    self.ensure_selection(window, cx);
-                }
+                self.ensure_selection(window, cx);
                 if self.detail_tab == DetailTab::Overview {
                     self.populate_game_fields(window, cx);
                 } else if let Some(game) = self.selected_game() {
@@ -864,13 +866,30 @@ impl LauncherView {
     }
 
     fn displayed_games(&self) -> Vec<&Game> {
+        if self.settings_open {
+            return Vec::new();
+        }
         match self.screen {
-            StartScreen::Library | StartScreen::Activity => self.visible.iter().collect(),
+            StartScreen::Library => self.visible.iter().collect(),
             StartScreen::Recents => self.recent_games(),
+            StartScreen::Activity => Vec::new(),
         }
     }
 
     fn ensure_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let had_selection = self.selected.is_some();
+        if !reconcile_page_selection(
+            self.screen,
+            self.settings_open,
+            self.detail_tab,
+            &mut self.selected,
+            &mut self.remembered_selection,
+        ) {
+            if had_selection {
+                self.cancel_artwork();
+            }
+            return;
+        }
         let preserve_selected = self.detail_tab != DetailTab::Overview
             && self
                 .snapshot
@@ -882,7 +901,9 @@ impl LauncherView {
             self.displayed_games().into_iter().map(|game| &game.id),
             preserve_selected,
         );
-        if self.selected != selected {
+        if self.selected != selected
+            || (!had_selection && !self.detail_tab.is_editor() && selected.is_some())
+        {
             if let Some(id) = selected {
                 self.select_game(id, window, cx);
             } else {
@@ -900,6 +921,19 @@ impl LauncherView {
             .cloned()
     }
 
+    fn command_game(&self) -> Option<Game> {
+        if !page_has_game_context(self.screen, self.settings_open, self.detail_tab) {
+            return None;
+        }
+        self.selected_game().filter(|game| {
+            self.detail_tab.is_editor()
+                || self
+                    .displayed_games()
+                    .iter()
+                    .any(|displayed| displayed.id == game.id)
+        })
+    }
+
     fn select_game(&mut self, id: GameId, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected.as_ref() != Some(&id) {
             self.journal_entry = None;
@@ -912,6 +946,7 @@ impl LauncherView {
         self.carousel_image_ready = false;
         self.cancel_artwork();
         self.selected = Some(id);
+        self.remembered_selection = None;
         self.detail_closed = false;
         self.settings_open = false;
         self.detail_tab = DetailTab::Overview;
@@ -1501,7 +1536,7 @@ impl LauncherView {
                 .collect();
         }
         let mut commands = Vec::new();
-        if let Some(game) = self.selected_game() {
+        if let Some(game) = self.command_game() {
             if game.available || game.launch_override.is_some() {
                 commands.push((
                     format!("Start {}", game.title()),
@@ -1663,7 +1698,13 @@ impl LauncherView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A click may come from a command row rendered before a page/selection
+        // change. Re-check the context and target before any game mutation.
+        let applies = command_applies_to_game(&command, self.command_game().as_ref());
         self.close_command_bar(window, cx);
+        if !applies {
+            return;
+        }
         match command {
             LauncherCommand::SelectGame(id) => {
                 self.library_filter = if self
@@ -1785,9 +1826,7 @@ impl LauncherView {
         self.customization_open = false;
         self.close_theme_editor(window, cx);
         self.jobs_open = false;
-        if !self.settings_open {
-            self.ensure_selection(window, cx);
-        }
+        self.ensure_selection(window, cx);
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -6413,6 +6452,45 @@ fn saved_artwork_match(game: &Game) -> Option<ArtworkGame> {
         })
 }
 
+fn page_has_game_context(screen: StartScreen, settings_open: bool, tab: DetailTab) -> bool {
+    !settings_open
+        && (matches!(screen, StartScreen::Library | StartScreen::Recents) || tab.is_editor())
+}
+
+/// Suspend active selection on non-game pages, retaining it only as navigation
+/// memory. Refresh events must not reselect a game behind Settings/Activity.
+fn reconcile_page_selection(
+    screen: StartScreen,
+    settings_open: bool,
+    tab: DetailTab,
+    selected: &mut Option<GameId>,
+    remembered: &mut Option<GameId>,
+) -> bool {
+    if !page_has_game_context(screen, settings_open, tab) {
+        if let Some(id) = selected.take() {
+            *remembered = Some(id);
+        }
+        return false;
+    }
+    if selected.is_none() {
+        *selected = remembered.take();
+    }
+    true
+}
+
+fn command_applies_to_game(command: &LauncherCommand, selected: Option<&Game>) -> bool {
+    match command {
+        LauncherCommand::LaunchGame(id) => selected.is_some_and(|game| {
+            game.id == *id && (game.available || game.launch_override.is_some())
+        }),
+        LauncherCommand::Favourite(id, _) | LauncherCommand::Hidden(id, _) => {
+            selected.is_some_and(|game| game.id == *id)
+        }
+        LauncherCommand::Details(_) | LauncherCommand::Reidentify => selected.is_some(),
+        _ => true,
+    }
+}
+
 fn library_metadata(text: &str, geometry: LibraryGeometry) -> Div {
     div()
         .w_full()
@@ -6696,6 +6774,99 @@ fn sample_library_game() -> Game {
         "artwork": {}, "artwork_history": [], "artwork_game_ids": {}
     }))
     .unwrap()
+}
+
+#[cfg(test)]
+#[::core::prelude::v1::test]
+fn non_game_pages_suspend_selection_and_refresh_cannot_restore_it() {
+    for (screen, settings) in [
+        (StartScreen::Library, true),
+        (StartScreen::Recents, true),
+        (StartScreen::Activity, true),
+        (StartScreen::Activity, false),
+    ] {
+        let id = GameId("steam:42".into());
+        let mut selected = Some(id.clone());
+        let mut remembered = None;
+        for _ in 0..2 {
+            assert!(!reconcile_page_selection(
+                screen,
+                settings,
+                DetailTab::Overview,
+                &mut selected,
+                &mut remembered
+            ));
+            assert!(selected.is_none());
+            assert_eq!(remembered.as_ref(), Some(&id));
+        }
+        assert!(reconcile_page_selection(
+            StartScreen::Library,
+            false,
+            DetailTab::Overview,
+            &mut selected,
+            &mut remembered
+        ));
+        assert_eq!(selected, Some(id));
+        assert!(remembered.is_none());
+    }
+}
+
+#[cfg(test)]
+#[::core::prelude::v1::test]
+fn game_context_requires_a_game_page_or_an_explicit_editor_and_never_settings() {
+    for tab in
+        std::iter::once(DetailTab::Overview).chain(DetailTab::EDITORS.iter().map(|(tab, _)| *tab))
+    {
+        for screen in [
+            StartScreen::Library,
+            StartScreen::Recents,
+            StartScreen::Activity,
+        ] {
+            assert!(!page_has_game_context(screen, true, tab));
+            assert_eq!(
+                page_has_game_context(screen, false, tab),
+                screen != StartScreen::Activity || tab.is_editor()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+#[::core::prelude::v1::test]
+fn game_commands_reject_missing_or_changed_selection_but_global_commands_still_work() {
+    let game = sample_library_game();
+    let mut other = game.clone();
+    other.id = GameId("steam:other".into());
+    for command in [
+        LauncherCommand::LaunchGame(game.id.clone()),
+        LauncherCommand::Favourite(game.id.clone(), true),
+        LauncherCommand::Hidden(game.id.clone(), true),
+        LauncherCommand::Details(DetailTab::Metadata),
+        LauncherCommand::Details(DetailTab::Artwork),
+        LauncherCommand::Details(DetailTab::Launch),
+        LauncherCommand::Details(DetailTab::Journal),
+        LauncherCommand::Reidentify,
+    ] {
+        assert!(!command_applies_to_game(&command, None));
+        assert!(command_applies_to_game(&command, Some(&game)));
+        if matches!(
+            command,
+            LauncherCommand::LaunchGame(_)
+                | LauncherCommand::Favourite(_, _)
+                | LauncherCommand::Hidden(_, _)
+        ) {
+            assert!(!command_applies_to_game(&command, Some(&other)));
+        }
+    }
+    for command in [
+        LauncherCommand::SelectGame(game.id),
+        LauncherCommand::Settings,
+        LauncherCommand::Screen(StartScreen::Library),
+        LauncherCommand::Refresh,
+        LauncherCommand::AddGame,
+    ] {
+        assert!(command_applies_to_game(&command, None));
+    }
 }
 
 #[cfg(test)]
