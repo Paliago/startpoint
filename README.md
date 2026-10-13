@@ -26,7 +26,7 @@ Download and extract the run's artifact for `startpoint.exe` (unsigned; retained
 
 Download from [GitHub Releases](https://github.com/Paliago/startpoint/releases): **Windows x64** `*-Setup.exe` or portable ZIP; **macOS 14+ on Apple Silicon (arm64)** `.pkg` or app ZIP. Intel Macs are not supported. Extract the entire portable package, not just its executable.
 
-Packaged apps check for updates in the background after launch; use **Download update → Restart to update** in the toolbar or Settings. Development/example builds and standalone test executables do not automatically check. Unsigned testing releases show OS security warnings; see [installation and update testing](docs/releases.md#install-and-test-010).
+Packaged apps check for updates in the background after launch; use **Download update → Restart to update** in the bell's **Activity & Notifications** panel or Settings. The bell shows a notification dot for available, downloading and ready updates; update actions do not add a separate navbar button. Development/example builds and standalone test executables do not automatically check. Unsigned testing releases show OS security warnings; see [installation and update testing](docs/releases.md#install-and-test-010).
 
 ## Make a release — 1, 2, 3
 

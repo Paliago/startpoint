@@ -3659,7 +3659,23 @@ impl LauncherView {
             .into_any_element()
     }
 
+    fn update_notification_status(&self, cx: &App) -> Option<String> {
+        #[cfg(feature = "self-update")]
+        {
+            self.updater.read(cx).notification_status()
+        }
+        #[cfg(not(feature = "self-update"))]
+        {
+            let _ = cx;
+            None
+        }
+    }
+
     fn activity_button(&self, cx: &mut Context<Self>) -> Button {
+        let notification = self
+            .notice
+            .clone()
+            .or_else(|| self.update_notification_status(cx));
         let active = self
             .snapshot
             .jobs
@@ -3680,14 +3696,14 @@ impl LauncherView {
             "Activity and notifications",
             cx,
         )
-        .tooltip(self.notice.clone().unwrap_or(tooltip))
+        .tooltip(notification.clone().unwrap_or(tooltip))
         .selected(self.jobs_open)
         .toggled(self.jobs_open)
         .relative()
-        .when(self.notice.is_some(), |button| {
+        .when(notification.is_some(), |button| {
             button.text_color(cx.theme().primary)
         })
-        .when(busy || self.notice.is_some(), |button| {
+        .when(busy || notification.is_some(), |button| {
             button.child(
                 div()
                     .absolute()
@@ -3866,20 +3882,6 @@ impl LauncherView {
                         )
                     })
                     .child(div().flex_1())
-                    .map(|bar| {
-                        #[cfg(feature = "self-update")]
-                        {
-                            let restart_allowed = self.can_restart_for_update();
-                            bar.child(
-                                self.updater
-                                    .update(cx, |updater, cx| updater.badge(restart_allowed, cx)),
-                            )
-                        }
-                        #[cfg(not(feature = "self-update"))]
-                        {
-                            bar
-                        }
-                    })
                     .child(glass_panel(
                         toolbar_island("action-toolbar-island", cx.theme().radius_lg)
                             .when(
@@ -6134,6 +6136,7 @@ impl LauncherView {
     }
 
     fn activity(&self, cx: &mut Context<Self>) -> AnyElement {
+        let update_notification = self.update_notification_status(cx).is_some();
         div()
             .absolute()
             .top(px(HEADER_HEIGHT + 6.))
@@ -6164,6 +6167,20 @@ impl LauncherView {
                             })),
                     ),
             )
+            .map(|panel| {
+                #[cfg(feature = "self-update")]
+                {
+                    if update_notification {
+                        let restart_allowed = self.can_restart_for_update();
+                        return panel.child(
+                            self.updater.update(cx, |updater, cx| {
+                                updater.notification(restart_allowed, cx)
+                            }),
+                        );
+                    }
+                }
+                panel
+            })
             .when_some(self.notice.clone(), |panel, notice| {
                 panel.child(
                     div()
@@ -6195,7 +6212,10 @@ impl LauncherView {
                 ))
             })
             .when(
-                self.snapshot.ready && self.snapshot.jobs.is_empty() && self.notice.is_none(),
+                self.snapshot.ready
+                    && self.snapshot.jobs.is_empty()
+                    && self.notice.is_none()
+                    && !update_notification,
                 |panel| panel.child(hint("No background activity yet.")),
             )
             .children(

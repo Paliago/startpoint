@@ -2,7 +2,7 @@
 //! threads, never the UI thread or the executor shared with library/artwork loading.
 use crate::components::{button, hint};
 use gpui::{prelude::*, *};
-use gpui_component::{Disableable, button::ButtonVariants};
+use gpui_component::{ActiveTheme, Disableable, button::ButtonVariants};
 use std::{path::Path, sync::mpsc, time::Duration};
 use velopack::{UpdateCheck, UpdateInfo, UpdateManager, VelopackAsset};
 
@@ -47,11 +47,15 @@ impl Phase {
         matches!(self, Self::Checking | Self::Downloading | Self::Restarting)
     }
 
-    fn badge_visible(self) -> bool {
+    fn notification_visible(self) -> bool {
         matches!(
             self,
             Self::Available | Self::Downloading | Self::Ready | Self::Restarting
         )
+    }
+
+    fn action_disabled(self, restart_allowed: bool) -> bool {
+        self.busy() || (self == Self::Ready && !restart_allowed)
     }
 }
 
@@ -137,7 +141,7 @@ impl Updater {
                         updater.unavailable_reason = reason;
                     }
                     Err(CheckFailure::Network) => {
-                        // Startup failures stay quiet: no badge, dialog or retry loop.
+                        // Startup failures stay quiet: no notification, dialog or retry loop.
                         updater.phase = Phase::Idle;
                         updater.error = Some(
                             "Could not check for updates. Check your connection and try again.",
@@ -293,35 +297,28 @@ impl Updater {
         }
     }
 
-    pub fn badge(&self, restart_allowed: bool, cx: &mut Context<Self>) -> AnyElement {
+    pub fn notification_status(&self) -> Option<String> {
+        self.phase.notification_visible().then(|| self.status())
+    }
+
+    /// Update actions belong in the bell's notification panel, not the toolbar.
+    pub fn notification(&self, restart_allowed: bool, cx: &mut Context<Self>) -> AnyElement {
         div()
-            .id("update-island")
-            .when(self.phase.badge_visible(), |row| {
-                row.occlude()
-                    .mr_2()
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(|_, _, cx| cx.stop_propagation())
-                    .child(
-                        button("update-badge", cx)
-                            .h(px(28.))
-                            .px_2()
-                            .label(self.action_label())
-                            .disabled(
-                                self.phase.busy()
-                                    || (self.phase == Phase::Ready && !restart_allowed),
-                            )
-                            .tooltip(if self.phase == Phase::Ready && !restart_allowed {
-                                "Finish active jobs and close editors before restarting."
-                                    .to_string()
-                            } else {
-                                self.status()
-                            })
-                            .on_click(
-                                cx.listener(|updater, _, window, cx| updater.action(window, cx)),
-                            ),
-                    )
-            })
+            .id("update-notification")
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .p_3()
+            .rounded_md()
+            .bg(cx.theme().accent)
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Startpoint update"),
+            )
+            .child(self.settings(restart_allowed, cx))
             .into_any_element()
     }
 
@@ -336,18 +333,17 @@ impl Updater {
                 section.child(
                     div()
                         .flex()
+                        .flex_wrap()
                         .items_center()
                         .gap_3()
                         .child(
                             button("update-action", cx)
+                                .flex_shrink_0()
                                 .secondary()
                                 .h(px(32.))
                                 .px_3()
                                 .label(self.action_label())
-                                .disabled(
-                                    self.phase.busy()
-                                        || (self.phase == Phase::Ready && !restart_allowed),
-                                )
+                                .disabled(self.phase.action_disabled(restart_allowed))
                                 .on_click(
                                     cx.listener(|updater, _, window, cx| {
                                         updater.action(window, cx)
@@ -517,7 +513,7 @@ fn validate_asset(asset: &VelopackAsset) -> Result<(), velopack::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{APP_ID, Outcome, Phase, query_manager, valid_repository, validate_asset};
+    use super::{APP_ID, Outcome, Phase, Updater, query_manager, valid_repository, validate_asset};
     use std::{
         io::Write,
         path::{Path, PathBuf},
@@ -615,17 +611,61 @@ mod tests {
     }
 
     #[test]
-    fn automatic_checks_and_failures_do_not_show_a_badge() {
+    fn automatic_checks_and_failures_do_not_show_a_notification() {
         for phase in [
             Phase::Idle,
             Phase::Checking,
             Phase::Current,
             Phase::Unavailable,
         ] {
-            assert!(!phase.badge_visible());
+            assert!(!phase.notification_visible());
         }
-        assert!(Phase::Available.badge_visible());
-        assert!(Phase::Ready.badge_visible());
+        for phase in [
+            Phase::Available,
+            Phase::Downloading,
+            Phase::Ready,
+            Phase::Restarting,
+        ] {
+            assert!(phase.notification_visible());
+        }
+    }
+
+    #[test]
+    fn notification_tracks_download_progress_and_restart_readiness() {
+        let mut updater = Updater {
+            phase: Phase::Downloading,
+            manager: None,
+            available: None,
+            pending: Some(asset()),
+            progress: 42,
+            error: None,
+            unavailable_reason: "Unavailable",
+        };
+        assert_eq!(
+            updater.notification_status().as_deref(),
+            Some("Downloading 0.2.0 — 42%")
+        );
+        assert_eq!(updater.action_label(), "Downloading 42%");
+        updater.phase = Phase::Ready;
+        assert_eq!(
+            updater.notification_status().as_deref(),
+            Some("Startpoint 0.2.0 is ready. Restart to finish updating.")
+        );
+        assert_eq!(updater.action_label(), "Restart to update");
+        updater.phase = Phase::Idle;
+        updater.error = Some("Network failure");
+        assert!(updater.notification_status().is_none());
+    }
+
+    #[test]
+    fn notification_and_settings_actions_keep_restart_and_busy_guards() {
+        for phase in [Phase::Checking, Phase::Downloading, Phase::Restarting] {
+            assert!(phase.action_disabled(true));
+            assert!(phase.action_disabled(false));
+        }
+        assert!(Phase::Ready.action_disabled(false));
+        assert!(!Phase::Ready.action_disabled(true));
+        assert!(!Phase::Available.action_disabled(false));
     }
 
     #[test]
