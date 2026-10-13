@@ -1,17 +1,22 @@
-name: Windows release
-run-name: Windows release — ${{ inputs.tag || github.ref_name }}
+name: Release
+run-name: Release — ${{ inputs.tag || github.ref_name }}
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing version tag to build (for example v0.1.0)
-        required: true
+        description: Existing version tag (blank previews main without publishing)
+        required: false
         type: string
       publish:
-        description: Publish to the public releases repository (otherwise artifacts only)
+        description: Publish all platforms together after validation (requires a tag)
+        default: false
+        type: boolean
+      allow_unsigned:
+        description: Explicitly allow an unsigned testing release
         default: false
         type: boolean
 
@@ -19,67 +24,108 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-release
+  group: startpoint-release
   cancel-in-progress: false
 
 env:
-  RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-msvc
-  RUSTFLAGS: -C target-feature=+crt-static
   STARTPOINT_RELEASE_REPOSITORY: ${{ vars.STARTPOINT_RELEASE_REPOSITORY || github.repository }}
-  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
   VPK_VERSION: '1.2.161'
 
 jobs:
-  release:
-    runs-on: windows-2022
-    timeout-minutes: 90
-    permissions:
-      contents: write
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      commit: ${{ steps.metadata.outputs.commit }}
+      publish: ${{ steps.metadata.outputs.publish }}
+      policy: ${{ steps.metadata.outputs.policy }}
     steps:
-      - name: Checkout release tag
+      - name: Checkout immutable release source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Test release tooling
+        run: python -m unittest discover -s scripts -p 'test_release.py' -v
+      - name: Validate version, main ancestry and release policy
+        id: metadata
+        env:
+          RELEASE_TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
+          PUBLISH_REQUESTED: ${{ (github.event_name == 'push' && github.ref_type == 'tag') || inputs.publish || false }}
+          ALLOW_UNSIGNED: ${{ inputs.allow_unsigned || false }}
+        run: python scripts/release.py metadata --vpk-version "$VPK_VERSION"
 
-      - name: Validate public release destination
-        shell: pwsh
-        run: |
-          if ($env:STARTPOINT_RELEASE_REPOSITORY -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
-            throw 'Set STARTPOINT_RELEASE_REPOSITORY to a public owner/repository in Actions variables.'
-          }
-          if ($env:RELEASE_TAG -notmatch '^v(\d+\.\d+\.\d+)$') {
-            throw 'Release tags must be stable versions such as v0.1.0 (no prerelease/build suffix).'
-          }
-          "RELEASE_VERSION=$($Matches[1])" >> $env:GITHUB_ENV
-          try {
-            # Deliberately unauthenticated: the installed app must be able to read this too.
-            $repository = Invoke-RestMethod "https://api.github.com/repos/$env:STARTPOINT_RELEASE_REPOSITORY"
-            if ($repository.private) { throw 'Release destination must be public.' }
-          } catch {
-            throw 'Release repository is not anonymously readable. Create a public releases-only repository and set STARTPOINT_RELEASE_REPOSITORY plus STARTPOINT_RELEASE_TOKEN.'
-          }
-
+  build:
+    needs: prepare
+    name: Package ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: win-x64
+            runner: windows-2022
+            toolchain: stable-x86_64-pc-windows-msvc
+            rustflags: -C target-feature=+crt-static
+          - platform: osx-arm64
+            runner: macos-15
+            toolchain: stable-aarch64-apple-darwin
+            rustflags: ''
+          - platform: osx-x64
+            runner: macos-15-intel
+            toolchain: stable-x86_64-apple-darwin
+            rustflags: ''
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+      RELEASE_POLICY: ${{ needs.prepare.outputs.policy }}
+      RELEASE_PLATFORM: ${{ matrix.platform }}
+      STARTPOINT_SIGNING_METADATA_JSON: ${{ vars.STARTPOINT_SIGNING_METADATA_JSON }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      MACOS_APP_CERTIFICATE_BASE64: ${{ secrets.MACOS_APP_CERTIFICATE_BASE64 }}
+      MACOS_INSTALLER_CERTIFICATE_BASE64: ${{ secrets.MACOS_INSTALLER_CERTIFICATE_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_APP_SIGNING_IDENTITY: ${{ vars.MACOS_APP_SIGNING_IDENTITY }}
+      MACOS_INSTALLER_SIGNING_IDENTITY: ${{ vars.MACOS_INSTALLER_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Validate signing configuration before building
+        run: python scripts/release.py signing --platform "$RELEASE_PLATFORM" --policy "$RELEASE_POLICY"
       - name: Install Rust
-        run: rustup toolchain install "$env:RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
-
-      - name: Configure Windows SDK and validate version
-        id: environment
+        id: rust
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+          echo "compiler=$(rustc --version)" >> "$GITHUB_OUTPUT"
+      - name: Configure Windows shader compiler
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\fxc.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $fxc) { throw 'Windows SDK shader compiler fxc.exe was not found.' }
+          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\fxc.exe" -File | Select-Object -First 1
+          if (-not $fxc) { throw 'Windows SDK shader compiler not found.' }
           "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
-          "compiler=$(rustc --version)" >> $env:GITHUB_OUTPUT
-          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0) { throw 'Could not read Cargo metadata.' }
-          $package = $metadata.packages | Where-Object { $_.name -eq 'startpoint' }
-          if ($package.version -ne $env:RELEASE_VERSION) {
-            throw "Tag $env:RELEASE_TAG does not match Cargo version $($package.version). Update workspace.package.version before tagging."
-          }
-          git log -1 --format="%H %s"
-          "RELEASE_COMMIT=$(git rev-parse HEAD)" >> $env:GITHUB_ENV
-
       - name: Cache Rust build
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -87,110 +133,79 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: windows-x64-updater-release-${{ steps.environment.outputs.compiler }}-${{ hashFiles('Cargo.lock') }}
-
+          key: release-v2-${{ matrix.platform }}-${{ steps.rust.outputs.compiler }}-${{ hashFiles('Cargo.lock') }}
       - name: Test workspace and updater
-        run: cargo test --locked --workspace --release --features self-update
-
-      - name: Build executable
+        run: cargo test --locked --workspace --features self-update
+      - name: Build release executable
         run: cargo build --locked --release --features self-update
-
       - name: Install packaging SDK
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: '8.0.x'
-
-      - name: Install pinned Velopack CLI
-        shell: pwsh
-        run: |
-          # .NET is a packaging-time tool only, not an end-user dependency.
-          dotnet tool install vpk --version $env:VPK_VERSION --tool-path "$env:RUNNER_TEMP\vpk"
-
-      - name: Package installer, portable app and update feed
-        shell: pwsh
-        env:
-          SIGNING_METADATA_JSON: ${{ vars.STARTPOINT_SIGNING_METADATA_JSON }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        run: |
-          # Keep packaging self-contained: local .ps1 helpers are not tracked.
-          $stage = "$env:RUNNER_TEMP\startpoint-stage"
-          $output = "$env:RUNNER_TEMP\startpoint-release"
-          New-Item -ItemType Directory -Path $stage | Out-Null
-          Copy-Item -LiteralPath target/release/startpoint.exe -Destination "$stage\startpoint.exe"
-          $arguments = @(
-            'pack', '--packId', 'Paliago.Startpoint.App', '--packTitle', 'Startpoint',
-            '--packVersion', $env:RELEASE_VERSION, '--packDir', $stage,
-            '--mainExe', 'startpoint.exe', '--runtime', 'win-x64',
-            '--channel', 'win-x64-stable', '--outputDir', $output,
-            '--icon', (Join-Path $PWD 'crates/desktop/assets/icons/startpoint.ico')
-          )
-          if ($env:SIGNING_METADATA_JSON) {
-            $signingFile = "$env:RUNNER_TEMP\startpoint-signing.json"
-            $env:SIGNING_METADATA_JSON | Set-Content -LiteralPath $signingFile -Encoding utf8
-            $arguments += @('--azureTrustedSignFile', $signingFile)
-          } else {
-            Write-Warning 'This release is unsigned. Configure code signing before broad public distribution.'
-          }
-          & "$env:RUNNER_TEMP\vpk\vpk.exe" @arguments
-          if ($LASTEXITCODE -ne 0) { throw 'Velopack packaging failed.' }
-          $feed = Get-Content "$output\releases.win-x64-stable.json" -Raw | ConvertFrom-Json
-          $full = @($feed.Assets | Where-Object { $_.Type -eq 'Full' })
-          if ($full.Count -ne 1 -or $full[0].Version -ne $env:RELEASE_VERSION -or $full[0].PackageId -ne 'Paliago.Startpoint.App') {
-            throw 'The packaged feed has an unexpected app ID or version.'
-          }
-          $asset = $full[0]
-          if ($asset.FileName -notmatch '^[A-Za-z0-9_.-]+-full\.nupkg$' -or $asset.FileName.Contains('..')) {
-            throw 'The package has an unsafe filename.'
-          }
-          $package = Join-Path $output $asset.FileName
-          if ((Get-Item -LiteralPath $package).Length -ne $asset.Size -or
-              (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash -ne $asset.SHA256) {
-            throw 'The package does not match its release feed hash/size.'
-          }
-
-      - name: Upload release packages
+      - name: Install pinned packaging CLI
+        run: dotnet tool install vpk --version "$VPK_VERSION" --tool-path "$RUNNER_TEMP/vpk"
+      - name: Package and verify installer, portable app and update feed
+        run: >-
+          python scripts/release.py package --platform "$RELEASE_PLATFORM"
+          --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --policy "$RELEASE_POLICY"
+          --vpk "$RUNNER_TEMP/vpk/vpk" --output "$RUNNER_TEMP/packages"
+      - name: Upload platform packages
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: startpoint-${{ env.RELEASE_TAG }}-windows-x64
-          path: ${{ runner.temp }}/startpoint-release/*
+          name: packages-${{ matrix.platform }}
+          path: ${{ runner.temp }}/packages/*
           if-no-files-found: error
-          retention-days: 30
-
-      - name: Keep matching crash symbols separately
+          retention-days: 14
+      - name: Keep Windows crash symbols separate
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: startpoint-${{ env.RELEASE_TAG }}-crash-symbols
+          name: symbols-win-x64
           path: target/release/startpoint.pdb
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 14
 
-      - name: Publish complete release
-        if: github.event_name == 'push' || inputs.publish
-        shell: pwsh
+  publish:
+    name: Assemble all platforms and publish once
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+      RELEASE_POLICY: ${{ needs.prepare.outputs.policy }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: packages-*
+          path: ${{ runner.temp }}/downloaded
+      - name: Validate every platform and generate checksums
+        run: >-
+          python scripts/release.py assemble --packages "$RUNNER_TEMP/downloaded"
+          --output "$RUNNER_TEMP/release" --version "$RELEASE_VERSION"
+          --commit "$RELEASE_COMMIT" --policy "$RELEASE_POLICY"
+      - name: Upload complete installable release preview
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: startpoint-${{ needs.prepare.outputs.tag }}-all-platforms
+          path: ${{ runner.temp }}/release/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish draft only after all uploads succeed
+        if: needs.prepare.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.STARTPOINT_RELEASE_TOKEN || github.token }}
-        run: |
-          try {
-            $latest = Invoke-RestMethod "https://github.com/$env:STARTPOINT_RELEASE_REPOSITORY/releases/latest/download/releases.win-x64-stable.json"
-            $newerOrEqual = @($latest.Assets | Where-Object {
-              $_.Type -eq 'Full' -and [version]$_.Version -ge [version]$env:RELEASE_VERSION
-            })
-            if ($newerOrEqual.Count) { throw 'A same/newer version is already published; do not move the stable feed backwards.' }
-          } catch {
-            # A missing feed is expected for the first release, not for other failures.
-            if (-not $_.Exception.Response -or [int]$_.Exception.Response.StatusCode -ne 404) { throw }
-          }
-          gh release view $env:RELEASE_TAG --repo $env:STARTPOINT_RELEASE_REPOSITORY --json tagName 2>$null
-          if ($LASTEXITCODE -eq 0) { throw 'Release already exists; refusing to overwrite published update packages.' }
-          $notes = "Windows x64 installer and self-updating portable package.`n`nSource: https://github.com/${{ github.repository }}/commit/$env:RELEASE_COMMIT`n`nUpdates download in the background and take effect after restarting Startpoint."
-          $assets = @(Get-ChildItem "$env:RUNNER_TEMP\startpoint-release" -File | Where-Object { $_.Extension -in '.exe', '.zip', '.nupkg', '.json' } | ForEach-Object { $_.FullName })
-          if ($assets.Count -lt 4) { throw 'Release assets are incomplete.' }
-          # A draft cannot become the latest feed while assets are still uploading.
-          gh release create $env:RELEASE_TAG --repo $env:STARTPOINT_RELEASE_REPOSITORY --draft --title "Startpoint $env:RELEASE_VERSION" --notes $notes
-          if ($LASTEXITCODE -ne 0) { throw 'Could not create draft release. For a separate repository, set STARTPOINT_RELEASE_TOKEN with Contents write permission there.' }
-          gh release upload $env:RELEASE_TAG @assets --repo $env:STARTPOINT_RELEASE_REPOSITORY
-          if ($LASTEXITCODE -ne 0) { throw 'Upload failed; release remains a draft.' }
-          gh release edit $env:RELEASE_TAG --repo $env:STARTPOINT_RELEASE_REPOSITORY --draft=false --latest
-          if ($LASTEXITCODE -ne 0) { throw 'Could not publish release.' }
+          SOURCE_REPOSITORY: ${{ github.repository }}
+        run: >-
+          python scripts/release.py publish --output "$RUNNER_TEMP/release"
+          --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT"
+          --repository "$STARTPOINT_RELEASE_REPOSITORY" --source-repository "$SOURCE_REPOSITORY"

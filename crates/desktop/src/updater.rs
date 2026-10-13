@@ -13,6 +13,19 @@ const REPOSITORY: &str = match option_env!("STARTPOINT_RELEASE_REPOSITORY") {
 };
 const STARTUP_DELAY: Duration = Duration::from_secs(2);
 
+pub fn supported_platform() -> bool {
+    release_channel().is_some()
+}
+
+fn release_channel() -> Option<&'static str> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("windows", "x86_64") => Some("win-x64-stable"),
+        ("macos", "aarch64") => Some("osx-arm64-stable"),
+        ("macos", "x86_64") => Some("osx-x64-stable"),
+        _ => None,
+    }
+}
+
 pub enum Event {
     RestartRequested,
     RestartPrepared,
@@ -57,7 +70,7 @@ impl EventEmitter<Event> for Updater {}
 
 impl Updater {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let enabled = cfg!(target_os = "windows")
+        let enabled = supported_platform()
             && !cfg!(debug_assertions)
             && !std::env::args()
                 .any(|arg| matches!(arg.as_str(), "--example-library" | "--diagnostics"));
@@ -84,7 +97,7 @@ impl Updater {
             pending: None,
             progress: 0,
             error: None,
-            unavailable_reason: "Automatic updates are disabled in development, example and non-Windows builds.",
+            unavailable_reason: "Automatic updates are disabled in development, example and unsupported platform builds.",
         }
     }
 
@@ -383,7 +396,15 @@ fn check_for_update() -> Result<(UpdateManager, Outcome), CheckFailure> {
             "This build has an invalid release repository.",
         ));
     }
-    let manager = UpdateManager::new(ReleaseSource, None, None).map_err(|_| {
+    let channel = release_channel().ok_or(CheckFailure::Unavailable(
+        "This platform does not have an update channel.",
+    ))?;
+    let options = velopack::UpdateOptions {
+        ExplicitChannel: Some(channel.into()),
+        MaximumDeltasBeforeFallback: -1,
+        ..Default::default()
+    };
+    let manager = UpdateManager::new(ReleaseSource, Some(options), None).map_err(|_| {
         CheckFailure::Unavailable(
             "Install Startpoint using the release installer or portable package to enable updates.",
         )

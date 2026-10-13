@@ -63,7 +63,7 @@ fn main() {
     #[cfg(feature = "self-update")]
     velopack::VelopackApp::build()
         .set_auto_apply_on_startup(
-            cfg!(target_os = "windows")
+            updater::supported_platform()
                 && !cfg!(debug_assertions)
                 && !std::env::args()
                     .any(|arg| matches!(arg.as_str(), "--example-library" | "--diagnostics")),

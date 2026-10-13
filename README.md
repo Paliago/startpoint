@@ -22,11 +22,19 @@ On macOS without the Metal compiler, add `--features runtime-shaders` to Cargo c
 **Actions → Windows test executable → Run workflow**: choose a branch. For branches without the workflow, run from `main` and fill in `branch`.
 Download and extract the run's artifact for `startpoint.exe` (unsigned; retained seven days).
 
-## Distribution and updates
+## Install
 
-The **Windows release** workflow packages a version-tagged Windows installer and self-updating portable ZIP. Packaged releases check for updates in the background after launch; use **Download update** then **Restart to update** in the toolbar or Settings. Development/example builds and standalone test executables do not check for updates.
+Download from [GitHub Releases](https://github.com/Paliago/startpoint/releases): **Windows x64** `*-Setup.exe` or portable ZIP; **macOS 14+** `.pkg` or app ZIP for **Apple Silicon (arm64)** or **Intel (x64)**. Extract the entire portable package, not just its executable.
 
-See [release setup, signing and testing](docs/releases.md) for the public release repository configuration (source can stay private), publishing and local packaging. No release has to be published to use the existing test-executable workflow.
+Packaged apps check for updates in the background after launch; use **Download update → Restart to update** in the toolbar or Settings. Development/example builds and standalone test executables do not automatically check. Unsigned testing releases show OS security warnings; see [installation and update testing](docs/releases.md#install-and-test-010).
+
+## Make a release — 1, 2, 3
+
+1. **Prepare `main`.** Set `[workspace.package].version` in `Cargo.toml` (already `0.1.0` for the first release), run `cargo check --workspace --features self-update` to update `Cargo.lock`, then commit/merge and push to `main`. Wait for **Actions → Release** to pass on that exact commit. It produces installable Windows + Apple Silicon + Intel Mac previews without publishing.
+2. **Tag that tested commit.** Normal, signed release: `git tag -a v0.1.0 -m "Startpoint 0.1.0"`, then `git push origin v0.1.0`. For the first **unsigned testing release**, use `git tag -a v0.1.0 -m "Startpoint 0.1.0" -m "[unsigned-test]"` instead, then push the tag. Use the matching new version on subsequent releases. Never move/reuse a published tag.
+3. **Install the published release.** Wait for the tag's **Release** run: all three platforms must pass before **one GitHub Release** becomes public. Download your installer from [Releases](https://github.com/Paliago/startpoint/releases). To exercise the updater, install `0.1.0`, then release `0.1.1` and use **Download update → Restart to update** without reinstalling.
+
+Production signing setup, preview downloads, failure recovery and local packaging: [docs/releases.md](docs/releases.md). The standalone Windows test-executable workflow remains available.
 
 ## Library views
 
