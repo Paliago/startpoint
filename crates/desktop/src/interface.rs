@@ -4,7 +4,7 @@ use crate::{
         BUTTON_TEXT_REM, EditableFieldState, button, choice_button, choice_dropdown, choice_group,
         eyebrow, field, floating_panel, glass_panel, glass_panel_with_blur, hint, icon_button,
         image, input, modal_backdrop, navigation_row, navigation_tab, path_row, placeholder,
-        sidebar_label, snug_sidebar_button, widget_surface,
+        sidebar_label, snug_sidebar_button, toolbar_icon_button, toolbar_island, widget_surface,
     },
     image_cache::ArtworkImageCache,
     library_layout::{CONTENT_TOP, DETAIL_WIDTH, Geometry as LibraryGeometry, filter_reveal},
@@ -122,7 +122,7 @@ fn windows_window_controls(window: &Window, cx: &App) -> impl IntoElement {
                 div()
                     .id(id)
                     .size(px(32.))
-                    .rounded(px(6.))
+                    .rounded(cx.theme().radius * 0.5)
                     .flex()
                     .flex_shrink_0()
                     .items_center()
@@ -133,19 +133,19 @@ fn windows_window_controls(window: &Window, cx: &App) -> impl IntoElement {
                             .bg(if close {
                                 cx.theme().danger
                             } else {
-                                cx.theme().secondary_hover
+                                cx.theme().tokens.button_hover.color
                             })
                             .text_color(if close {
                                 cx.theme().danger_foreground
                             } else {
-                                cx.theme().secondary_foreground
+                                cx.theme().foreground
                             })
                     })
                     .active(|style| {
                         style.bg(if close {
                             cx.theme().danger_active
                         } else {
-                            cx.theme().secondary_active
+                            cx.theme().tokens.button_active.color
                         })
                     })
                     .window_control_area(area)
@@ -3065,45 +3065,26 @@ impl LauncherView {
 
     fn navigation_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         glass_panel(
-            div()
-                .id("navigation-controls")
-                .occlude()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(|_, _, cx| cx.stop_propagation())
-                .flex_shrink_0()
-                .h(px(36.))
-                .p(px(2.))
-                .rounded(px(12.))
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    div().flex().gap_1().children(
-                        [
-                            StartScreen::Recents,
-                            StartScreen::Library,
-                            StartScreen::Activity,
-                        ]
-                        .into_iter()
-                        .map(|screen| {
-                            navigation_tab(
-                                SharedString::from(format!("view-{}", screen.label())),
-                                screen.label(),
-                                self.screen == screen,
-                                cx,
-                            )
-                            .h(px(32.))
-                            .px_3()
-                            .label(screen.label())
-                            .selected(self.screen == screen)
-                            .border_0()
-                            .on_click(cx.listener(
-                                move |view, _, window, cx| view.switch_screen(screen, window, cx),
-                            ))
-                        }),
-                    ),
-                ),
+            toolbar_island("navigation-controls", cx.theme().radius_lg).children(
+                [
+                    StartScreen::Recents,
+                    StartScreen::Library,
+                    StartScreen::Activity,
+                ]
+                .into_iter()
+                .map(|screen| {
+                    navigation_tab(
+                        SharedString::from(format!("view-{}", screen.label())),
+                        screen.label(),
+                        self.screen == screen,
+                        cx,
+                    )
+                    .disabled(self.command_mode.is_some())
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.switch_screen(screen, window, cx)
+                    }))
+                }),
+            ),
             cx,
         )
         .into_any_element()
@@ -3657,9 +3638,11 @@ impl LauncherView {
             "background-jobs",
             IconName::Bell,
             "Activity and notifications",
+            cx,
         )
         .tooltip(self.notice.clone().unwrap_or(tooltip))
         .selected(self.jobs_open)
+        .toggled(self.jobs_open)
         .relative()
         .when(self.notice.is_some(), |button| {
             button.text_color(cx.theme().primary)
@@ -3687,9 +3670,9 @@ impl LauncherView {
         id: &'static str,
         icon: impl Into<Icon>,
         label: &'static str,
+        cx: &App,
     ) -> Button {
-        icon_button(id, icon, label)
-            .ghost()
+        toolbar_icon_button(id, icon, label, cx)
             .disabled(self.command_mode.is_some())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
     }
@@ -3748,24 +3731,15 @@ impl LauncherView {
                     .flex()
                     .items_center()
                     .child(
-                        div()
-                            .id("window-control-island")
-                            .occlude()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(|_, _, cx| cx.stop_propagation())
-                            .relative()
-                            .h(px(36.))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .px(px(6.))
+                        toolbar_island("window-control-island", cx.theme().radius_lg)
                             .child(glass_panel_with_blur(
                                 div().absolute().inset_0().opacity(1. - sidebar),
                                 crate::glass::BLUR_RADIUS * (1. - sidebar),
                                 cx,
                             ))
-                            .child(div().w(px(inset)).flex_shrink_0())
+                            .when(inset > 0., |island| {
+                                island.child(div().w(px(inset)).flex_shrink_0())
+                            })
                             .child(
                                 div()
                                     .flex()
@@ -3776,7 +3750,10 @@ impl LauncherView {
                                             "toggle-sources",
                                             IconName::PanelLeft,
                                             "Toggle sidebar",
+                                            cx,
                                         )
+                                        .selected(self.appearance.sidebar_visible)
+                                        .toggled(self.appearance.sidebar_visible)
                                         .disabled(
                                             !self.snapshot.ready || self.command_mode.is_some(),
                                         )
@@ -3791,6 +3768,7 @@ impl LauncherView {
                                             "navigation-back",
                                             IconName::ArrowLeft,
                                             "Back",
+                                            cx,
                                         )
                                         .disabled(
                                             self.command_mode.is_some()
@@ -3810,6 +3788,7 @@ impl LauncherView {
                                             "open-commands",
                                             IconName::Search,
                                             "Search games or actions",
+                                            cx,
                                         )
                                         .on_click(
                                             cx.listener(|view, _, window, cx| {
@@ -3822,7 +3801,10 @@ impl LauncherView {
                                             "open-settings",
                                             IconName::Settings,
                                             "Settings",
+                                            cx,
                                         )
+                                        .selected(self.settings_open)
+                                        .toggled(self.settings_open)
                                         .on_click(
                                             cx.listener(|view, _, window, cx| {
                                                 view.open_settings(&OpenSettings, window, cx)
@@ -3859,19 +3841,7 @@ impl LauncherView {
                         }
                     })
                     .child(glass_panel(
-                        div()
-                            .id("action-toolbar-island")
-                            .occlude()
-                            .h(px(36.))
-                            .px(px(6.))
-                            .rounded(px(12.))
-                            .flex()
-                            .flex_shrink_0()
-                            .items_center()
-                            .gap(px(2.))
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(|_, _, cx| cx.stop_propagation())
+                        toolbar_island("action-toolbar-island", cx.theme().radius_lg)
                             .when(
                                 matches!(self.screen, StartScreen::Recents | StartScreen::Library)
                                     && !self.settings_open,
@@ -3889,8 +3859,10 @@ impl LauncherView {
                                             } else {
                                                 "Customize Recents"
                                             },
+                                            cx,
                                         )
                                         .selected(self.customization_open)
+                                        .toggled(self.customization_open)
                                         .disabled(
                                             !self.snapshot.ready || self.command_mode.is_some(),
                                         )
@@ -3915,6 +3887,7 @@ impl LauncherView {
                                     "refresh-library",
                                     Icon::default().path("icons/refresh.svg"),
                                     "Refresh installed games",
+                                    cx,
                                 )
                                 .disabled(!self.snapshot.ready || self.command_mode.is_some())
                                 .on_click(cx.listener(
@@ -3924,7 +3897,7 @@ impl LauncherView {
                                 )),
                             )
                             .child(
-                                self.toolbar_button("add-game", IconName::Plus, "Add a game")
+                                self.toolbar_button("add-game", IconName::Plus, "Add a game", cx)
                                     .disabled(!self.snapshot.ready || self.command_mode.is_some())
                                     .on_click(cx.listener(|view, _, window, cx| {
                                         view.pick(PickerPurpose::AddGame, window, cx)
@@ -4682,8 +4655,12 @@ impl LauncherView {
             .child(
                 Switch::new("backdrop-blur")
                     .checked(self.appearance.backdrop_blur)
-                    .label("Backdrop blur")
-                    .disabled(!self.snapshot.ready)
+                    .label("App background blur")
+                    .disabled(
+                        !self.snapshot.ready
+                            || !self.appearance.window_translucency
+                            || !cfg!(any(target_os = "windows", target_os = "macos")),
+                    )
                     .on_click(cx.listener(|view, enabled, window, cx| {
                         view.set_appearance(
                             AppearanceSettings {

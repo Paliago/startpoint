@@ -54,13 +54,13 @@ Logos are centered using their visible artwork rather than transparent file padd
 
 ## Smoked glass
 
-Top toolbar controls share their glass island's background instead of individual button fills. Only the selected navigation tab and hover/pressed states have a separate highlight; labels and icons remain sharp. Regular buttons and opened dropdown menus retain their opaque fills.
+The left, middle and right **toolbar islands** share the same glass surface, theme rounding, 36px height, 6px side padding, 2px vertical padding and 2px control gaps. Screen tabs and toolbar icons use the same neutral, high-contrast hover/pressed/selected fills; the selected screen no longer uses a different accent-button style. Resting controls share the island's background, and labels/icons remain sharp. Windows caption controls match these highlights and rounding, except Close retains its red warning hover. Regular buttons and opened dropdown menus retain their opaque fills.
 
 Resting action buttons, icon buttons and dropdown triggers use a stronger theme-derived fill: darker in light mode and lighter in dark mode, targeting at least 1.8:1 separation from the shell/panel tint while retaining 4.5:1 label contrast. Hover/pressed emphasis is capped to keep labels readable. Buttons remain flat and borderless; toolbar controls still share their containing surface.
 
 The app uses shared, theme-aware smoked-glass panels and **flat, borderless controls**. Floating navigation, the **Ctrl+K / Cmd+K** command palette, the metadata/images/launch/journal modal, customization panels, notifications and Recents widgets share 18px backdrop blur, 85% tint, pale hairlines, soft shadows and faint inset highlights. Buttons have solid fills, no gradients or shadows, compact theme-scaled corners, and distinct hover/pressed states. Sidebar navigation uses plain rows with no resting fill, highlighting only hovered/selected items. Inputs are darker and recessed without outer focus rings. Regular buttons, dropdown menus and fields stay opaque while containing panels are glass. Top navigation shares its island's resting background and highlights hovered/selected tabs separately. Keyboard-focus indicators on buttons are retained, and modal dimming covers the entire app.
 
-**Customize Library** and **Customize Recents** contain theme selection/editing, a **Colour mode** dropdown (System/Light/Dark), separate saved **Translucency** and **Backdrop blur** switches, and a **Translucency** amount slider. Library artwork dithering lives only in Customize Library. Blur can be disabled without turning off transparency; native windows then use a sharp transparent backdrop instead of Acrylic/vibrancy. Disabling translucency makes the shell/panels opaque without losing the saved amount. Unsupported native-translucency platforms retain an opaque base. Regular buttons, menus, fields, text and icons remain opaque.
+**Customize Library** and **Customize Recents** contain theme selection/editing, a **Colour mode** dropdown (System/Light/Dark), separate saved **Translucency** and **App background blur** switches, and a **Translucency** amount slider. Library artwork dithering lives only in Customize Library. **App background blur** controls only the desktop behind the native app window: disabling it uses a sharp transparent backdrop instead of Acrylic/vibrancy. Modals, customization panels, notifications, the command palette and other glass panels always retain their local backdrop blur. The app-background blur control is available when native window translucency is enabled. Disabling translucency makes the shell/panels opaque without losing the saved amount or native-blur preference. Unsupported native-translucency platforms retain an opaque base. Regular buttons, menus, fields, text and icons remain opaque.
 
 The amount slider has a visible **20% default notch**, calibrated to preserve the previous theme-aware glass appearance. Pointer adjustment snaps within two percentage points of it, and **Default** restores it. Click the slider or Tab to it, then use **Left/Right** or **Up/Down** for 1% steps, **Shift+arrow** for 5% steps, and **Home/End** for the endpoints. Keyboard adjustment can always leave the notch. Changes preview immediately and are saved after a short pause or on pointer release. Recents reuses its composited artwork texture while adjusting the amount, rather than decoding artwork on every slider movement. Window dragging and native caption actions are unchanged.
 
@@ -79,8 +79,9 @@ Use these names when discussing the UI:
 | Name | Meaning / shared code |
 | --- | --- |
 | **Screen tabs** | Recents / Library / Activity; `navigation_tab` |
-| **Toolbar island** | Shared glass container for toolbar icons |
-| **Icon button** | Square action target, 32×32 in the toolbar, including the notification bell; `icon_button` |
+| **Toolbar island** | Shared glass container and geometry for all three bars; `toolbar_island` |
+| **Toolbar control** | Common neutral interaction styling for screen tabs and toolbar icons; `toolbar_control` |
+| **Icon button** | Square action target; `toolbar_icon_button` for 32×32 toolbar icons, `icon_button` for ordinary actions |
 | **Action button** | Flat text action with symmetric 12px side padding; `button` |
 | **Choice group** | Related options with an accent-selected choice; `choice_group` / `choice_button` |
 | **Choice dropdown** | Opaque trigger plus check-marked menu choices; `choice_dropdown` |

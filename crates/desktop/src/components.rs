@@ -5,7 +5,7 @@ use crate::glass::{self, Palette};
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, ThemeColor,
-    button::{Button, ButtonRounded, ButtonVariants},
+    button::{Button, ButtonCustomVariant, ButtonRounded, ButtonVariants},
     input::{Input, InputState, Textarea, TextareaState},
     menu::{DropdownMenu, PopupMenuItem},
 };
@@ -143,11 +143,53 @@ pub(crate) fn icon_button(
         .tooltip(tooltip)
 }
 
-/// Top chrome belongs to one shared glass island, not separate button plates.
-/// Ghost controls keep native hover/pressed/disabled and keyboard-focus behavior.
-/// Ordinary actions, fields and opened dropdown menus remain opaque.
-pub(crate) fn toolbar_control(id: impl Into<ElementId>) -> Button {
+fn toolbar_control_base(id: impl Into<ElementId>) -> Button {
     button(id).ghost()
+}
+
+/// All toolbar islands use the same neutral hover, pressed and selected fills.
+/// No resting plate; native button behavior still owns focus and disabled states.
+pub(crate) fn toolbar_control(id: impl Into<ElementId>, cx: &App) -> Button {
+    toolbar_control_base(id).custom(
+        ButtonCustomVariant::new(cx)
+            .color(transparent_black())
+            .foreground(cx.theme().foreground.alpha(1.))
+            .hover(cx.theme().tokens.button_hover.color)
+            .active(cx.theme().tokens.button_active.color),
+    )
+}
+
+pub(crate) fn toolbar_icon_button(
+    id: impl Into<ElementId>,
+    icon: impl Into<Icon>,
+    tooltip: impl Into<SharedString>,
+    cx: &App,
+) -> Button {
+    toolbar_control(id, cx)
+        .w(px(32.))
+        .p_0()
+        .icon(icon)
+        .tooltip(tooltip)
+}
+
+/// Geometry and drag shielding shared by left, screen and right toolbar islands.
+/// Apply the glass surface separately so the left island can fade with the sidebar.
+pub(crate) fn toolbar_island(id: impl Into<ElementId>, radius: Pixels) -> Stateful<Div> {
+    div()
+        .id(id)
+        .occlude()
+        .relative()
+        .h(px(36.))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap(px(2.))
+        .px(px(6.))
+        .py(px(2.))
+        .rounded(radius)
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(|_, _, cx| cx.stop_propagation())
 }
 
 pub(crate) fn navigation_tab(
@@ -156,16 +198,10 @@ pub(crate) fn navigation_tab(
     selected: bool,
     cx: &App,
 ) -> Button {
-    toolbar_control(id)
-        .h(px(32.))
-        .px_3()
+    toolbar_control(id, cx)
         .label(label)
         .selected(selected)
         .toggled(selected)
-        .when(selected, |button| button.primary())
-        .when(!selected, |button| {
-            button.text_color(Palette::of(cx).foreground)
-        })
 }
 
 /// Opaque, accent-selected choices. Unselected items share the choice group's fill.
@@ -501,7 +537,7 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn top_chrome_controls_have_no_individual_plate_or_shadow() {
-        let mut control = toolbar_control("top-chrome");
+        let mut control = toolbar_control_base("top-chrome");
         let style = control.style();
         assert!(
             style.background.is_none(),
@@ -510,6 +546,28 @@ mod tests {
         assert_eq!(style.border_widths.top, Some(px(0.).into()));
         assert!(style.box_shadow.as_ref().is_some_and(Vec::is_empty));
         assert!(style.opacity.is_none(), "do not fade control text or icons");
+    }
+
+    #[::core::prelude::v1::test]
+    fn every_toolbar_island_uses_the_same_compact_geometry() {
+        for id in [
+            "window-control-island",
+            "navigation-controls",
+            "action-toolbar-island",
+        ] {
+            let mut island = toolbar_island(id, px(12.));
+            let style = island.style();
+            assert_eq!(style.size.height, Some(px(36.).into()));
+            assert_eq!(style.padding.left, Some(px(6.).into()));
+            assert_eq!(style.padding.right, Some(px(6.).into()));
+            assert_eq!(style.padding.top, Some(px(2.).into()));
+            assert_eq!(style.padding.bottom, Some(px(2.).into()));
+            assert_eq!(style.corner_radii.top_left, Some(px(12.).into()));
+            assert!(
+                style.background.is_none(),
+                "shared glass owns the background"
+            );
+        }
     }
 
     #[::core::prelude::v1::test]
@@ -562,7 +620,10 @@ mod tests {
                 .alpha(1.);
                 for surface in [theme.background.alpha(1.), panel] {
                     assert!(
-                        crate::theme::contrast(normal, surface) >= glass::BUTTON_SURFACE_CONTRAST,
+                        [normal, hover, active]
+                            .into_iter()
+                            .all(|fill| crate::theme::contrast(fill, surface)
+                                >= glass::BUTTON_SURFACE_CONTRAST),
                         "resting button disappears into its surface: {} {}",
                         set.name,
                         mode.name()

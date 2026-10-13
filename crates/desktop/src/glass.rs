@@ -10,6 +10,7 @@ pub(crate) const BUTTON_SURFACE_CONTRAST: f32 = 1.8;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Effects {
     pub window_translucency: bool,
+    /// Native blur behind the app window, not blur behind in-app glass panels.
     pub backdrop_blur: bool,
     pub translucency_amount: f32,
 }
@@ -28,11 +29,10 @@ impl Global for Effects {}
 
 impl Effects {
     fn panel_blur(self, requested: f32) -> f32 {
-        if self.backdrop_blur {
-            requested.max(0.)
-        } else {
-            0.
-        }
+        // Modals, customization, notifications and other glass panels always
+        // blur the app content behind them. Only native_background uses the
+        // saved desktop-backdrop switch. Honor explicit animation radii too.
+        requested.max(0.)
     }
 
     /// Calibrate around the existing theme's tint, preserving the exact current
@@ -301,7 +301,7 @@ mod tests {
     use super::*;
 
     #[::core::prelude::v1::test]
-    fn translucency_and_blur_are_independent() {
+    fn panel_blur_is_always_enabled_and_only_native_blur_follows_the_switch() {
         for window_translucency in [false, true] {
             for backdrop_blur in [false, true] {
                 let effects = Effects {
@@ -309,11 +309,10 @@ mod tests {
                     backdrop_blur,
                     ..Effects::default()
                 };
-                assert_eq!(
-                    effects.panel_blur(18.),
-                    if backdrop_blur { 18. } else { 0. }
-                );
+                assert_eq!(effects.panel_blur(BLUR_RADIUS), BLUR_RADIUS);
+                assert_eq!(effects.panel_blur(9.), 9.);
                 assert_eq!(effects.panel_blur(0.), 0.);
+                assert_eq!(effects.panel_blur(-1.), 0.);
                 let expected = if !window_translucency
                     || !cfg!(any(target_os = "windows", target_os = "macos"))
                 {
