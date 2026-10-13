@@ -249,7 +249,8 @@ def package(args):
                 run("lipo", binary, "-verify_arch", "arm64")
                 pack_dir = mac_bundle(stage, binary, ROOT / "crates/desktop/assets/icons/startpoint.png", args.version)
                 # Native Rust needs no JIT/unsigned-memory/App Sandbox entitlements.
-                entitlements = stage / "entitlements.plist"
+                # Velopack validates the suffix, even though the contents are a plist.
+                entitlements = stage / "startpoint.entitlements"
                 with entitlements.open("wb") as stream:
                     plistlib.dump({}, stream)
                 extra = ["--mainExe", "startpoint", "--signEntitlements", entitlements]

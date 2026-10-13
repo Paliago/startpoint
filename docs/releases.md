@@ -26,6 +26,8 @@ Keep the destination stable: it is compiled into installed apps. Publishing toke
 
 Configure these under **Settings → Secrets and variables → Actions** before pushing a normal production tag. `0.1.0` can use the explicit unsigned-testing annotation instead.
 
+**No developer accounts for testing:** leave the signing secrets/variables unset. Main previews work without them. Publish `0.1.0` with the README's `[unsigned-test]` annotated tag; the release will be clearly labelled as untrusted testing software. The Mac app is ad-hoc signed locally with identity `-`, requiring no Apple account or certificate; the `.pkg` is unsigned and neither is notarized. Prefer the app ZIP in `~/Applications` for testing and explicitly approve macOS security warnings if allowed. Ad-hoc signing verifies bundle integrity, not who published it. Developer ID signing/notarization is optional future work for trusted public distribution and requires Apple Developer Program credentials.
+
 ### Windows: Azure Trusted Signing
 
 Actions variable:

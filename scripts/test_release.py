@@ -2,6 +2,7 @@
 import argparse
 import json
 from pathlib import Path
+import plistlib
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -141,7 +142,7 @@ class ReleaseTests(unittest.TestCase):
             "osx-arm64": "osx-arm64-stable",
         })
 
-    def test_mac_packaging_places_binary_before_lipo_verify_arch(self):
+    def test_mac_packaging_uses_valid_architecture_and_adhoc_options(self):
         fixture = self.fixture("osx-arm64")
         binary = self.root / "target/release/startpoint"
         binary.parent.mkdir(parents=True)
@@ -151,6 +152,13 @@ class ReleaseTests(unittest.TestCase):
 
         def command(*arguments, **kwargs):
             if Path(str(arguments[0])).name == "vpk":
+                entitlements = Path(arguments[arguments.index("--signEntitlements") + 1])
+                self.assertEqual(entitlements.suffix, ".entitlements")
+                with entitlements.open("rb") as stream:
+                    self.assertEqual(plistlib.load(stream), {})
+                self.assertIn("--signAppIdentity=-", arguments)
+                for option in ("--signInstallIdentity", "--notaryProfile", "--keychain"):
+                    self.assertNotIn(option, arguments)
                 for path in release.validate_packages(fixture, "osx-arm64", "0.1.0"):
                     (self.output / path.name).write_bytes(path.read_bytes())
 
@@ -164,6 +172,7 @@ class ReleaseTests(unittest.TestCase):
         manifest = release.read_json(self.output / "build.osx-arm64-stable.json")
         self.assertEqual(manifest["platform"], "osx-arm64")
         self.assertEqual(manifest["commit"], COMMIT)
+        self.assertFalse(manifest["signed"])
 
     def test_failed_mac_architecture_check_stops_before_bundling(self):
         binary = self.root / "target/release/startpoint"
