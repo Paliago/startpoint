@@ -1,6 +1,6 @@
 """Cross-platform release tooling. Python 3.11+; standard library only.
 
-Build jobs never publish. The publish job validates all three artifacts before
+Build jobs never publish. The publish job validates both platform artifacts before
 creating/resuming a draft and marks it public only after every upload succeeds.
 """
 from __future__ import annotations
@@ -28,7 +28,6 @@ BUNDLE_ID = "com.paliago.startpoint"
 PLATFORMS = {
     "win-x64": "win-x64-stable",
     "osx-arm64": "osx-arm64-stable",
-    "osx-x64": "osx-x64-stable",
 }
 ROOT = Path(__file__).resolve().parent.parent
 WINDOWS_SIGNING = ("STARTPOINT_SIGNING_METADATA_JSON", "AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
@@ -246,8 +245,7 @@ def package(args):
                     extra += ["--azureTrustedSignFile", metadata_file]
             else:
                 require(os.uname().sysname == "Darwin", "macOS packages must be built on a Mac.")
-                arch = "arm64" if args.platform == "osx-arm64" else "x86_64"
-                run("lipo", "-verify_arch", arch, binary)
+                run("lipo", "-verify_arch", "arm64", binary)
                 pack_dir = mac_bundle(stage, binary, ROOT / "crates/desktop/assets/icons/startpoint.png", args.version)
                 # Native Rust needs no JIT/unsigned-memory/App Sandbox entitlements.
                 entitlements = stage / "entitlements.plist"
@@ -306,7 +304,7 @@ def assemble_packages(directory, output_dir, version, commit, policy):
     directory, output_dir = Path(directory), Path(output_dir)
     require(not output_dir.exists() or not any(output_dir.iterdir()), "Assembled output must be empty.")
     manifests = list(directory.rglob("build.*.json"))
-    require(len(manifests) == len(PLATFORMS), "All three platform artifacts must be present before publishing.")
+    require(len(manifests) == len(PLATFORMS), "Both platform artifacts must be present before publishing.")
     builds, names = {}, set()
     verified = []
     for path in manifests:
@@ -371,7 +369,7 @@ def release_notes(manifest, source_repository):
         "see [installation instructions](https://github.com/" + source_repository + "/blob/" + commit + "/docs/releases.md#install-and-test-010).\n\n"
     )
     return (f"<!-- startpoint-release:{commit} -->\n# Startpoint {version}\n\n" + warning +
-            "One release includes **Windows x64**, **macOS Apple Silicon (arm64)** and **macOS Intel (x64)**.\n\n"
+            "One release includes **Windows x64** and **macOS Apple Silicon (arm64)**. Intel Macs are not supported.\n\n"
             "- Windows: download the `win-x64-stable-Setup.exe`, or extract the entire portable ZIP.\n"
             "- macOS: download your architecture's `.pkg`, or extract its portable ZIP and move `Startpoint.app` into `~/Applications`. macOS 14+ is required.\n"
             "- Installed apps check in the background; use **Download update → Restart to update**.\n"

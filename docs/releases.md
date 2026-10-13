@@ -1,10 +1,10 @@
 # Releases: main → tested tag → one GitHub Release
 
-The **Release** workflow builds Windows x64, macOS Apple Silicon and macOS Intel from the **same commit**. Velopack **1.2.161** packages installers, portable apps and full update packages. Python 3.12 and .NET 8 are CI tools only; end users need neither.
+The **Release** workflow builds Windows x64 and macOS Apple Silicon from the **same commit**. Intel Macs are not supported. Velopack **1.2.161** packages installers, portable apps and full update packages. Python 3.12 and .NET 8 are CI tools only; end users need neither.
 
 ## Flow
 
-- **Push/merge to `main`:** version/provenance checks → three parallel native builds and tests → packaging/validation → one combined Actions artifact. Nothing is published. These are installation previews, not a separate update feed.
+- **Push/merge to `main`:** version/provenance checks → two parallel native builds and tests → packaging/validation → one combined Actions artifact. Nothing is published. These are installation previews, not a separate update feed.
 - **Push `vX.Y.Z`:** require a stable version matching `Cargo.toml` and `Cargo.lock`, with its commit reachable from `main`. Build all platforms, assemble and validate their hashes/source/signing state, create a draft, upload everything, then publish once as the latest release. If any platform fails, **no partial public release** appears.
 - **Manual run:** Actions → Release → Run workflow on `main`. Leave `tag` blank for a preview; enter an existing tag and select `publish` to retry publication. `allow_unsigned` is an explicit testing opt-in. Publishing without a tag is rejected.
 - **Unsigned tags:** an annotated tag with `[unsigned-test]` on its own message line allows an explicitly labelled testing release. Otherwise publication requires signing on every platform. Main previews permit unsigned packages; incomplete signing configurations still fail rather than silently falling back.
@@ -58,7 +58,7 @@ The build imports certificates into an ephemeral keychain, packages/signs the ap
 
 1. Download your architecture's installer from the `v0.1.0` release (or the combined preview artifact).
    - **Windows:** run `Paliago.Startpoint.App-win-x64-stable-Setup.exe`. The default installation is per-user, separate from `%LOCALAPPDATA%\Startpoint` library data. For portable use, extract the whole ZIP into a writable folder and run its top-level launcher.
-   - **Mac:** use `osx-arm64-stable` on Apple Silicon, `osx-x64-stable` on Intel. Run the `.pkg`, or extract its portable ZIP and move the **entire `Startpoint.app`** into a writable `~/Applications` folder before opening it. Do not run directly from the Downloads preview or inside an archive. Installation into system `/Applications` can require authorization for installation/updates.
+   - **Apple Silicon Mac:** use `osx-arm64-stable`. Run the `.pkg`, or extract its portable ZIP and move the **entire `Startpoint.app`** into a writable `~/Applications` folder before opening it. Do not run directly from the Downloads preview or inside an archive. Installation into system `/Applications` can require authorization for installation/updates.
 2. For an **unsigned testing release**, review the download source/checksums before approving OS warnings. Windows may offer **More info → Run anyway**. On macOS, attempt to open the installer/app, then use **System Settings → Privacy & Security → Open Anyway** if offered. macOS policies may still block unsigned software; use a signed/notarized release in managed environments. Do not disable Gatekeeper globally.
 3. Open Settings and verify **0.1.0**. Launch normally to exercise the real library, or use `--example-library` for isolated sample data (automatic updates are disabled in example mode). Check the library/settings survive a close/reopen.
 4. Publish **0.1.1** using the same README steps. Keep the installed `0.1.0` open/reopen it normally, let the deferred check run (or use **Check for updates**), choose **Download update**, then **Restart to update**. Verify the new version and preserved library/settings. An app at `0.1.0` cannot test an upgrade until a newer release exists.
@@ -68,7 +68,7 @@ Do not overwrite versioned update packages. `SHA256SUMS` and `release-manifest.j
 
 ## Update behavior
 
-- Windows x64: `win-x64-stable`; Apple Silicon: `osx-arm64-stable`; Intel Mac: `osx-x64-stable`.
+- Windows x64: `win-x64-stable`; Apple Silicon: `osx-arm64-stable`.
 - The app requests `https://github.com/{repository}/releases/latest/download/releases.{channel}.json` after the window opens (two-second delay), on a dedicated thread. Downloaded full packages are pinned to `/releases/download/v{version}/{filename}` and checked against SHA-256/size.
 - Network checks/downloads never block the UI/library/artwork executor. Velopack's pre-UI startup hook does local housekeeping and can apply a previously downloaded update; zero startup overhead has not been benchmarked.
 - Downloads require user action. Restart uses GPUI shutdown so existing save/flush hooks run. A downloaded update may also apply on the next ordinary launch. No running app is forcibly restarted; no update daemon, periodic polling or telemetry is added.
@@ -92,4 +92,4 @@ cargo build --locked --release --features self-update
 python scripts/release.py package --platform win-x64 --version 0.1.0 --commit <40-character-source-commit> --policy testing --vpk .local-vpk/vpk --output target/distribution/0.1.0-win-x64
 ```
 
-Use `osx-arm64` / `osx-x64` on the corresponding Mac instead. Signing uses the same environment variables as CI. Output must be empty; only application files are staged. Python scripts are tracked; local PowerShell helpers (`*.ps1`) stay ignored and are not required by CI. The original Windows standalone test workflow is still available but its binaries do not acquire packaged self-update support.
+Use `osx-arm64` on an Apple Silicon Mac instead. Signing uses the same environment variables as CI. Output must be empty; only application files are staged. Python scripts are tracked; local PowerShell helpers (`*.ps1`) stay ignored and are not required by CI. The original Windows standalone test workflow is still available but its binaries do not acquire packaged self-update support.

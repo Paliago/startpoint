@@ -77,10 +77,6 @@ jobs:
             runner: macos-15
             toolchain: stable-aarch64-apple-darwin
             rustflags: ''
-          - platform: osx-x64
-            runner: macos-15-intel
-            toolchain: stable-x86_64-apple-darwin
-            rustflags: ''
     defaults:
       run:
         shell: bash

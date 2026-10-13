@@ -21,7 +21,6 @@ fn release_channel() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("windows", "x86_64") => Some("win-x64-stable"),
         ("macos", "aarch64") => Some("osx-arm64-stable"),
-        ("macos", "x86_64") => Some("osx-x64-stable"),
         _ => None,
     }
 }

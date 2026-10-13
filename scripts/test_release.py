@@ -58,7 +58,7 @@ class ReleaseTests(unittest.TestCase):
         self.all_platforms()
         manifest = self.assemble()
         self.assertEqual(set(manifest["builds"]), set(release.PLATFORMS))
-        self.assertEqual(len(list(self.output.iterdir())), 14)
+        self.assertEqual(len(list(self.output.iterdir())), 4 * len(release.PLATFORMS) + 2)
         sums = (self.output / "SHA256SUMS").read_text()
         for platform, channel in release.PLATFORMS.items():
             feed = self.output / f"releases.{channel}.json"
@@ -95,7 +95,7 @@ class ReleaseTests(unittest.TestCase):
         directory = self.fixture("osx-arm64")
         path = next(directory.glob("releases.*.json"))
         feed = release.read_json(path)
-        feed["Assets"][0]["FileName"] = feed["Assets"][0]["FileName"].replace("osx-arm64", "osx-x64")
+        feed["Assets"][0]["FileName"] = feed["Assets"][0]["FileName"].replace("osx-arm64", "win-x64")
         release.write_json(path, feed)
         with self.assertRaises(release.ReleaseError):
             release.validate_packages(directory, "osx-arm64", "0.1.0")
@@ -134,6 +134,12 @@ class ReleaseTests(unittest.TestCase):
                 release.version_tuple(version)
         for repository in ("../app", "owner/..", "owner/app/extra", "https://github.com/owner/app"):
             self.assertFalse(release.valid_repository(repository))
+
+    def test_only_windows_and_apple_silicon_are_release_targets(self):
+        self.assertEqual(release.PLATFORMS, {
+            "win-x64": "win-x64-stable",
+            "osx-arm64": "osx-arm64-stable",
+        })
 
     def test_upload_failure_keeps_release_draft(self):
         self.all_platforms()
@@ -193,7 +199,7 @@ class ReleaseTests(unittest.TestCase):
             api.return_value.request.side_effect = request
             release.publish(self.publish_args())
         self.assertEqual(calls[-1], ("PATCH", "releases/123"))
-        self.assertEqual(sum(path == "123" for _, path in calls), 14)
+        self.assertEqual(sum(path == "123" for _, path in calls), 4 * len(release.PLATFORMS) + 2)
 
 
 if __name__ == "__main__":
