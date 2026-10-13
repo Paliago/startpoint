@@ -380,7 +380,7 @@ impl Render for Editor {
                                     "decrease-font"
                                 } else {
                                     "increase-font"
-                                })
+                                }, cx)
                                 .w(px(32.)).h(px(32.)).p_0()
                                 .icon(if step < 0. {
                                     IconName::Minus
@@ -418,7 +418,7 @@ impl Render for Editor {
                     .flex()
                     .gap_1()
                     .children([0usize, 4, 8, 12, 16].into_iter().map(|value| {
-                        button(("theme-radius", value))
+                        button(("theme-radius", value), cx)
                             .h(px(32.))
                             .px_3()
                             .label(value.to_string())
@@ -443,7 +443,7 @@ impl Render for Editor {
                 panel.child(div().text_sm().text_color(cx.theme().danger).child(error))
             })
             .child(
-                button("restore-theme-defaults")
+                button("restore-theme-defaults", cx)
                     .h(px(32.))
                     .secondary()
                     .label("Restore defaults")
@@ -456,7 +456,7 @@ impl Render for Editor {
                     .flex()
                     .gap_2()
                     .child(
-                        button("save-theme")
+                        button("save-theme", cx)
                             .primary()
                             .h(px(32.))
                             .px_3()
@@ -469,7 +469,7 @@ impl Render for Editor {
                             .on_click(cx.listener(|editor, _, window, cx| editor.save(window, cx))),
                     )
                     .child(
-                        button("cancel-theme")
+                        button("cancel-theme", cx)
                             .h(px(32.))
                             .px_3()
                             .label("Cancel")

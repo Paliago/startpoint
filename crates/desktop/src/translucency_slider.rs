@@ -106,7 +106,7 @@ impl Render for AmountSlider {
                             .child(format!("Translucency · {:.0}%", self.percent)),
                     )
                     .child(
-                        button("default-translucency")
+                        button("default-translucency", cx)
                             .ghost()
                             .label("Default")
                             .tooltip("Restore the default translucency")

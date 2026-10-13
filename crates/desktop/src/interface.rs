@@ -122,7 +122,7 @@ fn windows_window_controls(window: &Window, cx: &App) -> impl IntoElement {
                 div()
                     .id(id)
                     .size(px(32.))
-                    .rounded(cx.theme().radius * 0.5)
+                    .rounded(cx.theme().radius_lg)
                     .flex()
                     .flex_shrink_0()
                     .items_center()
@@ -2223,7 +2223,7 @@ impl LauncherView {
             .gap(px(3.))
             .child(eyebrow("LIBRARY"))
             .child(
-                button("all-games")
+                button("all-games", cx)
                     .map(|button| snug_sidebar_button(button, IconName::FolderClosed, cx))
                     .h(px(36.))
                     .ghost()
@@ -2256,7 +2256,7 @@ impl LauncherView {
                             .overflow_hidden()
                             .opacity(self.favourites_progress())
                             .child(
-                                button("favourites")
+                                button("favourites", cx)
                                     .map(|button| snug_sidebar_button(button, IconName::Star, cx))
                                     .h(px(36.))
                                     .ghost()
@@ -2279,7 +2279,7 @@ impl LauncherView {
                 },
             )
             .child(
-                button("hidden-games")
+                button("hidden-games", cx)
                     .map(|button| snug_sidebar_button(button, IconName::EyeOff, cx))
                     .h(px(36.))
                     .ghost()
@@ -2320,7 +2320,7 @@ impl LauncherView {
                                     source.clone()
                                 }
                             });
-                        button(SharedString::from(format!("source-{source}")))
+                        button(SharedString::from(format!("source-{source}")), cx)
                             .map(|button| {
                                 snug_sidebar_button(
                                     button,
@@ -2363,7 +2363,7 @@ impl LauncherView {
             )
             .when(unavailable > 0, |sidebar| {
                 sidebar.child(
-                    button("unavailable")
+                    button("unavailable", cx)
                         .map(|button| snug_sidebar_button(button, IconName::FolderOpen, cx))
                         .h(px(36.))
                         .ghost()
@@ -2390,7 +2390,7 @@ impl LauncherView {
                     .child(div().mt_4().child(eyebrow("COLLECTIONS")))
                     .children(self.collection_totals().into_iter().map(
                         |(name, (completed, total))| {
-                            button(SharedString::from(format!("collection-{name}")))
+                            button(SharedString::from(format!("collection-{name}")), cx)
                                 .map(|button| {
                                     snug_sidebar_button(button, IconName::FolderClosed, cx)
                                 })
@@ -2413,7 +2413,7 @@ impl LauncherView {
             })
             .child(div().flex_1())
             .child(
-                button("settings")
+                button("settings", cx)
                     .map(|button| snug_sidebar_button(button, IconName::Settings, cx))
                     .h(px(36.))
                     .ghost()
@@ -2557,11 +2557,12 @@ impl LauncherView {
                         }))
                         .when(view.snapshot.ready, |content| {
                             content.child(
-                                button("empty-add").primary().label("Add a game").on_click(
-                                    cx.listener(|view, _, window, cx| {
+                                button("empty-add", cx)
+                                    .primary()
+                                    .label("Add a game")
+                                    .on_click(cx.listener(|view, _, window, cx| {
                                         view.pick(PickerPurpose::AddGame, window, cx)
-                                    }),
-                                ),
+                                    })),
                             )
                         })
                         .into_any_element();
@@ -2629,7 +2630,7 @@ impl LauncherView {
                             .child(title),
                     )
                     .child(
-                        button("sort-library")
+                        button("sort-library", cx)
                             .secondary()
                             .h(px(32.))
                             .px_2()
@@ -2785,7 +2786,7 @@ impl LauncherView {
                         .opacity(0.)
                         .group_hover(group.clone(), |style| style.opacity(1.))
                         .child(
-                            button(SharedString::from(format!("card-play-{}", game.id.0)))
+                            button(SharedString::from(format!("card-play-{}", game.id.0)), cx)
                                 .secondary()
                                 .w(px(28.))
                                 .h(px(28.))
@@ -2806,7 +2807,7 @@ impl LauncherView {
                                 })),
                         )
                         .child(
-                            button(SharedString::from(format!("card-manage-{}", game.id.0)))
+                            button(SharedString::from(format!("card-manage-{}", game.id.0)), cx)
                                 .secondary()
                                 .w(px(28.))
                                 .h(px(28.))
@@ -3000,7 +3001,7 @@ impl LauncherView {
 
     fn library_favourite_button(&self, game: &Game, cx: &mut Context<Self>) -> Button {
         let id = game.id.clone();
-        button(SharedString::from(format!("star-{}", id.0)))
+        button(SharedString::from(format!("star-{}", id.0)), cx)
             .secondary()
             .w(px(26.))
             .h(px(26.))
@@ -3091,7 +3092,7 @@ impl LauncherView {
     }
 
     fn start_button(&self, game: &Game, cx: &mut Context<Self>) -> Button {
-        button("start-game")
+        button("start-game", cx)
             .primary()
             .w(px(172.))
             .h(px(44.))
@@ -3438,7 +3439,7 @@ impl LauncherView {
                                             .items_center()
                                             .gap_2()
                                             .child(
-                                                button("edit-recent-game")
+                                                button("edit-recent-game", cx)
                                                     .secondary()
                                                     .w(px(36.)).h(px(36.)).p_0()
                                                     .icon(IconName::Ellipsis)
@@ -3457,7 +3458,7 @@ impl LauncherView {
                                                     )),
                                             )
                                             .child(
-                                                button("pause-recents")
+                                                button("pause-recents", cx)
                                                     .secondary()
                                                     .w(px(36.)).h(px(36.)).p_0()
                                                     .icon(Icon::default().path(if paused {
@@ -3485,7 +3486,7 @@ impl LauncherView {
                                                     )),
                                             )
                                             .child(
-                                                button("previous-recent")
+                                                button("previous-recent", cx)
                                                     .secondary()
                                                     .w(px(36.)).h(px(36.)).p_0()
                                                     .icon(IconName::ChevronLeft)
@@ -3501,7 +3502,7 @@ impl LauncherView {
                                             .children(games.iter().enumerate().map(
                                                 |(index, game)| {
                                                     let id = game.id.clone();
-                                                    button(("recent-position", index))
+                                                    button(("recent-position", index), cx)
                                                         .secondary()
                                                         .border_0()
                                                         .p_0()
@@ -3537,7 +3538,7 @@ impl LauncherView {
                                                 },
                                             ))
                                             .child(
-                                                button("next-recent")
+                                                button("next-recent", cx)
                                                     .secondary()
                                                     .w(px(36.)).h(px(36.)).p_0()
                                                     .icon(IconName::ChevronRight)
@@ -3584,7 +3585,7 @@ impl LauncherView {
                                         },
                                     ))
                                     .child(
-                                        button("recents-view-library")
+                                        button("recents-view-library", cx)
                                             .secondary()
                                             .h(px(32.))
                                             .label("View library")
@@ -4024,6 +4025,7 @@ impl LauncherView {
                                             "edit-game",
                                             IconName::Ellipsis,
                                             "Edit metadata, artwork or launch options",
+                                            cx,
                                         )
                                         .w(px(44.))
                                         .h(px(44.))
@@ -4046,7 +4048,7 @@ impl LauncherView {
                     )
                     .when(artwork.is_none(), |hero| {
                         hero.child(
-                            button("find-detail-background")
+                            button("find-detail-background", cx)
                                 .secondary()
                                 .h(px(36.))
                                 .label("Choose background…")
@@ -4090,11 +4092,16 @@ impl LauncherView {
                     .items_center()
                     .gap_1()
                     .child(
-                        icon_button("close-detail-pane", IconName::Close, "Close detail pane")
-                            .bg(crate::glass::Palette::of(cx).button)
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.close_detail_pane(window, cx)
-                            })),
+                        icon_button(
+                            "close-detail-pane",
+                            IconName::Close,
+                            "Close detail pane",
+                            cx,
+                        )
+                        .bg(crate::glass::Palette::of(cx).button)
+                        .on_click(
+                            cx.listener(|view, _, window, cx| view.close_detail_pane(window, cx)),
+                        ),
                     ),
             )
             .into_any_element()
@@ -4107,33 +4114,33 @@ impl LauncherView {
         let content = match self.detail_tab {
             DetailTab::Overview => return div().into_any_element(),
             DetailTab::Metadata => div().w_full().flex().flex_col().gap_4()
-                .child(button("reidentify-game").h(px(36.)).label("Re-identify game…").icon(IconName::Search)
+                .child(button("reidentify-game", cx).h(px(36.)).label("Re-identify game…").icon(IconName::Search)
                     .on_click(cx.listener(|view, _, window, cx| view.begin_reidentify(window, cx))))
                 .child(field("Title", &self.title, cx)).child(field("Description", &self.description, cx)).child(field("Developer", &self.developer, cx)).child(field("Genres", &self.genres, cx))
-                .child(button("save-metadata").h(px(36.)).primary().label("Save metadata").on_click(cx.listener(|view, _, _, cx| view.save_metadata(cx))))
+                .child(button("save-metadata", cx).h(px(36.)).primary().label("Save metadata").on_click(cx.listener(|view, _, _, cx| view.save_metadata(cx))))
                 .child(div().mt_3().child(eyebrow("COLLECTIONS & PROGRESS")))
                 .child(field("Collections — one per line", &self.collections, cx))
                 .child(Switch::new("game-completed").checked(self.completed).label("Completed")
                     .on_click(cx.listener(|view, completed, _, cx| { view.completed = *completed; cx.notify(); })))
-                .child(button("save-game-progress").h(px(36.)).label("Save collections and progress").on_click(cx.listener(|view, _, _, cx| view.save_progress(cx))))
-                .child(button("set-game-hidden").h(px(36.)).secondary().label(if game.hidden { "Unhide game" } else { "Hide from library" })
+                .child(button("save-game-progress", cx).h(px(36.)).label("Save collections and progress").on_click(cx.listener(|view, _, _, cx| view.save_progress(cx))))
+                .child(button("set-game-hidden", cx).h(px(36.)).secondary().label(if game.hidden { "Unhide game" } else { "Hide from library" })
                     .on_click(cx.listener(move |view, _, _, cx| {
                         if let Some(game) = view.selected_game() {
                             view.submit(Command::SetHidden { game_id: game.id, hidden: !game.hidden }, cx);
                         }
                     })))
                 .child(hint("Hidden games remain saved. Use the Hidden view to restore them. No game files, notes or launch history are removed."))
-                .when(game.provider_id == "manual", |content| content.child(button("remove-manual-game").h(px(36.)).secondary().label("Remove from library")
+                .when(game.provider_id == "manual", |content| content.child(button("remove-manual-game", cx).h(px(36.)).secondary().label("Remove from library")
                     .on_click(cx.listener(|view, _, window, cx| view.remove_manual_game(window, cx)))))
                 .into_any_element(),
             DetailTab::Launch => div().w_full().flex().flex_col().gap_4()
                 .child(hint(&format!("{}\n{}", source_name(&game.provider_id), game.install_directory.display())))
                 .child(field("Executable / application bundle", &self.executable, cx))
-                .child(button("choose-executable").h(px(36.)).label("Choose executable…").tooltip("Overrides the store launcher and its update, DRM and launch configuration.").on_click(cx.listener(move |view, _, window, cx| view.pick(PickerPurpose::LaunchOverride(game_id.clone()), window, cx))))
+                .child(button("choose-executable", cx).h(px(36.)).label("Choose executable…").tooltip("Overrides the store launcher and its update, DRM and launch configuration.").on_click(cx.listener(move |view, _, window, cx| view.pick(PickerPurpose::LaunchOverride(game_id.clone()), window, cx))))
                 .child(field("Arguments — one per line", &self.arguments, cx))
                 .child(field(if cfg!(target_os = "macos") { "Working directory (executable only)" } else { "Working directory" }, &self.working_directory, cx))
-                .child(button("save-launch").h(px(36.)).primary().label("Save launch configuration").on_click(cx.listener(|view, _, _, cx| view.save_launch(cx))))
-                .child(button("reset-launch").h(px(36.)).secondary().label("Restore launcher default").on_click(cx.listener(|view, _, window, cx| {
+                .child(button("save-launch", cx).h(px(36.)).primary().label("Save launch configuration").on_click(cx.listener(|view, _, _, cx| view.save_launch(cx))))
+                .child(button("reset-launch", cx).h(px(36.)).secondary().label("Restore launcher default").on_click(cx.listener(|view, _, window, cx| {
                     if let Some(game_id) = view.selected.clone() {
                         view.submit(Command::SetLaunchOverride { game_id, launch: None }, cx);
                         set_value(&view.executable, "", window, cx); set_value(&view.arguments, "", window, cx); set_value(&view.working_directory, "", window, cx);
@@ -4166,11 +4173,14 @@ impl LauncherView {
                             .child(game.title().to_string()),
                     )
                     .child(
-                        icon_button("close-game-editor", IconName::Close, "Close game editor")
-                            .tooltip("Close game editor")
-                            .on_click(
-                                cx.listener(|view, _, window, cx| view.close_editor(window, cx)),
-                            ),
+                        icon_button(
+                            "close-game-editor",
+                            IconName::Close,
+                            "Close game editor",
+                            cx,
+                        )
+                        .tooltip("Close game editor")
+                        .on_click(cx.listener(|view, _, window, cx| view.close_editor(window, cx))),
                     ),
             )
             .child(
@@ -4194,7 +4204,7 @@ impl LauncherView {
                                     .flex()
                                     .gap_2()
                                     .child(
-                                        button("details-play")
+                                        button("details-play", cx)
                                             .h(px(36.))
                                             .primary()
                                             .label("Play game")
@@ -4211,7 +4221,7 @@ impl LauncherView {
                                             })),
                                     )
                                     .child(
-                                        button("details-favourite")
+                                        button("details-favourite", cx)
                                             .h(px(36.))
                                             .label(if favourite {
                                                 "Unfavourite"
@@ -4331,7 +4341,7 @@ impl LauncherView {
                 ),
             )
             .child(
-                button("import-artwork")
+                button("import-artwork", cx)
                     .h(px(36.))
                     .label("Upload image…")
                     .on_click(cx.listener(move |view, _, window, cx| {
@@ -4350,7 +4360,7 @@ impl LauncherView {
             .child(div().mt_3().child(eyebrow("STEAMGRIDDB")))
             .child(self.credential_status(cx))
             .child(
-                button("reidentify-artwork-game")
+                button("reidentify-artwork-game", cx)
                     .h(px(36.))
                     .label("Re-identify game…")
                     .on_click(cx.listener(|view, _, window, cx| view.begin_reidentify(window, cx))),
@@ -4368,7 +4378,7 @@ impl LauncherView {
             })
             .when(!key_configured, |view| {
                 view.child(
-                    button("configure-artwork")
+                    button("configure-artwork", cx)
                         .h(px(36.))
                         .secondary()
                         .label("Configure SteamGridDB")
@@ -4392,14 +4402,14 @@ impl LauncherView {
                     .flex()
                     .gap_2()
                     .child(
-                        button("search-artwork-games")
+                        button("search-artwork-games", cx)
                             .h(px(36.))
                             .label("Find game")
                             .disabled(!key_configured || self.identity_job.is_some())
                             .on_click(cx.listener(|view, _, _, cx| view.search_artwork(cx))),
                     )
                     .child(
-                        button("load-artwork")
+                        button("load-artwork", cx)
                             .h(px(36.))
                             .label("Browse images")
                             .disabled(!key_configured || self.identity_job.is_some())
@@ -4424,7 +4434,7 @@ impl LauncherView {
             })
             .children(self.artwork_games.iter().map(|game| {
                 let matched = game.clone();
-                button(SharedString::from(format!("match-{}", game.id)))
+                button(SharedString::from(format!("match-{}", game.id)), cx)
                     .h(px(36.))
                     .label(game.name.clone())
                     .w_full()
@@ -4474,7 +4484,7 @@ impl LauncherView {
                                 )
                                 .child(hint(&format!("{} × {}", candidate.width, candidate.height)))
                                 .child(
-                                    button(("select-remote", index))
+                                    button(("select-remote", index), cx)
                                         .h(px(36.))
                                         .label("Use image")
                                         .on_click(cx.listener(move |view, _, _, cx| {
@@ -4507,13 +4517,13 @@ impl LauncherView {
             .child(eyebrow("RE-IDENTIFY GAME"))
             .child(hint("Search the correct title, then choose a result. This saves one identity for covers, backgrounds, logos and icons. Your launcher, notes and uploaded images are kept."))
             .when(!configured, |view| view.child(self.credential_status(cx)).child(
-                button("identify-configure").label("Configure SteamGridDB")
+                button("identify-configure", cx).label("Configure SteamGridDB")
                     .on_click(cx.listener(|view, _, window, cx| view.open_settings(&OpenSettings, window, cx)))))
             .child(input(&self.artwork_search, cx).large().disabled(!configured || saving))
             .child(div().flex().gap_2()
-                .child(button("identify-search").primary().label("Search games").disabled(!configured || saving)
+                .child(button("identify-search", cx).primary().label("Search games").disabled(!configured || saving)
                     .on_click(cx.listener(|view, _, _, cx| view.search_artwork(cx))))
-                .child(button("identify-cancel").secondary().label("Cancel").disabled(saving)
+                .child(button("identify-cancel", cx).secondary().label("Cancel").disabled(saving)
                     .on_click(cx.listener(|view, _, _, cx| {
                         view.cancel_artwork();
                         view.reidentifying = false;
@@ -4525,7 +4535,7 @@ impl LauncherView {
             .when_some(self.artwork_message.clone(), |view, message| view.child(hint(&message)))
             .children(self.artwork_games.iter().map(|game| {
                 let matched = game.clone();
-                button(SharedString::from(format!("identify-{}", game.id)))
+                button(SharedString::from(format!("identify-{}", game.id)), cx)
                     .w_full().label(format!("Use {}", game.name)).disabled(saving)
                     .on_click(cx.listener(move |view, _, _, cx| view.choose_artwork_game(matched.clone(), cx)))
             }))
@@ -4560,7 +4570,7 @@ impl LauncherView {
                     .child(asset.author.clone()),
             )
             .child(
-                button(SharedString::from(format!("saved-{}", asset.id)))
+                button(SharedString::from(format!("saved-{}", asset.id)), cx)
                     .h(px(36.))
                     .label(if selected { "Selected" } else { "Use image" })
                     .disabled(selected)
@@ -4613,6 +4623,7 @@ impl LauncherView {
                     view.focus.focus(window, cx);
                 });
             },
+            cx,
         );
         div()
             .h(px(34.))
@@ -4697,7 +4708,7 @@ impl LauncherView {
                     .flex_wrap()
                     .gap_2()
                     .child(
-                        button("edit-theme")
+                        button("edit-theme", cx)
                             .icon(IconName::Palette)
                             .label("Edit theme…")
                             .disabled(!self.snapshot.ready || self.themes_loading)
@@ -4707,7 +4718,7 @@ impl LauncherView {
                     )
                     .when(custom, |row| {
                         row.child(
-                            button("rename-theme")
+                            button("rename-theme", cx)
                                 .label("Rename…")
                                 .disabled(!self.snapshot.ready || self.themes_loading)
                                 .on_click(cx.listener(|view, _, window, cx| {
@@ -4720,7 +4731,7 @@ impl LauncherView {
                         )
                     })
                     .child(
-                        icon_button("open-themes", IconName::Folder, "Open themes directory")
+                        icon_button("open-themes", IconName::Folder, "Open themes directory", cx)
                             .on_click(move |_, _, cx| cx.reveal_path(&themes)),
                     )
                     .child(
@@ -4728,6 +4739,7 @@ impl LauncherView {
                             "reload-themes",
                             Icon::default().path("icons/refresh.svg"),
                             "Reload themes",
+                            cx,
                         )
                         .disabled(self.themes_loading)
                         .on_click(
@@ -4764,6 +4776,7 @@ impl LauncherView {
                         )
                     });
                 },
+                cx,
             ))
             .child(self.glass_controls(cx))
     }
@@ -4795,6 +4808,7 @@ impl LauncherView {
                             "close-customization",
                             IconName::Close,
                             "Close customization",
+                            cx,
                         )
                         .tooltip("Close customization")
                         .disabled(saving)
@@ -4923,6 +4937,7 @@ impl LauncherView {
                             "close-library-customization",
                             IconName::Close,
                             "Close customization",
+                            cx,
                         )
                         .disabled(saving)
                         .on_click(cx.listener(|view, _, window, cx| {
@@ -4967,6 +4982,7 @@ impl LauncherView {
                                     )
                                 });
                             },
+                            cx,
                         )
                     })
                     .child(eyebrow("SIZE & SPACING"))
@@ -5134,7 +5150,7 @@ impl LauncherView {
                                 .flex_col()
                                 .gap_1()
                                 .child(
-                                    button(("collection-progress", index))
+                                    button(("collection-progress", index), cx)
                                         .secondary()
                                         .h(px(36.))
                                         .w_full()
@@ -5219,11 +5235,14 @@ impl LauncherView {
                     )
                     .child(div().flex().gap_1().children([false, true].into_iter().map(
                         |forward| {
-                            button(if forward {
-                                "activity-next-month"
-                            } else {
-                                "activity-previous-month"
-                            })
+                            button(
+                                if forward {
+                                    "activity-next-month"
+                                } else {
+                                    "activity-previous-month"
+                                },
+                                cx,
+                            )
                             .secondary()
                             .w(px(32.))
                             .h(px(32.))
@@ -5281,7 +5300,7 @@ impl LauncherView {
                         let launches = days.get(&key).map(|day| day.launches).unwrap_or(0);
                         let enabled = date.month() == self.activity_month.month();
                         Some(
-                            button(SharedString::from(format!("activity-day-{key}")))
+                            button(SharedString::from(format!("activity-day-{key}")), cx)
                                 .secondary()
                                 .border_0()
                                 .flex_1()
@@ -5342,14 +5361,19 @@ impl LauncherView {
                                 .find(|game| &game.id == game_id)?;
                             let id = game_id.clone();
                             Some(
-                                button(SharedString::from(format!("activity-game-{}", game_id.0)))
-                                    .secondary()
-                                    .h(px(36.))
-                                    .w_full()
-                                    .label(format!("{} · {count}", game.title()))
-                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                button(
+                                    SharedString::from(format!("activity-game-{}", game_id.0)),
+                                    cx,
+                                )
+                                .secondary()
+                                .h(px(36.))
+                                .w_full()
+                                .label(format!("{} · {count}", game.title()))
+                                .on_click(cx.listener(
+                                    move |view, _, window, cx| {
                                         view.open_game_journal(id.clone(), window, cx)
-                                    })),
+                                    },
+                                )),
                             )
                         })),
                 )
@@ -5381,12 +5405,17 @@ impl LauncherView {
                             .child("Game journal"),
                     )
                     .child(
-                        icon_button("write-journal-note", IconName::Plus, "Write a game note")
-                            .tooltip("Write a game note")
-                            .disabled(self.selected.is_none())
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.open_details(DetailTab::Journal, window, cx)
-                            })),
+                        icon_button(
+                            "write-journal-note",
+                            IconName::Plus,
+                            "Write a game note",
+                            cx,
+                        )
+                        .tooltip("Write a game note")
+                        .disabled(self.selected.is_none())
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.open_details(DetailTab::Journal, window, cx)
+                        })),
                     ),
             )
             .when(self.snapshot.journal.is_empty(), |panel| {
@@ -5407,15 +5436,20 @@ impl LauncherView {
                         .flex_col()
                         .gap_1()
                         .child(
-                            button(SharedString::from(format!("journal-widget-{}", entry.id)))
-                                .secondary()
-                                .h(px(36.))
-                                .w_full()
-                                .border_0()
-                                .label(game.title().to_string())
-                                .on_click(cx.listener(move |view, _, window, cx| {
+                            button(
+                                SharedString::from(format!("journal-widget-{}", entry.id)),
+                                cx,
+                            )
+                            .secondary()
+                            .h(px(36.))
+                            .w_full()
+                            .border_0()
+                            .label(game.title().to_string())
+                            .on_click(cx.listener(
+                                move |view, _, window, cx| {
                                     view.open_game_journal(id.clone(), window, cx)
-                                })),
+                                },
+                            )),
                         )
                         .child(
                             div()
@@ -5455,7 +5489,7 @@ impl LauncherView {
                     .flex()
                     .gap_2()
                     .child(
-                        button("save-journal-note")
+                        button("save-journal-note", cx)
                             .primary()
                             .h(px(36.))
                             .label(if self.journal_entry.is_some() {
@@ -5468,7 +5502,7 @@ impl LauncherView {
                     )
                     .when(self.journal_entry.is_some(), |row| {
                         row.child(
-                            button("cancel-journal-edit")
+                            button("cancel-journal-edit", cx)
                                 .secondary()
                                 .h(px(36.))
                                 .label("Cancel edit")
@@ -5503,7 +5537,7 @@ impl LauncherView {
                             .flex()
                             .gap_2()
                             .child(
-                                button(SharedString::from(format!("edit-note-{}", entry.id)))
+                                button(SharedString::from(format!("edit-note-{}", entry.id)), cx)
                                     .secondary()
                                     .h(px(36.))
                                     .label("Edit")
@@ -5517,7 +5551,7 @@ impl LauncherView {
                                     })),
                             )
                             .child(
-                                button(SharedString::from(format!("delete-note-{}", entry.id)))
+                                button(SharedString::from(format!("delete-note-{}", entry.id)), cx)
                                     .secondary()
                                     .h(px(36.))
                                     .label(if self.journal_delete.as_ref() == Some(&entry.id) {
@@ -5547,17 +5581,22 @@ impl LauncherView {
                             )
                             .when(self.journal_delete.as_ref() == Some(&entry.id), |row| {
                                 row.child(
-                                    button(SharedString::from(format!(
-                                        "cancel-delete-note-{}",
-                                        entry.id
-                                    )))
+                                    button(
+                                        SharedString::from(format!(
+                                            "cancel-delete-note-{}",
+                                            entry.id
+                                        )),
+                                        cx,
+                                    )
                                     .secondary()
                                     .h(px(36.))
                                     .label("Keep note")
-                                    .on_click(cx.listener(|view, _, _, cx| {
-                                        view.journal_delete = None;
-                                        cx.notify();
-                                    })),
+                                    .on_click(cx.listener(
+                                        |view, _, _, cx| {
+                                            view.journal_delete = None;
+                                            cx.notify();
+                                        },
+                                    )),
                                 )
                             }),
                     )
@@ -5617,6 +5656,7 @@ impl LauncherView {
                                 SharedString::from(format!("open-{provider}-{index}")),
                                 IconName::Folder,
                                 "Open directory",
+                                cx,
                             )
                             .on_click(move |_, _, cx| cx.reveal_path(&path)),
                         )
@@ -5624,7 +5664,7 @@ impl LauncherView {
                     .when(index == 0, |actions| {
                         actions
                             .child(
-                                button(SharedString::from(format!("choose-{provider}")))
+                                button(SharedString::from(format!("choose-{provider}")), cx)
                                     .label("Change…")
                                     .disabled(!self.snapshot.ready)
                                     .on_click(cx.listener(move |view, _, window, cx| {
@@ -5641,7 +5681,7 @@ impl LauncherView {
                             )
                             .when(configured, |actions| {
                                 actions.child(
-                                    button(SharedString::from(format!("reset-{provider}")))
+                                    button(SharedString::from(format!("reset-{provider}")), cx)
                                         .label("Auto")
                                         .disabled(!self.snapshot.ready)
                                         .on_click(cx.listener(move |view, _, _, cx| {
@@ -5724,6 +5764,7 @@ impl LauncherView {
                                             )
                                         });
                                     },
+                                    cx,
                                 )
                             })),
                     )
@@ -5761,7 +5802,7 @@ impl LauncherView {
                             .gap_2()
                             .when(!key_configured || self.credential_editing, |row| {
                                 row.child(
-                                    button("save-api-key")
+                                    button("save-api-key", cx)
                                         .h(px(36.))
                                         .primary()
                                         .label(if key_configured {
@@ -5796,7 +5837,7 @@ impl LauncherView {
                             })
                             .when(key_configured && !self.credential_editing, |row| {
                                 row.child(
-                                    button("edit-api-key")
+                                    button("edit-api-key", cx)
                                         .label("Replace key…")
                                         .disabled(
                                             !self.snapshot.ready || self.credential_job.is_some(),
@@ -5812,7 +5853,7 @@ impl LauncherView {
                                     let locked =
                                         self.snapshot.settings.credential_status.get("steamgriddb")
                                             == Some(&CredentialStatus::Locked);
-                                    button("api-key-options")
+                                    button("api-key-options", cx)
                                         .label("Options")
                                         .dropdown_caret(true)
                                         .disabled(
@@ -5867,7 +5908,7 @@ impl LauncherView {
                             })
                             .when(self.credential_editing, |row| {
                                 row.child(
-                                    button("cancel-api-key")
+                                    button("cancel-api-key", cx)
                                         .label("Cancel")
                                         .disabled(self.credential_job.is_some())
                                         .on_click(cx.listener(|view, _, window, cx| {
@@ -5902,7 +5943,7 @@ impl LauncherView {
                         "Library & artwork",
                         data_directory.display().to_string(),
                         div().child(
-                            button("open-data")
+                            button("open-data", cx)
                                 .icon(IconName::Folder)
                                 .label("Open directory")
                                 .on_click(move |_, _, cx| cx.reveal_path(&data_directory)),
@@ -5913,7 +5954,7 @@ impl LauncherView {
                         "Thumbnail cache",
                         cache_directory.display().to_string(),
                         div().child(
-                            button("open-cache")
+                            button("open-cache", cx)
                                 .icon(IconName::Folder)
                                 .label("Open directory")
                                 .on_click(move |_, _, cx| cx.reveal_path(&cache_directory)),
@@ -6076,7 +6117,7 @@ impl LauncherView {
                     .justify_between()
                     .child(eyebrow("ACTIVITY & NOTIFICATIONS"))
                     .child(
-                        icon_button("close-activity", IconName::Close, "Close activity")
+                        icon_button("close-activity", IconName::Close, "Close activity", cx)
                             .tooltip("Close activity")
                             .on_click(cx.listener(|view, _, _, cx| {
                                 view.jobs_open = false;
@@ -6095,7 +6136,7 @@ impl LauncherView {
                         .bg(cx.theme().accent)
                         .child(div().text_sm().child(notice))
                         .child(
-                            button("dismiss-message")
+                            button("dismiss-message", cx)
                                 .secondary()
                                 .h(px(36.))
                                 .label("Dismiss notification")
@@ -6154,7 +6195,7 @@ impl LauncherView {
                             )
                             .when(job.state.active(), |row| {
                                 row.child(
-                                    button(("cancel-job", id))
+                                    button(("cancel-job", id), cx)
                                         .secondary()
                                         .h(px(36.))
                                         .label("Cancel")

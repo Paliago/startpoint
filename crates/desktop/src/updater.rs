@@ -303,7 +303,7 @@ impl Updater {
                     .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .child(
-                        button("update-badge")
+                        button("update-badge", cx)
                             .h(px(28.))
                             .px_2()
                             .label(self.action_label())
@@ -339,7 +339,7 @@ impl Updater {
                         .items_center()
                         .gap_3()
                         .child(
-                            button("update-action")
+                            button("update-action", cx)
                                 .secondary()
                                 .h(px(32.))
                                 .px_3()

@@ -5,7 +5,7 @@ use crate::glass::{self, Palette};
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, ThemeColor,
-    button::{Button, ButtonCustomVariant, ButtonRounded, ButtonVariants},
+    button::{Button, ButtonCustomVariant, ButtonVariants},
     input::{Input, InputState, Textarea, TextareaState},
     menu::{DropdownMenu, PopupMenuItem},
 };
@@ -115,26 +115,42 @@ pub(crate) fn input(state: &Entity<InputState>, cx: &App) -> Input {
     style_input(Input::new(state).focus_bordered(false), cx)
 }
 
-/// Flat, borderless controls with compact, theme-scaled corners.
+/// Flat, borderless controls using the same live corner radius as toolbar islands.
 /// Native GPUI variants retain their hover, pressed, disabled and focus behavior.
-pub(crate) fn button(id: impl Into<ElementId>) -> Button {
-    Button::new(id)
-        .small()
-        .h(px(32.))
-        .px(px(12.))
-        .rounded(ButtonRounded::Small)
-        .font_weight(FontWeight::MEDIUM)
-        .border_0()
-        .shadow_none()
-        .cursor_pointer()
+pub(crate) fn button(id: impl Into<ElementId>, cx: &App) -> Button {
+    button_base(id, cx.theme().radius_lg)
+}
+
+fn button_base(id: impl Into<ElementId>, radius: Pixels) -> Button {
+    Styled::rounded(
+        Button::new(id)
+            .small()
+            .h(px(32.))
+            .px(px(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .border_0()
+            .shadow_none()
+            .cursor_pointer(),
+        radius,
+    )
 }
 
 pub(crate) fn icon_button(
     id: impl Into<ElementId>,
     icon: impl Into<Icon>,
     tooltip: impl Into<SharedString>,
+    cx: &App,
 ) -> Button {
-    button(id)
+    icon_button_base(id, icon, tooltip, cx.theme().radius_lg)
+}
+
+fn icon_button_base(
+    id: impl Into<ElementId>,
+    icon: impl Into<Icon>,
+    tooltip: impl Into<SharedString>,
+    radius: Pixels,
+) -> Button {
+    button_base(id, radius)
         .secondary()
         .w(px(32.))
         .h(px(32.))
@@ -143,14 +159,14 @@ pub(crate) fn icon_button(
         .tooltip(tooltip)
 }
 
-fn toolbar_control_base(id: impl Into<ElementId>) -> Button {
-    button(id).ghost()
+fn toolbar_control_base(id: impl Into<ElementId>, radius: Pixels) -> Button {
+    button_base(id, radius).ghost()
 }
 
 /// All toolbar islands use the same neutral hover, pressed and selected fills.
 /// No resting plate; native button behavior still owns focus and disabled states.
 pub(crate) fn toolbar_control(id: impl Into<ElementId>, cx: &App) -> Button {
-    toolbar_control_base(id).custom(
+    toolbar_control_base(id, cx.theme().radius_lg).custom(
         ButtonCustomVariant::new(cx)
             .color(transparent_black())
             .foreground(cx.theme().foreground.alpha(1.))
@@ -184,8 +200,7 @@ pub(crate) fn toolbar_island(id: impl Into<ElementId>, radius: Pixels) -> Statef
         .flex()
         .items_center()
         .gap(px(2.))
-        .px(px(6.))
-        .py(px(2.))
+        .p(px(2.))
         .rounded(radius)
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -211,7 +226,7 @@ pub(crate) fn choice_button(
     selected: bool,
     cx: &App,
 ) -> Button {
-    button(id)
+    button(id, cx)
         .ghost()
         .h(px(30.))
         .px_3()
@@ -295,6 +310,7 @@ pub(crate) fn choice_dropdown<T: Clone + PartialEq + 'static>(
     choices: Vec<(T, SharedString)>,
     enabled: bool,
     on_select: impl Fn(T, &mut Window, &mut App) + 'static,
+    cx: &App,
 ) -> impl IntoElement {
     let label = choices
         .iter()
@@ -302,7 +318,7 @@ pub(crate) fn choice_dropdown<T: Clone + PartialEq + 'static>(
         .map(|(_, label)| label.clone())
         .unwrap_or_default();
     let on_select = Rc::new(on_select);
-    button(id)
+    button(id, cx)
         .w_full()
         .min_w_0()
         .h(px(34.))
@@ -512,22 +528,19 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn shared_buttons_are_flat_without_forcing_label_padding_onto_icon_buttons() {
-        let mut button = button("test");
+        let mut button = button_base("test", px(12.));
         let style = button.style();
         assert_eq!(style.border_widths.top, Some(px(0.).into()));
         assert!(style.box_shadow.as_ref().is_some_and(Vec::is_empty));
         assert_eq!(style.padding.left, Some(px(12.).into()));
         assert_eq!(style.padding.right, Some(px(12.).into()));
         assert_eq!(style.size.height, Some(px(32.).into()));
-        assert!(
-            style.corner_radii.top_left.is_none(),
-            "use the live theme radius"
-        );
+        assert_eq!(style.corner_radii.top_left, Some(px(12.).into()));
     }
 
     #[::core::prelude::v1::test]
     fn icon_buttons_have_equal_hit_targets_without_label_padding() {
-        let mut control = icon_button("bell", IconName::Bell, "Notifications");
+        let mut control = icon_button_base("bell", IconName::Bell, "Notifications", px(12.));
         let style = control.style();
         assert_eq!(style.size.width, Some(px(32.).into()));
         assert_eq!(style.size.height, Some(px(32.).into()));
@@ -537,7 +550,7 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn top_chrome_controls_have_no_individual_plate_or_shadow() {
-        let mut control = toolbar_control_base("top-chrome");
+        let mut control = toolbar_control_base("top-chrome", px(12.));
         let style = control.style();
         assert!(
             style.background.is_none(),
@@ -558,14 +571,27 @@ mod tests {
             let mut island = toolbar_island(id, px(12.));
             let style = island.style();
             assert_eq!(style.size.height, Some(px(36.).into()));
-            assert_eq!(style.padding.left, Some(px(6.).into()));
-            assert_eq!(style.padding.right, Some(px(6.).into()));
+            assert_eq!(style.padding.left, Some(px(2.).into()));
+            assert_eq!(style.padding.right, Some(px(2.).into()));
             assert_eq!(style.padding.top, Some(px(2.).into()));
             assert_eq!(style.padding.bottom, Some(px(2.).into()));
             assert_eq!(style.corner_radii.top_left, Some(px(12.).into()));
             assert!(
                 style.background.is_none(),
                 "shared glass owns the background"
+            );
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn default_buttons_follow_the_same_radius_as_navbar_containers() {
+        for radius in [0., 4., 12., 20.] {
+            let mut control = button_base("button-radius", px(radius));
+            let mut island = toolbar_island("navbar-radius", px(radius));
+            assert_eq!(control.style().corner_radii, island.style().corner_radii);
+            assert_eq!(
+                control.style().corner_radii.top_left,
+                Some(px(radius).into())
             );
         }
     }
