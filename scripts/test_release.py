@@ -141,6 +141,46 @@ class ReleaseTests(unittest.TestCase):
             "osx-arm64": "osx-arm64-stable",
         })
 
+    def test_mac_packaging_places_binary_before_lipo_verify_arch(self):
+        fixture = self.fixture("osx-arm64")
+        binary = self.root / "target/release/startpoint"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"fixture binary")
+        args = argparse.Namespace(platform="osx-arm64", version="0.1.0", commit=COMMIT,
+                                  policy="testing", vpk=str(self.root / "vpk"), output=str(self.output))
+
+        def command(*arguments, **kwargs):
+            if Path(str(arguments[0])).name == "vpk":
+                for path in release.validate_packages(fixture, "osx-arm64", "0.1.0"):
+                    (self.output / path.name).write_bytes(path.read_bytes())
+
+        with patch.object(release, "ROOT", self.root), \
+                patch.object(release.os, "uname", create=True, return_value=argparse.Namespace(sysname="Darwin")), \
+                patch.object(release, "signing_ready", return_value=False), \
+                patch.object(release, "mac_bundle", return_value=self.root / "Startpoint.app"), \
+                patch.object(release, "run", side_effect=command) as run:
+            release.package(args)
+            self.assertEqual(run.call_args_list[0].args, ("lipo", binary, "-verify_arch", "arm64"))
+        manifest = release.read_json(self.output / "build.osx-arm64-stable.json")
+        self.assertEqual(manifest["platform"], "osx-arm64")
+        self.assertEqual(manifest["commit"], COMMIT)
+
+    def test_failed_mac_architecture_check_stops_before_bundling(self):
+        binary = self.root / "target/release/startpoint"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"wrong architecture fixture")
+        args = argparse.Namespace(platform="osx-arm64", version="0.1.0", commit=COMMIT,
+                                  policy="testing", vpk=str(self.root / "vpk"), output=str(self.output))
+        with patch.object(release, "ROOT", self.root), \
+                patch.object(release.os, "uname", create=True, return_value=argparse.Namespace(sysname="Darwin")), \
+                patch.object(release, "signing_ready", return_value=False), \
+                patch.object(release, "mac_bundle") as bundle, \
+                patch.object(release, "run", side_effect=release.ReleaseError("lipo failed")):
+            with self.assertRaisesRegex(release.ReleaseError, "lipo failed"):
+                release.package(args)
+            bundle.assert_not_called()
+        self.assertFalse((self.output / "build.osx-arm64-stable.json").exists())
+
     def test_upload_failure_keeps_release_draft(self):
         self.all_platforms()
         self.assemble()
