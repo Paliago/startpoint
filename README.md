@@ -12,7 +12,7 @@ cargo run --locked -- --example-library
 cargo run --locked
 ```
 
-The example library has isolated data and simulated launches. Use `--diagnostics` for discovery details.
+The example library uses isolated data and simulates launches without starting actual games. Use `--diagnostics` for discovery details.
 SteamGridDB artwork is optional; API keys stay in the OS credential store.
 
 On macOS without the Metal compiler, add `--features runtime-shaders` to Cargo commands.
