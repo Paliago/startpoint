@@ -49,8 +49,8 @@ struct CatalogueSearchItem {
 }
 
 /// Non-Steam installations may use Steam's public catalogue, but only when its
-/// result uniquely matches the explicitly identified title. Never pick the first
-/// fuzzy search result (which may be a sequel, expansion or bundle).
+/// result uniquely matches the explicitly identified title (including known
+/// edition labels). Never pick the first fuzzy sequel, expansion or bundle.
 pub(crate) fn app_id_for_title(
     client: &reqwest::blocking::Client,
     title: &str,
@@ -63,19 +63,41 @@ pub(crate) fn app_id_for_title(
         .send()
         .map_err(|error| ApiError::Provider(format!("Steam catalogue: {error}")))?;
     let search: CatalogueSearch = read_catalogue_response(response, context)?;
-    Ok(exact_app_id(&search.items, title))
+    let matched = exact_app_id(&search.items, title);
+    if matched.is_none()
+        && let Some(base) = crate::catalogue::edition_search_title(title)
+    {
+        context.checkpoint()?;
+        let response = client
+            .get("https://store.steampowered.com/api/storesearch/")
+            .query(&[("term", base.as_str()), ("l", "english"), ("cc", "us")])
+            .send()
+            .map_err(|error| ApiError::Provider(format!("Steam catalogue: {error}")))?;
+        let search: CatalogueSearch = read_catalogue_response(response, context)?;
+        return Ok(exact_app_id(&search.items, title));
+    }
+    Ok(matched)
 }
 
 fn exact_app_id(items: &[CatalogueSearchItem], title: &str) -> Option<String> {
-    let mut ids = items
+    let candidates = items
         .iter()
-        .filter(|item| {
-            item.kind == "app"
-                && item.id != 0
-                && item.name.trim().eq_ignore_ascii_case(title.trim())
-        })
+        .filter(|item| item.kind == "app" && item.id != 0)
+        .collect::<Vec<_>>();
+    let exact = candidates
+        .iter()
+        .filter(|item| item.name.trim().eq_ignore_ascii_case(title.trim()))
         .map(|item| item.id)
         .collect::<std::collections::BTreeSet<_>>();
+    let mut ids = if !exact.is_empty() {
+        exact
+    } else {
+        candidates
+            .into_iter()
+            .filter(|item| crate::catalogue::titles_match(&item.name, title))
+            .map(|item| item.id)
+            .collect::<std::collections::BTreeSet<_>>()
+    };
     (ids.len() == 1).then(|| ids.pop_first().unwrap().to_string())
 }
 
@@ -241,6 +263,15 @@ mod catalogue_tests {
             ),
             Some("1".into())
         );
+    }
+
+    #[test]
+    fn known_editions_are_allowed_but_exact_titles_win_and_ambiguity_is_rejected() {
+        let disco = r#"{"items":[{"id":632470,"name":"Disco Elysium - The Final Cut","type":"app"},{"id":1233220,"name":"Disco Elysium - The Final Cut Soundtrack","type":"app"}]}"#;
+        assert_eq!(search(disco, "Disco Elysium"), Some("632470".into()));
+        let versions = r#"{"items":[{"id":1,"name":"Example Deluxe Edition","type":"app"},{"id":2,"name":"Example Ultimate Edition","type":"app"}]}"#;
+        assert_eq!(search(versions, "Example"), None);
+        assert_eq!(search(versions, "Example Deluxe Edition"), Some("1".into()));
     }
 }
 

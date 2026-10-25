@@ -237,6 +237,12 @@ pub struct ArtworkCandidate {
     pub height: u32,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ArtworkPage {
+    pub images: Vec<ArtworkCandidate>,
+    pub has_more: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AppearanceMode {
@@ -544,6 +550,7 @@ pub enum Command {
         game_id: GameId,
         remote_game_id: Option<String>,
         kind: ArtworkKind,
+        page: u32,
     },
     SelectArtwork {
         game_id: GameId,
@@ -635,6 +642,8 @@ pub enum AppEvent {
         job_id: JobId,
         game_id: GameId,
         kind: ArtworkKind,
+        page: u32,
+        has_more: bool,
         images: Vec<ArtworkCandidate>,
     },
 }

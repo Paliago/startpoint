@@ -1,4 +1,4 @@
-use crate::{artwork, platform, steam, steam_shortcuts, storage::Store};
+use crate::{artwork, catalogue, platform, steam, steam_shortcuts, storage::Store};
 use async_channel::{Receiver, Sender};
 use startpoint_sdk::*;
 use std::{
@@ -1126,25 +1126,35 @@ impl Shared {
                 game_id,
                 remote_game_id,
                 kind,
+                page,
             } => {
                 let game = self.game(&game_id)?;
-                let mut images = self.artwork_choices(
+                let mut result = self.artwork_choices_page(
                     &provider_id,
                     &game,
                     remote_game_id.as_deref(),
                     kind,
+                    page,
                     context,
                 )?;
                 let hosts = self.artwork_provider(&provider_id)?.image_hosts();
-                let key = artwork_cache_key(&provider_id, &game, remote_game_id.as_deref(), kind);
+                let key = artwork_page_cache_key(
+                    &provider_id,
+                    &game,
+                    remote_game_id.as_deref(),
+                    kind,
+                    page,
+                );
                 self.publish(AppEvent::ArtworkFound {
                     job_id,
                     game_id: game_id.clone(),
                     kind,
-                    images: images.clone(),
+                    page,
+                    has_more: result.has_more,
+                    images: result.images.clone(),
                 });
-                for index in 0..images.len() {
-                    let image = &mut images[index];
+                for index in 0..result.images.len() {
+                    let image = &mut result.images[index];
                     context.checkpoint()?;
                     context.report(format!("Loading artwork preview {}", index + 1));
                     if !image
@@ -1161,21 +1171,25 @@ impl Shared {
                         image.preview_path =
                             artwork::save_preview(&bytes, &self.snapshot().paths).ok();
                     }
-                    self.store(|store| store.save_cache(&key, &images, now()))?;
+                    self.store(|store| store.save_cache(&key, &result, now()))?;
                     self.publish(AppEvent::ArtworkFound {
                         job_id,
                         game_id: game_id.clone(),
                         kind,
-                        images: images.clone(),
+                        page,
+                        has_more: result.has_more,
+                        images: result.images.clone(),
                     });
                 }
                 context.checkpoint()?;
-                self.store(|store| store.save_cache(&key, &images, now()))?;
+                self.store(|store| store.save_cache(&key, &result, now()))?;
                 self.publish(AppEvent::ArtworkFound {
                     job_id,
                     game_id,
                     kind,
-                    images,
+                    page,
+                    has_more: result.has_more,
+                    images: result.images,
                 });
                 Ok(())
             }
@@ -1242,29 +1256,43 @@ impl Shared {
         kind: ArtworkKind,
         context: &JobContext,
     ) -> Result<Vec<ArtworkCandidate>, ApiError> {
-        let key = artwork_cache_key(provider_id, game, remote_id, kind);
-        if let Some(images) = self.store(|store| store.cached(&key, now()))? {
-            return Ok(images);
+        self.artwork_choices_page(provider_id, game, remote_id, kind, 0, context)
+            .map(|page| page.images)
+    }
+
+    fn artwork_choices_page(
+        &self,
+        provider_id: &str,
+        game: &Game,
+        remote_id: Option<&str>,
+        kind: ArtworkKind,
+        page: u32,
+        context: &JobContext,
+    ) -> Result<ArtworkPage, ApiError> {
+        let key = artwork_page_cache_key(provider_id, game, remote_id, kind, page);
+        if let Some(result) = self.store(|store| store.cached(&key, now()))? {
+            return Ok(result);
         }
         let credential = self.credential(provider_id, false)?;
-        let images = match self.provider_result(
+        let result = match self.provider_result(
             provider_id,
             &credential,
-            self.artwork_provider(provider_id)?.artwork(
+            self.artwork_provider(provider_id)?.artwork_page(
                 game,
                 remote_id,
                 kind,
+                page,
                 &credential,
                 context,
             ),
         ) {
-            Ok(images) => images,
-            Err(ApiError::NoArtwork) => Vec::new(),
+            Ok(result) => result,
+            Err(ApiError::NoArtwork) => ArtworkPage::default(),
             Err(error) => return Err(error),
         };
         context.checkpoint()?;
-        self.store(|store| store.save_cache(&key, &images, now()))?;
-        Ok(images)
+        self.store(|store| store.save_cache(&key, &result, now()))?;
+        Ok(result)
     }
 
     fn refresh(&self, context: &JobContext) -> Result<(), ApiError> {
@@ -1702,12 +1730,69 @@ impl Shared {
         let Some(target) = catalogue_target(game) else {
             return Ok(());
         };
+        let mut native_error = None;
+        if let CatalogueTarget::Identified { title, .. } = &target
+            && let Some(key) = native_catalogue_key(game, title)
+        {
+            let cached = self.store(|store| store.cached::<Option<UserMetadata>>(&key, now()))?;
+            let native = match cached {
+                Some(metadata) => metadata,
+                None => {
+                    let result = match game.provider_id.as_str() {
+                        "gog" => catalogue::gog_metadata(
+                            &self.image_client,
+                            &game.source_game_id,
+                            context,
+                        ),
+                        "epic" => catalogue::epic_metadata(
+                            &self.image_client,
+                            title,
+                            catalogue::epic_namespace(game).as_deref(),
+                            context,
+                        ),
+                        _ => unreachable!(),
+                    };
+                    match result {
+                        Ok(metadata) => {
+                            self.store(|store| store.save_cache(&key, &Some(&metadata), now()))?;
+                            Some(metadata)
+                        }
+                        Err(ApiError::NoArtwork) => {
+                            self.store(|store| {
+                                store.save_cache(&key, &None::<UserMetadata>, now())
+                            })?;
+                            None
+                        }
+                        Err(error @ ApiError::Cancelled) => return Err(error),
+                        Err(error) => {
+                            native_error = Some(error);
+                            None
+                        }
+                    }
+                }
+            };
+            if let Some(metadata) = native
+                && metadata
+                    .title
+                    .as_deref()
+                    .is_some_and(|name| catalogue::titles_match(title, name))
+                && (metadata.description.is_some()
+                    || metadata.developer.is_some()
+                    || metadata.genres.is_some())
+            {
+                context.checkpoint()?;
+                return self.update_game(&game.id, |current| {
+                    merge_catalogue_metadata(current, &target, metadata);
+                    Ok(())
+                });
+            }
+        }
         let app_id = match &target {
             CatalogueTarget::Steam(id) => id.clone(),
             CatalogueTarget::Identified { title, .. } => {
                 // Cache misses as well as matches to avoid repeating searches for
                 // games with no Steam listing during every library refresh.
-                let key = format!("steam/catalogue-title-v1/{}", title.trim().to_lowercase());
+                let key = format!("steam/catalogue-title-v2/{}", title.trim().to_lowercase());
                 let app_id = match self
                     .store(|store| store.cached::<Option<String>>(&key, now()))?
                 {
@@ -1719,7 +1804,7 @@ impl Shared {
                     }
                 };
                 let Some(app_id) = app_id else {
-                    return Ok(());
+                    return native_error.map_or(Ok(()), Err);
                 };
                 app_id
             }
@@ -1739,7 +1824,7 @@ impl Shared {
             && !metadata
                 .title
                 .as_deref()
-                .is_some_and(|name| name.trim().eq_ignore_ascii_case(title.trim()))
+                .is_some_and(|name| catalogue::titles_match(title, name))
         {
             return Ok(());
         }
@@ -1755,6 +1840,23 @@ impl Shared {
 enum CatalogueTarget {
     Steam(String),
     Identified { title: String, artwork_id: String },
+}
+
+fn native_catalogue_key(game: &Game, title: &str) -> Option<String> {
+    // Do not borrow the installed game's native metadata after the user picked
+    // a different game or expansion. The explicit identity still wins.
+    if !catalogue::titles_match(title, &game.discovered_title) {
+        return None;
+    }
+    match game.provider_id.as_str() {
+        "gog" => Some(format!("gog/catalogue-v1/{}", game.source_game_id)),
+        "epic" => Some(format!(
+            "epic/catalogue-v1/{}/{}",
+            catalogue::epic_namespace(game).unwrap_or_else(|| game.source_game_id.clone()),
+            title.trim().to_lowercase()
+        )),
+        _ => None,
+    }
 }
 
 fn catalogue_target(game: &Game) -> Option<CatalogueTarget> {
@@ -1886,14 +1988,25 @@ fn select_asset(game: &mut Game, mut asset: ArtworkAsset) {
     game.artwork.insert(asset.kind, asset);
 }
 
+#[cfg(test)]
 fn artwork_cache_key(
     provider_id: &str,
     game: &Game,
     remote_id: Option<&str>,
     kind: ArtworkKind,
 ) -> String {
+    artwork_page_cache_key(provider_id, game, remote_id, kind, 0)
+}
+
+fn artwork_page_cache_key(
+    provider_id: &str,
+    game: &Game,
+    remote_id: Option<&str>,
+    kind: ArtworkKind,
+    page: u32,
+) -> String {
     format!(
-        "{provider_id}/images-v3/{}/{kind:?}/{}",
+        "{provider_id}/images-v4/{}/{kind:?}/{}/page/{page}",
         game.id.0,
         remote_id
             .or_else(|| game.artwork_game_ids.get(provider_id).map(String::as_str))
@@ -2082,6 +2195,173 @@ mod tests {
         }
     }
 
+    struct PagedArtwork {
+        calls: Arc<Mutex<Vec<u32>>>,
+        preview: std::path::PathBuf,
+    }
+
+    impl ArtworkProvider for PagedArtwork {
+        fn descriptor(&self) -> ProviderDescriptor {
+            ProviderDescriptor {
+                id: "fixture".into(),
+                name: "Paged fixture".into(),
+            }
+        }
+        fn image_hosts(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn requires_credential(&self) -> bool {
+            false
+        }
+        fn search(&self, _: &str, _: &str, _: &JobContext) -> Result<Vec<ArtworkGame>, ApiError> {
+            Ok(Vec::new())
+        }
+        fn artwork(
+            &self,
+            _: &Game,
+            _: Option<&str>,
+            _: ArtworkKind,
+            _: &str,
+            _: &JobContext,
+        ) -> Result<Vec<ArtworkCandidate>, ApiError> {
+            panic!("Paged requests must use artwork_page")
+        }
+        fn artwork_page(
+            &self,
+            _: &Game,
+            _: Option<&str>,
+            kind: ArtworkKind,
+            page: u32,
+            _: &str,
+            _: &JobContext,
+        ) -> Result<ArtworkPage, ApiError> {
+            self.calls.lock().unwrap().push(page);
+            Ok(ArtworkPage {
+                images: vec![ArtworkCandidate {
+                    id: format!("fixture:{page}"),
+                    provider_id: "fixture".into(),
+                    kind,
+                    image_url: "https://example.invalid/full".into(),
+                    thumbnail_url: "https://example.invalid/thumb".into(),
+                    author: "Fixture".into(),
+                    preview_path: Some(self.preview.clone()),
+                    score: 0,
+                    width: 600,
+                    height: 900,
+                }],
+                has_more: page == 0,
+            })
+        }
+    }
+
+    #[test]
+    fn artwork_page_requests_cache_separately_and_keep_pagination_in_preview_events() {
+        let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/verification")
+            .join(uuid::Uuid::new_v4().to_string());
+        let paths = ApplicationPaths {
+            data_directory: directory.join("data"),
+            cache_directory: directory.join("cache"),
+        };
+        let game = identified_nonsteam_game("gog");
+        let mut store = Store::open(&paths).unwrap();
+        store.save_games(std::slice::from_ref(&game)).unwrap();
+        let preview = paths.cache_directory.join("preview.png");
+        std::fs::write(&preview, b"cached preview, never decoded in this test").unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let (sender, events) = async_channel::unbounded();
+        let shared = Shared {
+            image_client: reqwest::blocking::Client::new(),
+            state: Mutex::new(State {
+                games: BTreeMap::from([(game.id.clone(), game.clone())]),
+                snapshot: Snapshot {
+                    ready: true,
+                    games: Arc::new(vec![game.clone()]),
+                    activity: Arc::new(Vec::new()),
+                    journal: Arc::new(Vec::new()),
+                    jobs: Vec::new(),
+                    settings: SettingsSnapshot::default(),
+                    paths,
+                    initialization_error: None,
+                    providers: Vec::new(),
+                },
+            }),
+            store: Mutex::new(Some(store)),
+            subscribers: Mutex::new(vec![sender]),
+            cancellations: Mutex::new(BTreeMap::new()),
+            credentials: Mutex::new(BTreeMap::from([("fixture".into(), Some(String::new()))])),
+            discovery: Vec::new(),
+            artwork: vec![Arc::new(PagedArtwork {
+                calls: calls.clone(),
+                preview,
+            })],
+            refreshing: AtomicBool::new(false),
+        };
+        let context = JobContext::new(Arc::new(AtomicBool::new(false)), |_| {});
+        for (job_id, page) in [(100, 0), (101, 1), (102, 0)] {
+            shared
+                .execute(
+                    job_id,
+                    Command::ListArtwork {
+                        provider_id: "fixture".into(),
+                        game_id: game.id.clone(),
+                        remote_game_id: Some("123".into()),
+                        kind: ArtworkKind::Cover,
+                        page,
+                    },
+                    &context,
+                )
+                .unwrap();
+            let mut updates = 0;
+            while let Ok(event) = events.try_recv() {
+                if let AppEvent::ArtworkFound {
+                    job_id: owner,
+                    game_id,
+                    kind,
+                    page: received_page,
+                    has_more,
+                    images,
+                } = event
+                {
+                    assert_eq!(owner, job_id);
+                    assert_eq!(game_id, game.id);
+                    assert_eq!(kind, ArtworkKind::Cover);
+                    assert_eq!(received_page, page);
+                    assert_eq!(has_more, page == 0);
+                    assert_eq!(images[0].id, format!("fixture:{page}"));
+                    updates += 1;
+                }
+            }
+            assert!(
+                updates >= 2,
+                "Initial results and preview updates must carry the same page context"
+            );
+        }
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![0, 1],
+            "Going back must reuse the cached page"
+        );
+        assert_eq!(
+            shared.snapshot().games[0],
+            game,
+            "Browsing pages must not change the game identity or selected images"
+        );
+        let first = artwork_page_cache_key("fixture", &game, Some("123"), ArtworkKind::Cover, 0);
+        assert_ne!(
+            first,
+            artwork_page_cache_key("fixture", &game, Some("123"), ArtworkKind::Cover, 1)
+        );
+        assert_ne!(
+            first,
+            artwork_page_cache_key("fixture", &game, Some("456"), ArtworkKind::Cover, 0)
+        );
+        assert_ne!(
+            first,
+            artwork_page_cache_key("fixture", &game, Some("123"), ArtworkKind::Logo, 0)
+        );
+    }
+
     #[test]
     fn identified_nonsteam_games_backfill_cached_text_without_changing_user_data() {
         for provider in ["gog", "epic", "manual"] {
@@ -2097,7 +2377,7 @@ mod tests {
             store.save_games(std::slice::from_ref(&game)).unwrap();
             store
                 .save_cache(
-                    "steam/catalogue-title-v1/cyberpunk 2077: phantom liberty",
+                    "steam/catalogue-title-v2/cyberpunk 2077: phantom liberty",
                     &Some("2138330"),
                     now(),
                 )
@@ -2175,7 +2455,7 @@ mod tests {
             shared
                 .store(|store| {
                     store.save_cache(
-                        "steam/catalogue-title-v1/cyberpunk 2077: phantom liberty",
+                        "steam/catalogue-title-v2/cyberpunk 2077: phantom liberty",
                         &None::<String>,
                         now(),
                     )
@@ -2249,6 +2529,123 @@ mod tests {
             catalogue_target(&game),
             Some(CatalogueTarget::Steam("1091500".into()))
         );
+    }
+
+    #[test]
+    fn native_metadata_repairs_disco_and_epic_exclusives_despite_old_steam_misses() {
+        for (provider, discovered, selected, source_id, description, developer) in [
+            (
+                "gog",
+                "Disco Elysium - The Final Cut",
+                "Disco Elysium",
+                "1771589310",
+                "A detective RPG.",
+                "ZA/UM",
+            ),
+            (
+                "epic",
+                "Alan Wake 2",
+                "Alan Wake 2",
+                "epic-app",
+                "Two heroes in a horror story.",
+                "Remedy Entertainment",
+            ),
+        ] {
+            let mut game = identified_nonsteam_game(provider);
+            game.discovered_title = discovered.into();
+            game.source_game_id = source_id.into();
+            game.metadata.title = Some(selected.into());
+            game.catalogue_metadata = UserMetadata {
+                title: Some(selected.into()),
+                ..UserMetadata::default()
+            };
+            if provider == "epic" {
+                game.default_launch = LaunchTarget::Uri("com.epicgames.launcher://apps/namespace%3Aitem%3Aepic-app?action=launch&silent=true".into());
+                assert_eq!(
+                    catalogue::epic_namespace(&game).as_deref(),
+                    Some("namespace")
+                );
+            }
+            game.steam_launch = Some(SteamLaunch::Url("steam://rungameid/123".into()));
+            let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/verification")
+                .join(uuid::Uuid::new_v4().to_string());
+            let paths = ApplicationPaths {
+                data_directory: directory.join("data"),
+                cache_directory: directory.join("cache"),
+            };
+            let mut store = Store::open(&paths).unwrap();
+            store.save_games(std::slice::from_ref(&game)).unwrap();
+            let metadata = UserMetadata {
+                title: Some(discovered.into()),
+                description: Some(description.into()),
+                developer: Some(developer.into()),
+                genres: Some("RPG / Horror fixture".into()),
+            };
+            store
+                .save_cache(
+                    &native_catalogue_key(&game, selected).unwrap(),
+                    &Some(&metadata),
+                    now(),
+                )
+                .unwrap();
+            store
+                .save_cache(
+                    &format!("steam/catalogue-title-v1/{}", selected.to_lowercase()),
+                    &None::<String>,
+                    now(),
+                )
+                .unwrap();
+            let shared = Shared {
+                image_client: reqwest::blocking::Client::builder()
+                    .proxy(reqwest::Proxy::all("http://127.0.0.1:9").unwrap())
+                    .build()
+                    .unwrap(),
+                state: Mutex::new(State {
+                    games: BTreeMap::from([(game.id.clone(), game.clone())]),
+                    snapshot: Snapshot {
+                        ready: true,
+                        games: Arc::new(vec![game.clone()]),
+                        activity: Arc::new(Vec::new()),
+                        journal: Arc::new(Vec::new()),
+                        jobs: Vec::new(),
+                        settings: SettingsSnapshot::default(),
+                        paths,
+                        initialization_error: None,
+                        providers: Vec::new(),
+                    },
+                }),
+                store: Mutex::new(Some(store)),
+                subscribers: Mutex::new(Vec::new()),
+                cancellations: Mutex::new(BTreeMap::new()),
+                credentials: Mutex::new(BTreeMap::new()),
+                discovery: Vec::new(),
+                artwork: Vec::new(),
+                refreshing: AtomicBool::new(false),
+            };
+            let context = JobContext::new(Arc::new(AtomicBool::new(false)), |_| {});
+            shared.populate_catalogue_metadata(&game, &context).unwrap();
+            let enriched = shared.game(&game.id).unwrap();
+            assert_eq!(enriched.catalogue_metadata.title.as_deref(), Some(selected));
+            assert_eq!(
+                enriched.effective_metadata().description.as_deref(),
+                Some(description)
+            );
+            assert_eq!(
+                enriched.effective_metadata().developer.as_deref(),
+                Some(developer)
+            );
+            assert!(enriched.effective_metadata().genres.is_some());
+            let mut unchanged = enriched;
+            unchanged.catalogue_metadata = game.catalogue_metadata.clone();
+            assert_eq!(
+                unchanged, game,
+                "Native metadata must not replace manual fields, identity, artwork or launch routes"
+            );
+            let mut wrong_identity = game.clone();
+            wrong_identity.catalogue_metadata.title = Some("Another game: expansion".into());
+            assert!(native_catalogue_key(&wrong_identity, "Another game: expansion").is_none());
+        }
     }
 
     #[test]

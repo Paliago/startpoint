@@ -1,4 +1,6 @@
-use crate::{ApiError, ArtworkCandidate, ArtworkGame, ArtworkKind, DiscoveredGame, Game};
+use crate::{
+    ApiError, ArtworkCandidate, ArtworkGame, ArtworkKind, ArtworkPage, DiscoveredGame, Game,
+};
 use std::{
     path::PathBuf,
     sync::{
@@ -108,6 +110,26 @@ pub trait ArtworkProvider: Send + Sync {
         credential: &str,
         context: &JobContext,
     ) -> Result<Vec<ArtworkCandidate>, ApiError>;
+
+    /// Providers without pagination expose a single terminal page by default.
+    fn artwork_page(
+        &self,
+        game: &Game,
+        remote_game_id: Option<&str>,
+        kind: ArtworkKind,
+        page: u32,
+        credential: &str,
+        context: &JobContext,
+    ) -> Result<ArtworkPage, ApiError> {
+        Ok(ArtworkPage {
+            images: if page == 0 {
+                self.artwork(game, remote_game_id, kind, credential, context)?
+            } else {
+                Vec::new()
+            },
+            has_more: false,
+        })
+    }
 }
 
 #[cfg(test)]

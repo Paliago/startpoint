@@ -362,6 +362,11 @@ pub struct LauncherView {
     artwork_kind: ArtworkKind,
     artwork_images: Vec<ArtworkCandidate>,
     artwork_games: Vec<ArtworkGame>,
+    artwork_games_visible: usize,
+    artwork_page: u32,
+    artwork_has_more: bool,
+    artwork_page_loaded: bool,
+    artwork_page_pending: bool,
     artwork_job: Option<JobId>,
     identity_job: Option<(JobId, GameId)>,
     manual_import_job: Option<JobId>,
@@ -544,6 +549,11 @@ impl LauncherView {
             artwork_kind: ArtworkKind::Cover,
             artwork_images: Vec::new(),
             artwork_games: Vec::new(),
+            artwork_games_visible: 10,
+            artwork_page: 0,
+            artwork_has_more: false,
+            artwork_page_loaded: false,
+            artwork_page_pending: false,
             artwork_job: None,
             identity_job: None,
             manual_import_job: None,
@@ -584,7 +594,7 @@ impl LauncherView {
                     .placeholder("Your SteamGridDB API key")
                     .masked(true)
             }),
-            artwork_search: text_input("Search SteamGridDB by game title", false, window, cx),
+            artwork_search: text_input("Game title, SteamGridDB URL or #ID", false, window, cx),
             thumbnails: cx
                 .new(|cx| ArtworkImageCache::new(96, 64 * 1024 * 1024, 640 * 960 * 4, cx)),
             full_resolution_images: cx
@@ -837,6 +847,7 @@ impl LauncherView {
                 }
                 if Some(job.id) == self.artwork_job && !job.state.active() {
                     self.artwork_job = None;
+                    self.artwork_page_pending = false;
                     if job.state == JobState::Cancelled {
                         self.artwork_message = Some("Artwork request cancelled".into());
                     }
@@ -861,12 +872,15 @@ impl LauncherView {
                         None
                     };
                     self.artwork_games = games;
+                    self.artwork_games_visible = 10;
                 }
             }
             AppEvent::ArtworkFound {
                 job_id,
                 game_id,
                 kind,
+                page,
+                has_more,
                 images,
             } => {
                 if self.artwork_job == Some(job_id)
@@ -874,11 +888,22 @@ impl LauncherView {
                     && self.artwork_kind == kind
                 {
                     self.artwork_message = if images.is_empty() {
-                        Some("No artwork was found for this image type".into())
+                        Some(
+                            if has_more {
+                                "No usable images on this page. Try the next page."
+                            } else {
+                                "No artwork was found on this page."
+                            }
+                            .into(),
+                        )
                     } else {
                         None
                     };
                     self.artwork_images = images;
+                    self.artwork_page = page;
+                    self.artwork_has_more = has_more;
+                    self.artwork_page_loaded = true;
+                    self.artwork_page_pending = false;
                     self.artwork_games.clear();
                 }
             }
@@ -1018,7 +1043,7 @@ impl LauncherView {
         self.detail_closed = false;
         self.settings_open = false;
         self.detail_tab = DetailTab::Overview;
-        self.artwork_images.clear();
+        self.reset_artwork_pages();
         self.artwork_games.clear();
         self.artwork_message = None;
         self.reidentifying = false;
@@ -1121,13 +1146,23 @@ impl LauncherView {
         if let Some(id) = self.artwork_job.take() {
             self.api.cancel(id);
         }
+        self.artwork_page_pending = false;
+    }
+
+    fn reset_artwork_pages(&mut self) {
+        self.artwork_images.clear();
+        self.artwork_page = 0;
+        self.artwork_has_more = false;
+        self.artwork_page_loaded = false;
+        self.artwork_page_pending = false;
     }
 
     fn search_artwork(&mut self, cx: &mut Context<Self>) {
         if let Some(game_id) = self.selected.clone() {
             self.cancel_artwork();
-            self.artwork_images.clear();
+            self.reset_artwork_pages();
             self.artwork_games.clear();
+            self.artwork_games_visible = 10;
             self.artwork_message = None;
             let query = self.artwork_search.read(cx).value().to_string();
             self.artwork_job = self.submit(
@@ -1142,6 +1177,17 @@ impl LauncherView {
     }
 
     fn load_artwork(&mut self, remote_game_id: Option<String>, cx: &mut Context<Self>) {
+        self.cancel_artwork();
+        self.reset_artwork_pages();
+        self.load_artwork_page(0, remote_game_id, cx);
+    }
+
+    fn load_artwork_page(
+        &mut self,
+        page: u32,
+        remote_game_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if self.identity_job.is_some() {
             self.artwork_message =
                 Some("Saving the game identity; browse images when it finishes.".into());
@@ -1150,7 +1196,6 @@ impl LauncherView {
         }
         if let Some(game_id) = self.selected.clone() {
             self.cancel_artwork();
-            self.artwork_images.clear();
             self.artwork_message = None;
             self.artwork_job = self.submit(
                 Command::ListArtwork {
@@ -1165,9 +1210,11 @@ impl LauncherView {
                                 .map(|game| game.id)
                         }),
                     kind: self.artwork_kind,
+                    page,
                 },
                 cx,
             );
+            self.artwork_page_pending = self.artwork_job.is_some();
         }
     }
 
@@ -1180,7 +1227,7 @@ impl LauncherView {
                 self.cancel_artwork();
                 self.artwork_match = Some(matched.clone());
                 self.artwork_games.clear();
-                self.artwork_images.clear();
+                self.reset_artwork_pages();
                 self.identity_job = self
                     .submit(
                         Command::ReidentifyGame {
@@ -1221,7 +1268,7 @@ impl LauncherView {
         self.cancel_artwork();
         self.reidentifying = true;
         self.artwork_games.clear();
-        self.artwork_images.clear();
+        self.reset_artwork_pages();
         self.artwork_message = None;
         set_value(&self.artwork_search, &game.discovered_title, window, cx);
         self.artwork_search
@@ -4249,7 +4296,7 @@ impl LauncherView {
                                 .on_click(cx.listener(|view, _, window, cx| {
                                     view.cancel_artwork();
                                     view.artwork_kind = ArtworkKind::Background;
-                                    view.artwork_images.clear();
+                                    view.reset_artwork_pages();
                                     view.open_details(DetailTab::Artwork, window, cx)
                                 })),
                         )
@@ -4579,6 +4626,75 @@ impl LauncherView {
             .into_any_element()
     }
 
+    fn game_search_footer(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .when(!self.artwork_games.is_empty(), |footer| {
+                footer.child(hint(&format!(
+                    "Showing {} of {} returned game matches.",
+                    self.artwork_games_visible.min(self.artwork_games.len()),
+                    self.artwork_games.len()
+                )))
+            })
+            .when(
+                self.artwork_games_visible < self.artwork_games.len(),
+                |footer| {
+                    footer.child(
+                        button("load-more-game-matches", cx)
+                            .label("Load more games")
+                            .disabled(self.identity_job.is_some())
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                view.artwork_games_visible = view
+                                    .artwork_games_visible
+                                    .saturating_add(10)
+                                    .min(view.artwork_games.len());
+                                cx.notify();
+                            })),
+                    )
+                },
+            )
+    }
+
+    fn artwork_page_controls(&self, id: &'static str, cx: &mut Context<Self>) -> Stateful<Div> {
+        let busy = self.artwork_page_pending || self.identity_job.is_some();
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .gap_3()
+            .when(self.artwork_page_loaded, |row| {
+                row.child(
+                    button("previous-artwork-page", cx)
+                        .label("Previous page")
+                        .disabled(busy || self.artwork_page == 0)
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            if view.artwork_page > 0 {
+                                view.load_artwork_page(view.artwork_page - 1, None, cx);
+                            }
+                        })),
+                )
+                .child(hint(&format!(
+                    "Page {} · {} images",
+                    u64::from(self.artwork_page) + 1,
+                    self.artwork_images.len()
+                )))
+                .child(
+                    button("next-artwork-page", cx)
+                        .label("Next page")
+                        .disabled(busy || !self.artwork_has_more || self.artwork_page == u32::MAX)
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            if view.artwork_has_more
+                                && let Some(page) = view.artwork_page.checked_add(1)
+                            {
+                                view.load_artwork_page(page, None, cx);
+                            }
+                        })),
+                )
+            })
+    }
+
     fn artwork_picker(&self, game: &Game, cx: &mut Context<Self>) -> AnyElement {
         if self.reidentifying {
             return self.reidentify_picker(cx);
@@ -4609,7 +4725,7 @@ impl LauncherView {
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.cancel_artwork();
                                 view.artwork_kind = kind;
-                                view.artwork_images.clear();
+                                view.reset_artwork_pages();
                                 view.artwork_message = None;
                                 if view
                                     .snapshot
@@ -4690,6 +4806,7 @@ impl LauncherView {
                         .disabled(!key_configured),
                 ),
             )
+            .child(hint("SteamGridDB's name search returns a limited set of matches. Refine the title, or paste a SteamGridDB game URL / #ID to identify a specific game."))
             .child(
                 div()
                     .flex()
@@ -4725,7 +4842,7 @@ impl LauncherView {
             .when_some(self.artwork_message.clone(), |view, message| {
                 view.child(hint(&message))
             })
-            .children(self.artwork_games.iter().map(|game| {
+            .children(self.artwork_games.iter().take(self.artwork_games_visible).map(|game| {
                 let matched = game.clone();
                 button(SharedString::from(format!("match-{}", game.id)), cx)
                     .h(px(36.))
@@ -4735,6 +4852,8 @@ impl LauncherView {
                         view.choose_artwork_game(matched.clone(), cx)
                     }))
             }))
+            .child(self.game_search_footer(cx))
+            .child(self.artwork_page_controls("artwork-pager-top", cx))
             .child(
                 div().flex().flex_wrap().gap_3().children(
                     self.artwork_images
@@ -4796,6 +4915,7 @@ impl LauncherView {
                         }),
                 ),
             )
+            .child(self.artwork_page_controls("artwork-pager-bottom", cx))
             .into_any_element()
     }
 
@@ -4813,6 +4933,7 @@ impl LauncherView {
                 button("identify-configure", cx).label("Configure SteamGridDB")
                     .on_click(cx.listener(|view, _, window, cx| view.open_settings(&OpenSettings, window, cx)))))
             .child(input(&self.artwork_search, cx).large().disabled(!configured || saving))
+            .child(hint("Search by title, or paste a SteamGridDB game URL / #ID. SteamGridDB's game-name search does not provide additional server pages."))
             .child(div().flex().gap_2()
                 .child(button("identify-search", cx).primary().label("Search games").disabled(!configured || saving)
                     .on_click(cx.listener(|view, _, _, cx| view.search_artwork(cx))))
@@ -4826,12 +4947,13 @@ impl LauncherView {
                     }))))
             .when(self.artwork_job.is_some() || saving, |view| view.child(Spinner::new().small()))
             .when_some(self.artwork_message.clone(), |view, message| view.child(hint(&message)))
-            .children(self.artwork_games.iter().map(|game| {
+            .children(self.artwork_games.iter().take(self.artwork_games_visible).map(|game| {
                 let matched = game.clone();
                 button(SharedString::from(format!("identify-{}", game.id)), cx)
                     .w_full().label(format!("Use {}", game.name)).disabled(saving)
                     .on_click(cx.listener(move |view, _, _, cx| view.choose_artwork_game(matched.clone(), cx)))
             }))
+            .child(self.game_search_footer(cx))
             .into_any_element()
     }
 

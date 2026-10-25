@@ -1,6 +1,7 @@
 //! Application services, persistence, discovery and platform integrations.
 
 mod artwork;
+mod catalogue;
 mod discovery_paths;
 mod examples;
 mod platform;
