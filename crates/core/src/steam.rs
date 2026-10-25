@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use startpoint_sdk::{
     ApiError, DiscoveredGame, DiscoveryProvider, DiscoveryReport, DiscoverySettings, JobContext,
     LaunchTarget, ProviderDescriptor, UserMetadata,
@@ -35,20 +35,54 @@ struct CatalogueGenre {
     description: String,
 }
 
-pub(crate) fn metadata(
+#[derive(Deserialize)]
+struct CatalogueSearch {
+    items: Vec<CatalogueSearchItem>,
+}
+
+#[derive(Deserialize)]
+struct CatalogueSearchItem {
+    id: u32,
+    name: String,
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+/// Non-Steam installations may use Steam's public catalogue, but only when its
+/// result uniquely matches the explicitly identified title. Never pick the first
+/// fuzzy search result (which may be a sequel, expansion or bundle).
+pub(crate) fn app_id_for_title(
     client: &reqwest::blocking::Client,
-    app_id: &str,
+    title: &str,
     context: &JobContext,
-) -> Result<UserMetadata, ApiError> {
-    let app_id = app_id
-        .parse::<u32>()
-        .map_err(|_| ApiError::Validation("Invalid Steam application identifier".into()))?;
+) -> Result<Option<String>, ApiError> {
     context.checkpoint()?;
     let response = client
-        .get("https://store.steampowered.com/api/appdetails")
-        .query(&[("appids", app_id.to_string()), ("l", "english".into())])
+        .get("https://store.steampowered.com/api/storesearch/")
+        .query(&[("term", title), ("l", "english"), ("cc", "us")])
         .send()
         .map_err(|error| ApiError::Provider(format!("Steam catalogue: {error}")))?;
+    let search: CatalogueSearch = read_catalogue_response(response, context)?;
+    Ok(exact_app_id(&search.items, title))
+}
+
+fn exact_app_id(items: &[CatalogueSearchItem], title: &str) -> Option<String> {
+    let mut ids = items
+        .iter()
+        .filter(|item| {
+            item.kind == "app"
+                && item.id != 0
+                && item.name.trim().eq_ignore_ascii_case(title.trim())
+        })
+        .map(|item| item.id)
+        .collect::<std::collections::BTreeSet<_>>();
+    (ids.len() == 1).then(|| ids.pop_first().unwrap().to_string())
+}
+
+fn read_catalogue_response<T: DeserializeOwned>(
+    response: reqwest::blocking::Response,
+    context: &JobContext,
+) -> Result<T, ApiError> {
     if !response.status().is_success() {
         return Err(ApiError::Provider(format!(
             "Steam catalogue returned HTTP {}",
@@ -66,10 +100,26 @@ pub(crate) fn metadata(
         ));
     }
     context.checkpoint()?;
-    let mut response: BTreeMap<String, CatalogueResponse> = serde_json::from_slice(&bytes)
-        .map_err(|error| {
-            ApiError::Provider(format!("Invalid Steam catalogue response: {error}"))
-        })?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| ApiError::Provider(format!("Invalid Steam catalogue response: {error}")))
+}
+
+pub(crate) fn metadata(
+    client: &reqwest::blocking::Client,
+    app_id: &str,
+    context: &JobContext,
+) -> Result<UserMetadata, ApiError> {
+    let app_id = app_id
+        .parse::<u32>()
+        .map_err(|_| ApiError::Validation("Invalid Steam application identifier".into()))?;
+    context.checkpoint()?;
+    let response = client
+        .get("https://store.steampowered.com/api/appdetails")
+        .query(&[("appids", app_id.to_string()), ("l", "english".into())])
+        .send()
+        .map_err(|error| ApiError::Provider(format!("Steam catalogue: {error}")))?;
+    let mut response: BTreeMap<String, CatalogueResponse> =
+        read_catalogue_response(response, context)?;
     let response = response
         .remove(&app_id.to_string())
         .filter(|response| response.success)
@@ -127,6 +177,71 @@ pub(crate) fn metadata(
         ));
     }
     Ok(metadata)
+}
+
+#[cfg(test)]
+mod catalogue_tests {
+    use super::*;
+
+    fn search(document: &str, title: &str) -> Option<String> {
+        let search: CatalogueSearch = serde_json::from_str(document).unwrap();
+        exact_app_id(&search.items, title)
+    }
+
+    #[test]
+    fn exact_title_distinguishes_the_base_game_from_its_expansion() {
+        let results = r#"{"items":[
+            {"id":2138330,"name":"Cyberpunk 2077: Phantom Liberty","type":"app"},
+            {"id":1091500,"name":"Cyberpunk 2077","type":"app"},
+            {"id":2060310,"name":"Cyberpunk 2077 REDmod","type":"app"}] }"#;
+        assert_eq!(search(results, "Cyberpunk 2077"), Some("1091500".into()));
+        assert_eq!(
+            search(results, " cyberpunk 2077: phantom liberty "),
+            Some("2138330".into())
+        );
+        assert_eq!(search(results, "Cyberpunk"), None);
+    }
+
+    #[test]
+    fn ambiguous_titles_bundles_and_missing_results_are_not_guessed() {
+        assert_eq!(
+            search(
+                r#"{"items":[
+            {"id":1,"name":"Example","type":"app"},
+            {"id":2,"name":"Example","type":"app"}]}"#,
+                "Example"
+            ),
+            None
+        );
+        assert_eq!(
+            search(
+                r#"{"items":[{"id":1,"name":"Example","type":"bundle"}]}"#,
+                "Example"
+            ),
+            None
+        );
+        assert_eq!(
+            search(
+                r#"{"items":[{"id":0,"name":"Example","type":"app"}]}"#,
+                "Example"
+            ),
+            None
+        );
+        assert_eq!(search(r#"{"total":0,"items":[]}"#, "Example"), None);
+    }
+
+    #[test]
+    fn duplicate_results_for_the_same_application_are_not_ambiguous() {
+        assert_eq!(
+            search(
+                r#"{"items":[
+            {"id":1,"name":"Example","type":"app"},
+            {"id":1,"name":"Example","type":"app"}]}"#,
+                "Example"
+            ),
+            Some("1".into())
+        );
+    }
 }
 
 impl DiscoveryProvider for SteamProvider {

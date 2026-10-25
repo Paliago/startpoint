@@ -15,6 +15,16 @@ cargo run --locked
 The example library has isolated data and simulated launches. Use `--diagnostics` for discovery details.
 SteamGridDB artwork is optional; API keys stay in the OS credential store.
 
+During metadata/artwork refresh, Steam games use their app ID for catalogue text. Identified GOG, Epic and manual games also fill missing descriptions, developers and genres from Steam's public catalogue when the selected title has one exact, unambiguous match. Artwork identification alone does not guarantee a catalogue listing; fuzzy results, expansions and bundles are never substituted for a different title. Lookups are cached for a day. Manual metadata overrides remain untouched; re-identification clears only the previous identity's automatic text before refilling it.
+
+### Launch a GOG/Epic/manual game through Steam
+
+Open the game's editor → **Launch** → **Launch via**. Choose **Steam non-Steam shortcut**, select the saved shortcut (labelled with its Steam account ID), then **Save launch configuration**. Startpoint reads `userdata/<account ID>/config/shortcuts.vdf` on a worker, without changing Steam's files. **Refresh Steam shortcuts** reloads the list; restart Steam first if a newly added shortcut has not been written yet. The Steam directory override in Settings applies to this picker too.
+
+Alternatively choose **Steam launch URL**, paste `steam://rungameid/…`, or import the `.url` desktop shortcut Steam created. Import only fills the draft; save it to apply. Only numeric Steam game-launch URLs are accepted—not installation, uninstallation or other Steam commands. Steam uses its own launch options and Steam Input configuration. Sign in to the appropriate Steam account first; Startpoint does not switch accounts (on Windows it blocks a known account mismatch for a linked shortcut).
+
+This changes only the launch route: the original store, metadata, artwork, notes and history stay on the same game. Linked shortcuts use Steam's saved app ID, not a title-derived guess. A removed/changed shortcut produces a relink error and never silently falls back to an executable. **Restore launcher default** removes the Steam route and executable override; **Executable / application bundle** retains direct-launch support. Existing libraries keep their original launch behaviour until you save a different route.
+
 On macOS without the Metal compiler, add `--features runtime-shaders` to Cargo commands.
 
 ## Windows executable

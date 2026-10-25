@@ -1,4 +1,4 @@
-use crate::{artwork, platform, steam, storage::Store};
+use crate::{artwork, platform, steam, steam_shortcuts, storage::Store};
 use async_channel::{Receiver, Sender};
 use startpoint_sdk::*;
 use std::{
@@ -345,6 +345,7 @@ impl Shared {
             credential_status,
             appearance,
             discovery_directories: BTreeMap::new(),
+            ..SettingsSnapshot::default()
         };
         // Resolve paths outside the state lock: Steam location may read platform settings.
         settings.discovery_directories = crate::discovery_paths::resolve(&settings, &library);
@@ -613,6 +614,18 @@ impl Shared {
     ) -> Result<(), ApiError> {
         match command {
             Command::RefreshLibrary => self.refresh(context),
+            Command::RefreshSteamShortcuts => self.refresh_steam_shortcuts(context),
+            Command::ReadSteamShortcutUrl { game_id, path } => {
+                self.game(&game_id)?;
+                let uri = steam_shortcuts::read_url(&path)?;
+                context.checkpoint()?;
+                self.publish(AppEvent::SteamShortcutUrlRead {
+                    job_id,
+                    game_id,
+                    uri,
+                });
+                Ok(())
+            }
             Command::AddManualGame { title, launch } => {
                 let title = title.trim().to_string();
                 if title.is_empty() || title.len() > 500 {
@@ -645,6 +658,7 @@ impl Shared {
                     install_directory,
                     default_launch,
                     launch_override: None,
+                    steam_launch: None,
                     metadata: UserMetadata::default(),
                     catalogue_metadata: UserMetadata::default(),
                     favourite: false,
@@ -841,6 +855,22 @@ impl Shared {
                 }
                 self.update_game(&game_id, |game| {
                     game.launch_override = launch;
+                    game.steam_launch = None;
+                    Ok(())
+                })
+            }
+            Command::SetSteamLaunch { game_id, launch } => {
+                self.game(&game_id)?;
+                let launch = steam_shortcuts::validate(
+                    launch,
+                    self.snapshot().settings.steam_directory.as_deref(),
+                    context,
+                    false,
+                )?;
+                context.checkpoint()?;
+                self.update_game(&game_id, |game| {
+                    game.steam_launch = Some(launch);
+                    game.launch_override = None;
                     Ok(())
                 })
             }
@@ -853,18 +883,30 @@ impl Shared {
                     ));
                     return self.record_launch(&game_id);
                 }
-                if !game.available && game.launch_override.is_none() {
+                if !game.available && !game.has_launch_override() {
                     return Err(ApiError::Validation(
                         "This installation is currently unavailable".into(),
                     ));
                 }
-                let schemes = self
+                let mut schemes = self
                     .discovery
                     .iter()
                     .find(|provider| provider.descriptor().id == game.provider_id)
                     .map(|provider| provider.uri_schemes())
                     .unwrap_or_default();
-                platform::launch(game.effective_launch(), &schemes)?;
+                let target = if let Some(launch) = game.steam_launch.clone() {
+                    let launch = steam_shortcuts::validate(
+                        launch,
+                        self.snapshot().settings.steam_directory.as_deref(),
+                        context,
+                        true,
+                    )?;
+                    schemes = vec!["steam".into()];
+                    LaunchTarget::Uri(launch.uri())
+                } else {
+                    game.effective_launch()
+                };
+                platform::launch(target, &schemes)?;
                 self.record_launch(&game_id)
             }
             Command::SetArtworkCredential {
@@ -960,6 +1002,7 @@ impl Shared {
                     Ok(())
                 })?;
                 self.refresh_discovery_directories();
+                self.refresh_steam_shortcuts(context)?;
                 self.publish(AppEvent::SettingsChanged);
                 Ok(())
             }
@@ -1308,6 +1351,7 @@ impl Shared {
                             install_directory: discovered.install_directory,
                             default_launch: discovered.launch_target,
                             launch_override: None,
+                            steam_launch: None,
                             metadata: UserMetadata::default(),
                             catalogue_metadata: UserMetadata::default(),
                             favourite: false,
@@ -1452,6 +1496,27 @@ impl Shared {
         Ok(())
     }
 
+    fn refresh_steam_shortcuts(&self, context: &JobContext) -> Result<(), ApiError> {
+        context.report("Reading saved non-Steam shortcuts from Steam");
+        let directory = self.snapshot().settings.steam_directory;
+        let (shortcuts, warnings) = match steam_shortcuts::root(directory.as_deref())
+            .and_then(|root| steam_shortcuts::scan(&root, context))
+        {
+            Ok(result) => result,
+            Err(ApiError::Cancelled) => return Err(ApiError::Cancelled),
+            Err(error) => (Vec::new(), vec![error.to_string()]),
+        };
+        context.checkpoint()?;
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let settings = &mut state.snapshot.settings;
+        settings.steam_shortcuts = shortcuts;
+        settings.steam_shortcut_warnings = warnings;
+        settings.steam_shortcuts_loaded = true;
+        drop(state);
+        self.publish(AppEvent::SettingsChanged);
+        Ok(())
+    }
+
     fn refresh_discovery_directories(&self) {
         let snapshot = self.snapshot();
         let directories = crate::discovery_paths::resolve(&snapshot.settings, &snapshot.games);
@@ -1521,33 +1586,12 @@ impl Shared {
         let mut game = self.game(game_id)?;
         let credential = self.credential("steamgriddb", false)?;
         let mut catalogue_error = None;
-        if matches!(game.provider_id.as_str(), "steam" | "example")
-            && (game.catalogue_metadata.title.is_none()
-                || game.catalogue_metadata.description.is_none()
-                || game.catalogue_metadata.developer.is_none()
-                || game.catalogue_metadata.genres.is_none())
-        {
-            let key = format!("steam/catalogue/{}", game.source_game_id);
-            let metadata = match self.store(|store| store.cached(&key, now()))? {
-                Some(metadata) => metadata,
-                None => match steam::metadata(&self.image_client, &game.source_game_id, context) {
-                    Ok(metadata) => {
-                        self.store(|store| store.save_cache(&key, &metadata, now()))?;
-                        metadata
-                    }
-                    Err(ApiError::NoArtwork) => game.catalogue_metadata.clone(),
-                    Err(error @ ApiError::Cancelled) => return Err(error),
-                    Err(error) => {
-                        catalogue_error = Some(error);
-                        game.catalogue_metadata.clone()
-                    }
-                },
-            };
-            context.checkpoint()?;
-            self.update_game(game_id, |game| {
-                game.catalogue_metadata = metadata;
-                Ok(())
-            })?;
+        if matches!(game.provider_id.as_str(), "steam" | "example") {
+            match self.populate_catalogue_metadata(&game, context) {
+                Ok(()) | Err(ApiError::NoArtwork) => {}
+                Err(error @ ApiError::Cancelled) => return Err(error),
+                Err(error) => catalogue_error = Some(error),
+            }
             game = self.game(game_id)?;
         }
         if !game.artwork_game_ids.contains_key("steamgriddb")
@@ -1585,6 +1629,14 @@ impl Shared {
                 }
                 Ok(())
             })?;
+            game = self.game(game_id)?;
+        }
+        if !matches!(game.provider_id.as_str(), "steam" | "example") {
+            match self.populate_catalogue_metadata(&game, context) {
+                Ok(()) | Err(ApiError::NoArtwork) => {}
+                Err(error @ ApiError::Cancelled) => return Err(error),
+                Err(error) => catalogue_error = Some(error),
+            }
             game = self.game(game_id)?;
         }
         for kind in [
@@ -1630,6 +1682,103 @@ impl Shared {
         }
         catalogue_error.map_or(Ok(()), Err)
     }
+
+    fn populate_catalogue_metadata(
+        &self,
+        game: &Game,
+        context: &JobContext,
+    ) -> Result<(), ApiError> {
+        if [
+            &game.catalogue_metadata.title,
+            &game.catalogue_metadata.description,
+            &game.catalogue_metadata.developer,
+            &game.catalogue_metadata.genres,
+        ]
+        .iter()
+        .all(|field| field.is_some())
+        {
+            return Ok(());
+        }
+        let Some(target) = catalogue_target(game) else {
+            return Ok(());
+        };
+        let app_id = match &target {
+            CatalogueTarget::Steam(id) => id.clone(),
+            CatalogueTarget::Identified { title, .. } => {
+                // Cache misses as well as matches to avoid repeating searches for
+                // games with no Steam listing during every library refresh.
+                let key = format!("steam/catalogue-title-v1/{}", title.trim().to_lowercase());
+                let app_id = match self
+                    .store(|store| store.cached::<Option<String>>(&key, now()))?
+                {
+                    Some(app_id) => app_id,
+                    None => {
+                        let app_id = steam::app_id_for_title(&self.image_client, title, context)?;
+                        self.store(|store| store.save_cache(&key, &app_id, now()))?;
+                        app_id
+                    }
+                };
+                let Some(app_id) = app_id else {
+                    return Ok(());
+                };
+                app_id
+            }
+        };
+        let key = format!("steam/catalogue/{app_id}");
+        let metadata: UserMetadata = match self.store(|store| store.cached(&key, now()))? {
+            Some(metadata) => metadata,
+            None => {
+                let metadata = steam::metadata(&self.image_client, &app_id, context)?;
+                self.store(|store| store.save_cache(&key, &metadata, now()))?;
+                metadata
+            }
+        };
+        // Verify the catalogue result too: a stale search cache must never mix
+        // an expansion/sequel's text into the selected identity.
+        if let CatalogueTarget::Identified { title, .. } = &target
+            && !metadata
+                .title
+                .as_deref()
+                .is_some_and(|name| name.trim().eq_ignore_ascii_case(title.trim()))
+        {
+            return Ok(());
+        }
+        context.checkpoint()?;
+        self.update_game(&game.id, |current| {
+            merge_catalogue_metadata(current, &target, metadata);
+            Ok(())
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CatalogueTarget {
+    Steam(String),
+    Identified { title: String, artwork_id: String },
+}
+
+fn catalogue_target(game: &Game) -> Option<CatalogueTarget> {
+    if matches!(game.provider_id.as_str(), "steam" | "example") {
+        Some(CatalogueTarget::Steam(game.source_game_id.clone()))
+    } else {
+        Some(CatalogueTarget::Identified {
+            title: game.catalogue_metadata.title.clone()?,
+            artwork_id: game.artwork_game_ids.get("steamgriddb")?.clone(),
+        })
+    }
+}
+
+fn merge_catalogue_metadata(game: &mut Game, target: &CatalogueTarget, metadata: UserMetadata) {
+    // Refresh and re-identification can run on different workers. Do not publish
+    // a result belonging to the previous selection. User overrides stay separate.
+    if catalogue_target(game).as_ref() != Some(target) {
+        return;
+    }
+    let current = &mut game.catalogue_metadata;
+    current.title = current.title.take().or(metadata.title);
+    current.description = current.description.take().or(metadata.description);
+    current.developer = current.developer.take().or(metadata.developer);
+    current.genres = current.genres.take().or(metadata.genres);
 }
 
 struct RefreshGuard<'a>(&'a AtomicBool);
@@ -1680,6 +1829,13 @@ fn restore_appearance_settings(
 }
 
 fn apply_reidentification(game: &mut Game, matched: &ArtworkGame) {
+    if game.artwork_game_ids.get("steamgriddb") != Some(&matched.id)
+        || game.catalogue_metadata.title.as_deref() != Some(matched.name.trim())
+    {
+        // Automatic text belongs to the previous identity; hand-written fields
+        // in game.metadata must survive a correction.
+        game.catalogue_metadata = UserMetadata::default();
+    }
     game.metadata.title = Some(matched.name.trim().to_string());
     game.catalogue_metadata.title = Some(matched.name.trim().to_string());
     game.artwork_game_ids
@@ -1756,6 +1912,344 @@ fn now() -> u64 {
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    fn identified_nonsteam_game(provider: &str) -> Game {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("{provider}:1423049311"), "provider_id": provider,
+            "source_game_id": "1423049311", "discovered_title": "Cyberpunk 2077",
+            "install_directory": "game", "default_launch": {"Uri":"steam://rungameid/1091500"},
+            "launch_override": null, "metadata": {"title":"My custom title"},
+            "catalogue_metadata": {"title":"Cyberpunk 2077: Phantom Liberty"},
+            "favourite": true, "available": true, "last_launched": 123,
+            "artwork": {}, "artwork_history": [], "artwork_game_ids": {"steamgriddb":"5461202"}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn steam_launch_routes_persist_on_the_original_game_and_reset_without_losing_data() {
+        let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/verification")
+            .join(uuid::Uuid::new_v4().to_string());
+        let paths = ApplicationPaths {
+            data_directory: directory.join("data"),
+            cache_directory: directory.join("cache"),
+        };
+        let steam = directory.join("Steam");
+        let config = steam.join("userdata/42/config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("shortcuts.vdf"),
+            steam_shortcuts::fixture_bytes(&[(0x9123_4567, "Cyberpunk via Steam")]),
+        )
+        .unwrap();
+        let game = identified_nonsteam_game("gog");
+        let mut store = Store::open(&paths).unwrap();
+        store.save_games(std::slice::from_ref(&game)).unwrap();
+        store.save_setting("steam_directory", &Some(steam)).unwrap();
+        drop(store);
+        let api = LauncherBuilder::new().build(paths.clone()).unwrap();
+        let events = api.subscribe();
+        let submit = |command: Command, expected| {
+            let job_id = api.submit(command).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                assert!(Instant::now() < deadline, "Steam launch command timed out");
+                match events.try_recv() {
+                    Ok(AppEvent::JobChanged(job)) if job.id == job_id && !job.state.active() => {
+                        assert_eq!(job.state, expected, "{:?}", job.error);
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(_) => std::thread::sleep(Duration::from_millis(2)),
+                }
+            }
+        };
+        submit(Command::RefreshSteamShortcuts, JobState::Completed);
+        let settings = api.snapshot().settings;
+        assert!(settings.steam_shortcuts_loaded);
+        assert_eq!(settings.steam_shortcuts.len(), 1);
+        assert_eq!(settings.steam_shortcuts[0].account_id, 42);
+        let launch = settings.steam_shortcuts[0].launch();
+        submit(
+            Command::SetSteamLaunch {
+                game_id: game.id.clone(),
+                launch: launch.clone(),
+            },
+            JobState::Completed,
+        );
+        let saved = api.snapshot().games[0].clone();
+        assert_eq!(saved.effective_launch(), LaunchTarget::Uri(launch.uri()));
+        assert!(saved.has_launch_override());
+        let mut original = saved.clone();
+        original.steam_launch = None;
+        assert_eq!(
+            original, game,
+            "A new launch route must not create or re-identify a library entry"
+        );
+        let mut corrected = saved.clone();
+        apply_reidentification(
+            &mut corrected,
+            &ArtworkGame {
+                id: "999".into(),
+                name: "Corrected title".into(),
+            },
+        );
+        assert_eq!(corrected.steam_launch, saved.steam_launch);
+        submit(
+            Command::SetSteamLaunch {
+                game_id: game.id.clone(),
+                launch: SteamLaunch::Url("steam://uninstall/123".into()),
+            },
+            JobState::Failed,
+        );
+        assert_eq!(api.snapshot().games[0], saved);
+        submit(
+            Command::SetSteamLaunch {
+                game_id: game.id.clone(),
+                launch: SteamLaunch::Url("steam://rungameid/000123".into()),
+            },
+            JobState::Completed,
+        );
+        assert_eq!(
+            api.snapshot().games[0].steam_launch,
+            Some(SteamLaunch::Url("steam://rungameid/123".into()))
+        );
+        let reopened = LauncherBuilder::new().build(paths).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !reopened.snapshot().ready {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(reopened.snapshot().games[0], api.snapshot().games[0]);
+        let executable = ExecutableLaunch {
+            executable: std::env::current_exe().unwrap(),
+            arguments: vec!["--list".into()],
+            working_directory: None,
+        };
+        submit(
+            Command::SetLaunchOverride {
+                game_id: game.id.clone(),
+                launch: Some(executable.clone()),
+            },
+            JobState::Completed,
+        );
+        assert!(api.snapshot().games[0].steam_launch.is_none());
+        assert_eq!(
+            api.snapshot().games[0].effective_launch(),
+            LaunchTarget::Executable(executable)
+        );
+        submit(
+            Command::SetLaunchOverride {
+                game_id: game.id.clone(),
+                launch: None,
+            },
+            JobState::Completed,
+        );
+        assert_eq!(api.snapshot().games[0], game);
+        let mut old_document = serde_json::to_value(&game).unwrap();
+        old_document.as_object_mut().unwrap().remove("steam_launch");
+        let restored: Game = serde_json::from_value(old_document).unwrap();
+        assert_eq!(restored, game);
+    }
+
+    struct EmptyArtwork;
+    impl ArtworkProvider for EmptyArtwork {
+        fn descriptor(&self) -> ProviderDescriptor {
+            ProviderDescriptor {
+                id: "steamgriddb".into(),
+                name: "Fixture artwork".into(),
+            }
+        }
+        fn image_hosts(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn requires_credential(&self) -> bool {
+            false
+        }
+        fn search(&self, _: &str, _: &str, _: &JobContext) -> Result<Vec<ArtworkGame>, ApiError> {
+            panic!("An identified game must not be searched again")
+        }
+        fn artwork(
+            &self,
+            _: &Game,
+            _: Option<&str>,
+            _: ArtworkKind,
+            _: &str,
+            _: &JobContext,
+        ) -> Result<Vec<ArtworkCandidate>, ApiError> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn identified_nonsteam_games_backfill_cached_text_without_changing_user_data() {
+        for provider in ["gog", "epic", "manual"] {
+            let game = identified_nonsteam_game(provider);
+            let directory = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/verification")
+                .join(uuid::Uuid::new_v4().to_string());
+            let paths = ApplicationPaths {
+                data_directory: directory.join("data"),
+                cache_directory: directory.join("cache"),
+            };
+            let mut store = Store::open(&paths).unwrap();
+            store.save_games(std::slice::from_ref(&game)).unwrap();
+            store
+                .save_cache(
+                    "steam/catalogue-title-v1/cyberpunk 2077: phantom liberty",
+                    &Some("2138330"),
+                    now(),
+                )
+                .unwrap();
+            let metadata = UserMetadata {
+                title: Some("Cyberpunk 2077: Phantom Liberty".into()),
+                description: Some("Expansion description".into()),
+                developer: Some("CD PROJEKT RED".into()),
+                genres: Some("RPG".into()),
+            };
+            store
+                .save_cache("steam/catalogue/2138330", &metadata, now())
+                .unwrap();
+            let shared = Shared {
+                image_client: reqwest::blocking::Client::new(),
+                state: Mutex::new(State {
+                    games: BTreeMap::from([(game.id.clone(), game.clone())]),
+                    snapshot: Snapshot {
+                        ready: true,
+                        games: Arc::new(vec![game.clone()]),
+                        activity: Arc::new(Vec::new()),
+                        journal: Arc::new(Vec::new()),
+                        jobs: Vec::new(),
+                        settings: SettingsSnapshot::default(),
+                        paths,
+                        initialization_error: None,
+                        providers: Vec::new(),
+                    },
+                }),
+                store: Mutex::new(Some(store)),
+                subscribers: Mutex::new(Vec::new()),
+                cancellations: Mutex::new(BTreeMap::new()),
+                credentials: Mutex::new(BTreeMap::from([(
+                    "steamgriddb".into(),
+                    Some(String::new()),
+                )])),
+                discovery: Vec::new(),
+                artwork: vec![Arc::new(EmptyArtwork)],
+                refreshing: AtomicBool::new(false),
+            };
+            let context = JobContext::new(Arc::new(AtomicBool::new(false)), |_| {});
+            shared.populate_game(&game.id, &context).unwrap();
+            let enriched = shared.game(&game.id).unwrap();
+            assert_eq!(enriched.catalogue_metadata, metadata);
+            assert_eq!(
+                enriched.effective_metadata().description.as_deref(),
+                Some("Expansion description")
+            );
+            let mut unchanged = enriched.clone();
+            unchanged.catalogue_metadata = game.catalogue_metadata.clone();
+            assert_eq!(
+                unchanged, game,
+                "{provider}: enrichment changed user-owned data"
+            );
+            // It is persisted and repeated refreshes do not need another lookup.
+            assert_eq!(shared.store(|store| store.games()).unwrap()[0], enriched);
+            shared.populate_game(&game.id, &context).unwrap();
+            assert_eq!(shared.game(&game.id).unwrap(), enriched);
+
+            // A stale/mismatched catalogue record and a cached miss must both
+            // leave this identified game intact, without substituting base-game text.
+            shared
+                .update_game(&game.id, |current| {
+                    current.catalogue_metadata = game.catalogue_metadata.clone();
+                    Ok(())
+                })
+                .unwrap();
+            let mut wrong = metadata.clone();
+            wrong.title = Some("Cyberpunk 2077".into());
+            shared
+                .store(|store| store.save_cache("steam/catalogue/2138330", &wrong, now()))
+                .unwrap();
+            shared.populate_game(&game.id, &context).unwrap();
+            assert_eq!(shared.game(&game.id).unwrap(), game);
+            shared
+                .store(|store| {
+                    store.save_cache(
+                        "steam/catalogue-title-v1/cyberpunk 2077: phantom liberty",
+                        &None::<String>,
+                        now(),
+                    )
+                })
+                .unwrap();
+            shared.populate_game(&game.id, &context).unwrap();
+            assert_eq!(shared.game(&game.id).unwrap(), game);
+        }
+    }
+
+    #[test]
+    fn reidentification_drops_old_automatic_text_but_retains_manual_fields() {
+        let mut game = identified_nonsteam_game("gog");
+        game.metadata.description = Some("My description".into());
+        game.catalogue_metadata.description = Some("Old expansion description".into());
+        game.catalogue_metadata.developer = Some("Old developer".into());
+        game.catalogue_metadata.genres = Some("Old genres".into());
+        let old_target = catalogue_target(&game).unwrap();
+        let old_metadata = game.catalogue_metadata.clone();
+        apply_reidentification(
+            &mut game,
+            &ArtworkGame {
+                id: "5460000".into(),
+                name: "Cyberpunk 2077".into(),
+            },
+        );
+        assert_eq!(game.metadata.description.as_deref(), Some("My description"));
+        assert_eq!(
+            game.catalogue_metadata,
+            UserMetadata {
+                title: Some("Cyberpunk 2077".into()),
+                ..UserMetadata::default()
+            }
+        );
+        let corrected = game.clone();
+        merge_catalogue_metadata(&mut game, &old_target, old_metadata);
+        assert_eq!(
+            game, corrected,
+            "An old worker result must not restore stale metadata"
+        );
+        let target = catalogue_target(&game).unwrap();
+        merge_catalogue_metadata(
+            &mut game,
+            &target,
+            UserMetadata {
+                description: Some("New automatic description".into()),
+                ..UserMetadata::default()
+            },
+        );
+        assert_eq!(
+            game.effective_metadata().description.as_deref(),
+            Some("My description")
+        );
+    }
+
+    #[test]
+    fn metadata_lookup_uses_store_ids_only_for_steam_and_selected_names_for_other_sources() {
+        let mut game = identified_nonsteam_game("gog");
+        assert_eq!(
+            catalogue_target(&game),
+            Some(CatalogueTarget::Identified {
+                title: "Cyberpunk 2077: Phantom Liberty".into(),
+                artwork_id: "5461202".into(),
+            })
+        );
+        game.artwork_game_ids.clear();
+        assert_eq!(catalogue_target(&game), None);
+        game.provider_id = "steam".into();
+        game.source_game_id = "1091500".into();
+        assert_eq!(
+            catalogue_target(&game),
+            Some(CatalogueTarget::Steam("1091500".into()))
+        );
+    }
 
     #[test]
     fn local_store_discovery_preserves_edits_and_handles_partial_scans() {

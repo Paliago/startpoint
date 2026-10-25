@@ -24,6 +24,49 @@ pub enum LaunchTarget {
     ApplicationBundle(ExecutableLaunch),
 }
 
+/// A launch route, independent of the game's original store and identity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SteamLaunch {
+    Shortcut {
+        account_id: u32,
+        app_id: u32,
+        name: String,
+    },
+    Url(String),
+}
+
+impl SteamLaunch {
+    pub fn uri(&self) -> String {
+        match self {
+            Self::Shortcut { app_id, .. } => {
+                // Use Steam's saved appid, not a hash reconstructed from the name.
+                let game_id = (u64::from(*app_id) << 32) | 0x0200_0000;
+                format!("steam://rungameid/{game_id}")
+            }
+            Self::Url(uri) => uri.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SteamShortcut {
+    pub account_id: u32,
+    pub app_id: u32,
+    pub name: String,
+    pub executable: String,
+    pub start_directory: String,
+}
+
+impl SteamShortcut {
+    pub fn launch(&self) -> SteamLaunch {
+        SteamLaunch::Shortcut {
+            account_id: self.account_id,
+            app_id: self.app_id,
+            name: self.name.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserMetadata {
     pub title: Option<String>,
@@ -80,6 +123,8 @@ pub struct Game {
     pub install_directory: PathBuf,
     pub default_launch: LaunchTarget,
     pub launch_override: Option<ExecutableLaunch>,
+    #[serde(default)]
+    pub steam_launch: Option<SteamLaunch>,
     pub metadata: UserMetadata,
     #[serde(default)]
     pub catalogue_metadata: UserMetadata,
@@ -147,6 +192,9 @@ impl Game {
     }
 
     pub fn effective_launch(&self) -> LaunchTarget {
+        if let Some(launch) = &self.steam_launch {
+            return LaunchTarget::Uri(launch.uri());
+        }
         match &self.launch_override {
             Some(launch)
                 if launch
@@ -159,6 +207,10 @@ impl Game {
             Some(launch) => LaunchTarget::Executable(launch.clone()),
             None => self.default_launch.clone(),
         }
+    }
+
+    pub fn has_launch_override(&self) -> bool {
+        self.launch_override.is_some() || self.steam_launch.is_some()
     }
 }
 
@@ -327,6 +379,10 @@ pub struct SettingsSnapshot {
     pub gog_directory: Option<PathBuf>,
     /// Resolved discovery locations for display; never persisted as overrides.
     pub discovery_directories: BTreeMap<String, Vec<PathBuf>>,
+    /// Read-only, worker-resolved non-Steam shortcuts, with their Steam account IDs.
+    pub steam_shortcuts: Vec<SteamShortcut>,
+    pub steam_shortcut_warnings: Vec<String>,
+    pub steam_shortcuts_loaded: bool,
     pub appearance: AppearanceSettings,
 }
 
@@ -401,6 +457,11 @@ pub struct Snapshot {
 #[derive(Clone)]
 pub enum Command {
     RefreshLibrary,
+    RefreshSteamShortcuts,
+    ReadSteamShortcutUrl {
+        game_id: GameId,
+        path: PathBuf,
+    },
     AddManualGame {
         title: String,
         launch: ExecutableLaunch,
@@ -441,6 +502,10 @@ pub enum Command {
     SetLaunchOverride {
         game_id: GameId,
         launch: Option<ExecutableLaunch>,
+    },
+    SetSteamLaunch {
+        game_id: GameId,
+        launch: SteamLaunch,
     },
     LaunchGame {
         game_id: GameId,
@@ -500,6 +565,9 @@ impl Command {
         matches!(
             self,
             Self::RefreshLibrary
+                | Self::RefreshSteamShortcuts
+                | Self::ReadSteamShortcutUrl { .. }
+                | Self::SetSteamLaunch { .. }
                 | Self::ReidentifyGame { .. }
                 | Self::SetArtworkCredential { .. }
                 | Self::VerifyArtworkCredential { .. }
@@ -513,6 +581,8 @@ impl Command {
     pub fn label(&self) -> &'static str {
         match self {
             Self::RefreshLibrary => "Refreshing installed games",
+            Self::RefreshSteamShortcuts => "Reading Steam shortcuts",
+            Self::ReadSteamShortcutUrl { .. } => "Reading Steam desktop shortcut",
             Self::AddManualGame { .. } => "Adding game",
             Self::RemoveManualGame { .. } => "Removing game",
             Self::UpdateMetadata { .. } => "Saving metadata",
@@ -523,6 +593,7 @@ impl Command {
             Self::SaveJournalEntry { .. } => "Saving journal entry",
             Self::DeleteJournalEntry { .. } => "Deleting journal entry",
             Self::SetLaunchOverride { .. } => "Saving launch configuration",
+            Self::SetSteamLaunch { .. } => "Saving Steam launch configuration",
             Self::LaunchGame { .. } => "Launching game",
             Self::SetArtworkCredential { .. } => "Saving artwork provider credentials",
             Self::VerifyArtworkCredential { .. } => "Checking artwork provider connection",
@@ -545,6 +616,11 @@ pub enum AppEvent {
     LibraryChanged,
     ArtworkCacheChanged,
     SettingsChanged,
+    SteamShortcutUrlRead {
+        job_id: JobId,
+        game_id: GameId,
+        uri: String,
+    },
     JobChanged(JobStatus),
     GameAdded {
         job_id: JobId,

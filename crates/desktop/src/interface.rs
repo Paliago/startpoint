@@ -30,7 +30,7 @@ use startpoint_sdk::{
     AppEvent, AppearanceMode, AppearanceSettings, Application as LauncherApplication, ArtworkAsset,
     ArtworkCandidate, ArtworkGame, ArtworkKind, Command, CredentialStatus, ExecutableLaunch, Game,
     GameId, JobId, JobState, LaunchTarget, LibraryDensity, LibraryLayout, Snapshot, StartScreen,
-    UserMetadata,
+    SteamLaunch, SteamShortcut, UserMetadata,
 };
 use std::{
     collections::BTreeMap,
@@ -243,6 +243,25 @@ impl DetailTab {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LaunchMode {
+    Default,
+    SteamShortcut,
+    SteamUrl,
+    Executable,
+}
+
+impl LaunchMode {
+    fn for_game(game: &Game) -> Self {
+        match &game.steam_launch {
+            Some(SteamLaunch::Shortcut { .. }) => Self::SteamShortcut,
+            Some(SteamLaunch::Url(_)) => Self::SteamUrl,
+            None if game.launch_override.is_some() => Self::Executable,
+            None => Self::Default,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LibraryGameAction {
     Launch,
@@ -294,6 +313,7 @@ impl Render for SidebarResize {
 enum PickerPurpose {
     AddGame,
     LaunchOverride(GameId),
+    SteamUrl(GameId),
     Artwork(GameId, ArtworkKind),
     SteamDirectory,
     EpicDirectory,
@@ -364,6 +384,13 @@ pub struct LauncherView {
     journal_job: Option<(JobId, GameId, String)>,
     activity_month: NaiveDate,
     activity_day: NaiveDate,
+    launch_mode: LaunchMode,
+    steam_shortcut: Option<SteamLaunch>,
+    steam_url: Entity<InputState>,
+    steam_shortcuts_job: Option<JobId>,
+    steam_url_import_job: Option<JobId>,
+    launch_save_job: Option<(JobId, GameId)>,
+    launch_message: Option<String>,
     executable: Entity<InputState>,
     arguments: Entity<TextareaState>,
     working_directory: Entity<InputState>,
@@ -542,6 +569,13 @@ impl LauncherView {
                 .with_day(1)
                 .unwrap_or_else(|| Local::now().date_naive()),
             activity_day: Local::now().date_naive(),
+            launch_mode: LaunchMode::Default,
+            steam_shortcut: None,
+            steam_url: text_input("steam://rungameid/…", false, window, cx),
+            steam_shortcuts_job: None,
+            steam_url_import_job: None,
+            launch_save_job: None,
+            launch_message: None,
             executable: text_input("Default launcher", false, window, cx),
             arguments: textarea_input("One argument per line", window, cx),
             working_directory: text_input("Executable directory", false, window, cx),
@@ -640,6 +674,20 @@ impl LauncherView {
             self.apply_appearance(window, cx);
         }
         match event {
+            AppEvent::SteamShortcutUrlRead {
+                job_id,
+                game_id,
+                uri,
+            } => {
+                if self.steam_url_import_job == Some(job_id)
+                    && self.selected.as_ref() == Some(&game_id)
+                {
+                    self.launch_mode = LaunchMode::SteamUrl;
+                    set_value(&self.steam_url, &uri, window, cx);
+                    self.launch_message =
+                        Some("Steam URL imported. Save launch configuration to use it.".into());
+                }
+            }
             AppEvent::LibraryChanged => {
                 self.filter(cx);
                 self.ensure_selection(window, cx);
@@ -705,6 +753,26 @@ impl LauncherView {
             AppEvent::SettingsChanged => {}
             AppEvent::JobChanged(job) => {
                 crate::diagnostics::record(&format!("job {:?} {:?}", job.id, job.state));
+                if self.steam_shortcuts_job == Some(job.id) && !job.state.active() {
+                    self.steam_shortcuts_job = None;
+                }
+                if self.steam_url_import_job == Some(job.id) && !job.state.active() {
+                    self.steam_url_import_job = None;
+                }
+                if self
+                    .launch_save_job
+                    .as_ref()
+                    .is_some_and(|(id, _)| *id == job.id)
+                    && !job.state.active()
+                    && let Some((_, owner)) = self.launch_save_job.take()
+                    && self.selected.as_ref() == Some(&owner)
+                {
+                    self.launch_message = Some(if job.state == JobState::Completed {
+                        "Launch configuration saved.".into()
+                    } else {
+                        "Launch configuration was not saved. See notifications for details.".into()
+                    });
+                }
                 if self
                     .identity_job
                     .as_ref()
@@ -961,6 +1029,21 @@ impl LauncherView {
 
     fn populate_game_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(game) = self.selected_game() {
+            self.launch_mode = LaunchMode::for_game(&game);
+            self.steam_shortcut = game
+                .steam_launch
+                .clone()
+                .filter(|launch| matches!(launch, SteamLaunch::Shortcut { .. }));
+            set_value(
+                &self.steam_url,
+                match &game.steam_launch {
+                    Some(SteamLaunch::Url(uri)) => uri,
+                    _ => "",
+                },
+                window,
+                cx,
+            );
+            self.launch_message = None;
             set_value(
                 &self.collections,
                 &game
@@ -1253,6 +1336,10 @@ impl LauncherView {
                             set_value(&view.executable, &path.to_string_lossy(), window, cx)
                         }
                         PickerPurpose::LaunchOverride(_) => {}
+                        PickerPurpose::SteamUrl(game_id) => {
+                            view.steam_url_import_job =
+                                view.submit(Command::ReadSteamShortcutUrl { game_id, path }, cx);
+                        }
                         PickerPurpose::Artwork(game_id, kind) => {
                             view.submit(
                                 Command::ImportArtwork {
@@ -1306,10 +1393,58 @@ impl LauncherView {
         .detach();
     }
 
+    fn refresh_steam_shortcuts(&mut self, cx: &mut Context<Self>) {
+        if self.steam_shortcuts_job.is_none() {
+            self.steam_shortcuts_job = self.submit(Command::RefreshSteamShortcuts, cx);
+        }
+    }
+
     fn save_launch(&mut self, cx: &mut Context<Self>) {
         let Some(game_id) = self.selected.clone() else {
             return;
         };
+        if self.launch_save_job.is_some() {
+            return;
+        }
+        self.launch_message = None;
+        let steam_launch = match self.launch_mode {
+            LaunchMode::Default => {
+                self.launch_save_job = self
+                    .submit(
+                        Command::SetLaunchOverride {
+                            game_id: game_id.clone(),
+                            launch: None,
+                        },
+                        cx,
+                    )
+                    .map(|job| (job, game_id));
+                return;
+            }
+            LaunchMode::SteamShortcut => {
+                let Some(launch) = self.steam_shortcut.clone() else {
+                    self.launch_message = Some("Choose a Steam shortcut first.".into());
+                    cx.notify();
+                    return;
+                };
+                Some(launch)
+            }
+            LaunchMode::SteamUrl => Some(SteamLaunch::Url(
+                self.steam_url.read(cx).value().trim().to_string(),
+            )),
+            LaunchMode::Executable => None,
+        };
+        if let Some(launch) = steam_launch {
+            self.launch_save_job = self
+                .submit(
+                    Command::SetSteamLaunch {
+                        game_id: game_id.clone(),
+                        launch,
+                    },
+                    cx,
+                )
+                .map(|job| (job, game_id));
+            return;
+        }
         let executable = self.executable.read(cx).value().trim().to_string();
         let arguments = self
             .arguments
@@ -1338,7 +1473,21 @@ impl LauncherView {
                 },
             })
         };
-        self.submit(Command::SetLaunchOverride { game_id, launch }, cx);
+        if launch.is_none() {
+            self.launch_message =
+                Some("Choose an executable, or switch Launch via to Default.".into());
+            cx.notify();
+            return;
+        }
+        self.launch_save_job = self
+            .submit(
+                Command::SetLaunchOverride {
+                    game_id: game_id.clone(),
+                    launch,
+                },
+                cx,
+            )
+            .map(|job| (job, game_id));
     }
 
     fn save_metadata(&mut self, cx: &mut Context<Self>) {
@@ -1537,7 +1686,7 @@ impl LauncherView {
         }
         let mut commands = Vec::new();
         if let Some(game) = self.command_game() {
-            if game.available || game.launch_override.is_some() {
+            if game.available || game.has_launch_override() {
                 commands.push((
                     format!("Start {}", game.title()),
                     IconName::ArrowRight.into(),
@@ -2017,6 +2166,9 @@ impl LauncherView {
         self.settings_open = false;
         self.customization_open = false;
         self.detail_tab = tab;
+        if tab == DetailTab::Launch {
+            self.refresh_steam_shortcuts(cx);
+        }
         self.editor_focus.focus(window, cx);
         cx.notify();
     }
@@ -2833,7 +2985,7 @@ impl LauncherView {
                                 .icon(Icon::default().path("icons/play.svg"))
                                 .bg(crate::glass::Palette::of(cx).button)
                                 .tooltip("Play game · double-click the card to launch")
-                                .disabled(!game.available && game.launch_override.is_none())
+                                .disabled(!game.available && !game.has_launch_override())
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                 .on_click(cx.listener(move |view, _, window, cx| {
                                     cx.stop_propagation();
@@ -2982,7 +3134,7 @@ impl LauncherView {
         };
         match action {
             LibraryGameAction::Launch => {
-                if game.available || game.launch_override.is_some() {
+                if game.available || game.has_launch_override() {
                     self.submit(Command::LaunchGame { game_id: game.id }, cx);
                 }
             }
@@ -3140,7 +3292,7 @@ impl LauncherView {
             .font_weight(FontWeight::BOLD)
             .icon(Icon::default().path("icons/play.svg"))
             .label("Start game")
-            .disabled(!game.available && game.launch_override.is_none())
+            .disabled(!game.available && !game.has_launch_override())
             .on_click(cx.listener(|view, _, _, cx| {
                 if let Some(game_id) = view.selected.clone() {
                     view.submit(Command::LaunchGame { game_id }, cx);
@@ -4148,6 +4300,119 @@ impl LauncherView {
             .into_any_element()
     }
 
+    fn launch_settings(&self, game: &Game, cx: &mut Context<Self>) -> AnyElement {
+        let owner = cx.entity().downgrade();
+        let saving = self.launch_save_job.is_some();
+        let game_id = game.id.clone();
+        let import_id = game.id.clone();
+        let selected_key = match &self.steam_shortcut {
+            Some(SteamLaunch::Shortcut {
+                account_id, app_id, ..
+            }) => Some((*account_id, *app_id)),
+            _ => None,
+        };
+        let selected_shortcut = self
+            .snapshot
+            .settings
+            .steam_shortcuts
+            .iter()
+            .find(|shortcut| Some((shortcut.account_id, shortcut.app_id)) == selected_key);
+        let mut shortcuts = vec![(None, SharedString::from("Choose a non-Steam shortcut…"))];
+        shortcuts.extend(
+            self.snapshot
+                .settings
+                .steam_shortcuts
+                .iter()
+                .map(|shortcut| {
+                    (
+                        Some((shortcut.account_id, shortcut.app_id)),
+                        SharedString::from(format!(
+                            "{} · Steam account {}",
+                            shortcut.name, shortcut.account_id
+                        )),
+                    )
+                }),
+        );
+        if let Some(key) = selected_key
+            && selected_shortcut.is_none()
+        {
+            let name = match &self.steam_shortcut {
+                Some(SteamLaunch::Shortcut { name, .. }) => name.as_str(),
+                _ => "Saved shortcut",
+            };
+            shortcuts.push((
+                Some(key),
+                format!("{name} · account {} · not in current list", key.0).into(),
+            ));
+        }
+        let shortcut_owner = cx.entity().downgrade();
+        div().w_full().flex().flex_col().gap_4()
+            .child(hint(&format!("Source: {}\n{}", source_name(&game.provider_id), game.install_directory.display())))
+            .child(eyebrow("LAUNCH VIA"))
+            .child(choice_dropdown("launch-method", self.launch_mode, vec![
+                (LaunchMode::Default, "Default launcher".into()),
+                (LaunchMode::SteamShortcut, "Steam non-Steam shortcut".into()),
+                (LaunchMode::SteamUrl, "Steam launch URL".into()),
+                (LaunchMode::Executable, "Executable / application bundle".into()),
+            ], !saving, move |mode, _, cx| {
+                let _ = owner.update(cx, |view, cx| {
+                    view.launch_mode = mode;
+                    view.launch_message = None;
+                    if mode == LaunchMode::SteamShortcut && !view.snapshot.settings.steam_shortcuts_loaded {
+                        view.refresh_steam_shortcuts(cx);
+                    }
+                    cx.notify();
+                });
+            }, cx))
+            .when(self.launch_mode == LaunchMode::Default, |content| content
+                .child(hint(&format!("Uses the original {} launch configuration. Custom Steam routes and executable overrides are removed when saved.", source_name(&game.provider_id)))))
+            .when(self.launch_mode == LaunchMode::SteamShortcut, |content| content
+                .child(choice_dropdown("steam-shortcut-picker", selected_key, shortcuts, !saving,
+                    move |key, _, cx| {
+                        let _ = shortcut_owner.update(cx, |view, cx| {
+                            view.steam_shortcut = view.snapshot.settings.steam_shortcuts.iter()
+                                .find(|shortcut| Some((shortcut.account_id, shortcut.app_id)) == key)
+                                .map(SteamShortcut::launch);
+                            view.launch_message = None;
+                            cx.notify();
+                        });
+                    }, cx))
+                .child(button("refresh-steam-shortcuts", cx).label(if self.steam_shortcuts_job.is_some() { "Reading shortcuts…" } else { "Refresh Steam shortcuts" })
+                    .disabled(self.steam_shortcuts_job.is_some())
+                    .on_click(cx.listener(|view, _, _, cx| view.refresh_steam_shortcuts(cx))))
+                .when(self.snapshot.settings.steam_shortcuts_loaded && self.snapshot.settings.steam_shortcuts.is_empty(), |content| content
+                    .child(hint("No saved non-Steam shortcuts found. Add the game in Steam first; if it is new, restart Steam and refresh this list.")))
+                .when(selected_key.is_some() && selected_shortcut.is_none() && self.snapshot.settings.steam_shortcuts_loaded, |content| content
+                    .child(hint("The saved shortcut is missing from this list. Refresh or choose another shortcut. Startpoint will not fall back to launching the executable.")))
+                .when_some(selected_shortcut, |content, shortcut| content
+                    .child(hint(&format!("Steam account {}\n{}", shortcut.account_id, shortcut.executable.trim_matches('"')))))
+                .children(self.snapshot.settings.steam_shortcut_warnings.iter().map(|warning| hint(warning)))
+                .child(hint("Steam launches the shortcut with its own launch options and Steam Input settings. Sign in to the selected Steam account first. Steam configuration is read-only.")))
+            .when(self.launch_mode == LaunchMode::SteamUrl, |content| content
+                .child(field("Steam game URL", &self.steam_url, cx))
+                .child(button("import-steam-url", cx).label("Import Steam desktop shortcut (.url)…")
+                    .disabled(self.steam_url_import_job.is_some() || saving)
+                    .on_click(cx.listener(move |view, _, window, cx| view.pick(PickerPurpose::SteamUrl(import_id.clone()), window, cx))))
+                .child(hint("Use steam://rungameid/… from Steam's desktop shortcut. This opens Steam using its currently signed-in account; it does not launch the game's executable directly.")))
+            .when(self.launch_mode == LaunchMode::Executable, |content| content
+                .child(field("Executable / application bundle", &self.executable, cx))
+                .child(button("choose-executable", cx).label("Choose executable…")
+                    .on_click(cx.listener(move |view, _, window, cx| view.pick(PickerPurpose::LaunchOverride(game_id.clone()), window, cx))))
+                .child(field("Arguments — one per line", &self.arguments, cx))
+                .child(field(if cfg!(target_os = "macos") { "Working directory (executable only)" } else { "Working directory" }, &self.working_directory, cx)))
+            .child(button("save-launch", cx).h(px(36.)).primary().label(if saving { "Saving…" } else { "Save launch configuration" })
+                .disabled(saving || self.steam_url_import_job.is_some())
+                .on_click(cx.listener(|view, _, _, cx| view.save_launch(cx))))
+            .child(button("reset-launch", cx).h(px(36.)).secondary().label("Restore launcher default").disabled(saving)
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.launch_mode = LaunchMode::Default;
+                    view.save_launch(cx);
+                })))
+            .when_some(self.launch_message.as_deref(), |content, message| content.child(hint(message)))
+            .child(hint("Only the launch route changes. This game's store, artwork, notes and launch history stay together in the same library entry."))
+            .into_any_element()
+    }
+
     fn game_editor(&self, game: &Game, cx: &mut Context<Self>) -> AnyElement {
         let game_id = game.id.clone();
         let favourite_id = game_id.clone();
@@ -4174,19 +4439,7 @@ impl LauncherView {
                 .when(game.provider_id == "manual", |content| content.child(button("remove-manual-game", cx).h(px(36.)).secondary().label("Remove from library")
                     .on_click(cx.listener(|view, _, window, cx| view.remove_manual_game(window, cx)))))
                 .into_any_element(),
-            DetailTab::Launch => div().w_full().flex().flex_col().gap_4()
-                .child(hint(&format!("{}\n{}", source_name(&game.provider_id), game.install_directory.display())))
-                .child(field("Executable / application bundle", &self.executable, cx))
-                .child(button("choose-executable", cx).h(px(36.)).label("Choose executable…").tooltip("Overrides the store launcher and its update, DRM and launch configuration.").on_click(cx.listener(move |view, _, window, cx| view.pick(PickerPurpose::LaunchOverride(game_id.clone()), window, cx))))
-                .child(field("Arguments — one per line", &self.arguments, cx))
-                .child(field(if cfg!(target_os = "macos") { "Working directory (executable only)" } else { "Working directory" }, &self.working_directory, cx))
-                .child(button("save-launch", cx).h(px(36.)).primary().label("Save launch configuration").on_click(cx.listener(|view, _, _, cx| view.save_launch(cx))))
-                .child(button("reset-launch", cx).h(px(36.)).secondary().label("Restore launcher default").on_click(cx.listener(|view, _, window, cx| {
-                    if let Some(game_id) = view.selected.clone() {
-                        view.submit(Command::SetLaunchOverride { game_id, launch: None }, cx);
-                        set_value(&view.executable, "", window, cx); set_value(&view.arguments, "", window, cx); set_value(&view.working_directory, "", window, cx);
-                    }
-                }))).into_any_element(),
+            DetailTab::Launch => self.launch_settings(game, cx),
             DetailTab::Artwork => self.artwork_picker(game, cx),
             DetailTab::Journal => self.game_journal(game, cx),
         };
@@ -4250,7 +4503,7 @@ impl LauncherView {
                                             .primary()
                                             .label("Play game")
                                             .disabled(
-                                                !game.available && game.launch_override.is_none(),
+                                                !game.available && !game.has_launch_override(),
                                             )
                                             .on_click(cx.listener(|view, _, _, cx| {
                                                 if let Some(game_id) = view.selected.clone() {
@@ -4283,9 +4536,8 @@ impl LauncherView {
                             .child(choice_group(cx).w_full().children(
                                 DetailTab::EDITORS.into_iter().map(|(tab, label)| {
                                     choice_button(label, label, self.detail_tab == tab, cx)
-                                        .on_click(cx.listener(move |view, _, _, cx| {
-                                            view.detail_tab = tab;
-                                            cx.notify();
+                                        .on_click(cx.listener(move |view, _, window, cx| {
+                                            view.open_details(tab, window, cx);
                                         }))
                                 }),
                             ))
@@ -6500,9 +6752,8 @@ fn reconcile_page_selection(
 
 fn command_applies_to_game(command: &LauncherCommand, selected: Option<&Game>) -> bool {
     match command {
-        LauncherCommand::LaunchGame(id) => selected.is_some_and(|game| {
-            game.id == *id && (game.available || game.launch_override.is_some())
-        }),
+        LauncherCommand::LaunchGame(id) => selected
+            .is_some_and(|game| game.id == *id && (game.available || game.has_launch_override())),
         LauncherCommand::Favourite(id, _) | LauncherCommand::Hidden(id, _) => {
             selected.is_some_and(|game| game.id == *id)
         }
@@ -6594,7 +6845,7 @@ fn library_game_actions(game: &Game) -> Vec<(&'static str, IconName, LibraryGame
             "Play game",
             IconName::ExternalLink,
             LibraryGameAction::Launch,
-            !game.available && game.launch_override.is_none(),
+            !game.available && !game.has_launch_override(),
         ),
         (
             "Edit metadata & collections…",
@@ -6887,6 +7138,30 @@ fn game_commands_reject_missing_or_changed_selection_but_global_commands_still_w
     ] {
         assert!(command_applies_to_game(&command, None));
     }
+}
+
+#[cfg(test)]
+#[::core::prelude::v1::test]
+fn steam_launch_routes_select_the_right_editor_mode_and_enable_game_actions() {
+    let mut game = sample_library_game();
+    game.available = false;
+    assert_eq!(LaunchMode::for_game(&game), LaunchMode::Default);
+    assert!(!command_applies_to_game(
+        &LauncherCommand::LaunchGame(game.id.clone()),
+        Some(&game)
+    ));
+    game.steam_launch = Some(SteamLaunch::Shortcut {
+        account_id: 42,
+        app_id: 0x9123_4567,
+        name: "Shortcut".into(),
+    });
+    assert_eq!(LaunchMode::for_game(&game), LaunchMode::SteamShortcut);
+    assert!(command_applies_to_game(
+        &LauncherCommand::LaunchGame(game.id.clone()),
+        Some(&game)
+    ));
+    game.steam_launch = Some(SteamLaunch::Url("steam://rungameid/123".into()));
+    assert_eq!(LaunchMode::for_game(&game), LaunchMode::SteamUrl);
 }
 
 #[cfg(test)]

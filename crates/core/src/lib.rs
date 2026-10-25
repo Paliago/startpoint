@@ -6,6 +6,7 @@ mod examples;
 mod platform;
 mod runtime;
 mod steam;
+mod steam_shortcuts;
 mod steamgriddb;
 mod storage;
 mod stores;
