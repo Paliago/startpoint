@@ -322,7 +322,7 @@ pub struct LauncherView {
     library_filter: LibraryFilter,
     sort_recent: bool,
     appearance: AppearanceSettings,
-    appearance_sliders: [Entity<AdjustmentSlider>; 4],
+    appearance_sliders: [Entity<AdjustmentSlider>; 6],
     #[cfg(debug_assertions)]
     stress_case: &'static str,
     recents_fade: Entity<RecentsFade>,
@@ -440,6 +440,14 @@ impl LauncherView {
                 Adjustment::OutlineStrength,
                 appearance_settings.controls.outline_strength,
             ),
+            (
+                Adjustment::RecentsDithering,
+                appearance_settings.dither_recents_strength,
+            ),
+            (
+                Adjustment::ArtworkDithering,
+                appearance_settings.dither_artwork_strength,
+            ),
         ];
         let appearance_sliders = adjustments.map(|(adjustment, value)| {
             cx.new(|cx| AdjustmentSlider::new(adjustment, value, window, cx))
@@ -463,6 +471,12 @@ impl LauncherView {
                                 }
                                 Adjustment::OutlineStrength => {
                                     view.appearance.controls.outline_strength = *value
+                                }
+                                Adjustment::RecentsDithering => {
+                                    view.appearance.dither_recents_strength = *value
+                                }
+                                Adjustment::ArtworkDithering => {
+                                    view.appearance.dither_artwork_strength = *value
                                 }
                             }
                             appearance::update_effects(&view.appearance, cx);
@@ -3361,7 +3375,11 @@ impl LauncherView {
     }
 
     fn artwork_texture(&self, window: &Window) -> Div {
-        let mut texture = div().absolute().inset_0().overflow_hidden().opacity(0.12);
+        let mut texture = div()
+            .absolute()
+            .inset_0()
+            .overflow_hidden()
+            .opacity(self.appearance.dither_artwork_strength);
         let viewport = window.viewport_size();
         let mut y = px(0.);
         while y < viewport.height {
@@ -3407,7 +3425,11 @@ impl LauncherView {
                 artwork.map(|asset| asset.image_path.clone()),
                 color,
                 size,
-                self.appearance.dither_recents,
+                if self.appearance.dither_recents {
+                    self.appearance.dither_recents_strength
+                } else {
+                    0.
+                },
                 self.appearance.fade_recents,
                 window,
                 cx,
@@ -5258,7 +5280,7 @@ impl LauncherView {
                             })),
                     ),
             )
-            .children(self.appearance_sliders[1..].iter().cloned())
+            .children(self.appearance_sliders[1..4].iter().cloned())
             .children(
                 [
                     (
@@ -5488,6 +5510,7 @@ impl LauncherView {
                             );
                         })),
                 )
+                .child(self.appearance_sliders[4].clone())
                 .child(
                     Switch::new("recents-background-fade")
                         .checked(self.appearance.fade_recents)
@@ -5714,6 +5737,7 @@ impl LauncherView {
                                 }))
                         }),
                     )
+                    .child(self.appearance_sliders[5].clone())
             });
         floating_panel(
             "library-customization",
@@ -7083,6 +7107,14 @@ impl Render for LauncherView {
             (
                 self.appearance.controls.outline_strength,
                 self.appearance.controls.outlines,
+            ),
+            (
+                self.appearance.dither_recents_strength,
+                self.appearance.dither_recents,
+            ),
+            (
+                self.appearance.dither_artwork_strength,
+                self.appearance.dither_artwork,
             ),
         ];
         for (slider, (value, enabled)) in self.appearance_sliders.iter().zip(slider_values) {

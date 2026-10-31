@@ -16,6 +16,8 @@ pub(crate) enum Adjustment {
     Radius,
     Padding,
     OutlineStrength,
+    RecentsDithering,
+    ArtworkDithering,
 }
 
 impl Adjustment {
@@ -26,6 +28,9 @@ impl Adjustment {
             Self::Radius => (0., 12., defaults.radius),
             Self::Padding => (8., 20., defaults.horizontal_padding),
             Self::OutlineStrength => (25., 100., defaults.outline_strength * 100.),
+            Self::RecentsDithering | Self::ArtworkDithering => {
+                (0., 100., startpoint_sdk::DEFAULT_DITHER_STRENGTH * 100.)
+            }
         }
     }
 
@@ -35,26 +40,36 @@ impl Adjustment {
             Self::Radius => "Control rounding",
             Self::Padding => "Button padding",
             Self::OutlineStrength => "Outline strength",
+            Self::RecentsDithering | Self::ArtworkDithering => "Dithering strength",
         }
     }
 
     fn display_value(self, value: f32) -> f32 {
         match self {
-            Self::Translucency | Self::OutlineStrength => value * 100.,
+            Self::Translucency
+            | Self::OutlineStrength
+            | Self::RecentsDithering
+            | Self::ArtworkDithering => value * 100.,
             _ => value,
         }
     }
 
     fn stored_value(self, value: f32) -> f32 {
         match self {
-            Self::Translucency | Self::OutlineStrength => value / 100.,
+            Self::Translucency
+            | Self::OutlineStrength
+            | Self::RecentsDithering
+            | Self::ArtworkDithering => value / 100.,
             _ => value,
         }
     }
 
     fn suffix(self) -> &'static str {
         match self {
-            Self::Translucency | Self::OutlineStrength => "%",
+            Self::Translucency
+            | Self::OutlineStrength
+            | Self::RecentsDithering
+            | Self::ArtworkDithering => "%",
             _ => "px",
         }
     }
@@ -364,6 +379,8 @@ mod tests {
             Adjustment::Radius,
             Adjustment::Padding,
             Adjustment::OutlineStrength,
+            Adjustment::RecentsDithering,
+            Adjustment::ArtworkDithering,
         ] {
             let range = adjustment.range();
             let (min, max, default) = range;

@@ -32,7 +32,7 @@ impl RecentsFade {
         path: Option<PathBuf>,
         color: Hsla,
         size: Size<Pixels>,
-        dither: bool,
+        dither_strength: f32,
         fade: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -40,6 +40,11 @@ impl RecentsFade {
         let width = f32::from(size.width).max(1.);
         let height = f32::from(size.height).max(1.);
         let scale = (1920. / width).min(1200. / height).min(1.);
+        let dither_strength = if dither_strength.is_finite() {
+            dither_strength.clamp(0., 1.)
+        } else {
+            startpoint_sdk::DEFAULT_DITHER_STRENGTH
+        };
         let key = BackdropKey {
             path,
             color: Rgba::from(color).into(),
@@ -47,7 +52,7 @@ impl RecentsFade {
             // full artwork again for every one-pixel layout change.
             width: ((width * scale / 64.).round().max(1.) * 64.) as u32,
             height: ((height * scale / 64.).round().max(1.) * 64.) as u32,
-            dither,
+            dither_strength: (dither_strength * 100.).round() as u8,
             fade,
         };
         self.recent.retain(|old| old != &key);
@@ -62,9 +67,33 @@ impl RecentsFade {
                 let _ = entity.update(cx, |state, cx| state.finish_frame(window, cx));
             });
         }
-        window
+        let image = window
             .use_asset::<BackdropAsset>(&key, cx)
-            .and_then(Result::ok)
+            .and_then(Result::ok);
+        if image.is_some() {
+            return image;
+        }
+        // Keep the matching ready surface pinned while a new strength is composited.
+        let fallback = self.recent.iter().rev().find_map(|previous| {
+            if previous.path != key.path
+                || previous.color != key.color
+                || previous.width != key.width
+                || previous.height != key.height
+                || previous.fade != key.fade
+            {
+                return None;
+            }
+            window
+                .get_asset::<BackdropAsset>(previous, cx)
+                .and_then(Result::ok)
+                .map(|image| (previous.clone(), image))
+        });
+        fallback.map(|(previous, image)| {
+            if !self.frame.contains(&previous) {
+                self.frame.push(previous);
+            }
+            image
+        })
     }
 
     fn finish_frame(&mut self, window: &mut Window, cx: &mut App) {
@@ -80,6 +109,13 @@ impl RecentsFade {
                 let _ = window.drop_image(image);
             }
             cx.remove_asset::<BackdropAsset>(&old);
+            if !self.recent.iter().any(|key| {
+                key.path == old.path && key.width == old.width && key.height == old.height
+            }) {
+                if let Some(path) = old.path {
+                    cx.remove_asset::<DecodedArtwork>(&(path, old.width, old.height));
+                }
+            }
             changed = true;
         }
         if changed {
@@ -94,11 +130,33 @@ struct BackdropKey {
     color: u32,
     width: u32,
     height: u32,
-    dither: bool,
+    dither_strength: u8,
     fade: bool,
 }
 
 struct BackdropAsset;
+
+struct DecodedArtwork;
+
+impl Asset for DecodedArtwork {
+    type Source = (PathBuf, u32, u32);
+    type Output = Option<Arc<RgbaImage>>;
+
+    fn load(
+        (path, width, height): Self::Source,
+        _: &mut App,
+    ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
+        async move {
+            image::open(path).ok().map(|image| {
+                Arc::new(
+                    image
+                        .resize_to_fill(width, height, image::imageops::FilterType::Lanczos3)
+                        .to_rgba8(),
+                )
+            })
+        }
+    }
+}
 
 impl Asset for BackdropAsset {
     type Source = BackdropKey;
@@ -106,23 +164,18 @@ impl Asset for BackdropAsset {
 
     fn load(
         source: BackdropKey,
-        _: &mut App,
+        cx: &mut App,
     ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
+        let artwork = source.path.as_ref().map(|path| {
+            cx.fetch_asset::<DecodedArtwork>(&(path.clone(), source.width, source.height))
+                .0
+        });
         async move {
-            let artwork = source
-                .path
-                .as_ref()
-                .and_then(|path| image::open(path).ok())
-                .map(|image| {
-                    image
-                        .resize_to_fill(
-                            source.width,
-                            source.height,
-                            image::imageops::FilterType::Lanczos3,
-                        )
-                        .to_rgba8()
-                });
-            let mut pixels = backdrop_pixels(&source, artwork.as_ref());
+            let artwork = match artwork {
+                Some(task) => task.await,
+                None => None,
+            };
+            let mut pixels = backdrop_pixels(&source, artwork.as_deref());
             // RenderImage uses BGRA, just like GPUI's normal image decoder.
             for pixel in pixels.pixels_mut() {
                 pixel.0.swap(0, 2);
@@ -146,8 +199,8 @@ fn backdrop_pixels(key: &BackdropKey, artwork: Option<&RgbaImage>) -> RgbaImage 
             for channel in 0..3 {
                 rgb[channel] = rgb[channel] * (1. - alpha) + f32::from(pixel[channel]) * alpha;
             }
-            if key.dither {
-                // The same ordered 2px pattern as assets/dither.svg, at 12% strength.
+            if key.dither_strength > 0 {
+                // The same ordered 2px pattern as assets/dither.svg.
                 let rank: f32 = [
                     [15., 7., 13., 5.],
                     [3., 11., 1., 9.],
@@ -155,7 +208,7 @@ fn backdrop_pixels(key: &BackdropKey, artwork: Option<&RgbaImage>) -> RgbaImage 
                     [0., 8., 2., 10.],
                 ][(y as usize / 2) % 4][(x as usize / 2) % 4];
                 let grain = if rank >= 8. { 255. } else { 0. };
-                let alpha = (rank - 7.5).abs() / 7.5 * 0.12;
+                let alpha = (rank - 7.5).abs() / 7.5 * (f32::from(key.dither_strength) / 100.);
                 for channel in &mut rgb {
                     *channel = *channel * (1. - alpha) + grain * alpha;
                 }
@@ -234,7 +287,7 @@ mod tests {
                         color: 0x20304000 | u32::from(alpha),
                         width: 64,
                         height: 40,
-                        dither,
+                        dither_strength: if dither { 12 } else { 0 },
                         fade,
                     };
                     for image in [
@@ -258,6 +311,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn dithering_strength_changes_pixels_without_changing_alpha_or_the_settled_fade() {
+        let artwork = RgbaImage::from_pixel(64, 40, image::Rgba([160, 80, 40, 255]));
+        let mut previous = 160;
+        for strength in [0, 4, 12, 35, 70, 100] {
+            let mut key = BackdropKey {
+                path: None,
+                color: 0x203040cc,
+                width: 64,
+                height: 40,
+                dither_strength: strength,
+                fade: false,
+            };
+            let image = backdrop_pixels(&key, Some(&artwork));
+            assert!(image.get_pixel(0, 0)[0] >= previous);
+            previous = image.get_pixel(0, 0)[0];
+            assert!(image.pixels().all(|pixel| pixel[3] == 204));
+            if strength == 0 {
+                assert_eq!(
+                    image,
+                    RgbaImage::from_pixel(64, 40, image::Rgba([160, 80, 40, 204]))
+                );
+            }
+            key.fade = true;
+            assert_eq!(
+                backdrop_pixels(&key, Some(&artwork)).get_pixel(63, 39).0,
+                [32, 48, 64, 204]
+            );
+            assert!(
+                backdrop_pixels(&key, None)
+                    .pixels()
+                    .all(|pixel| pixel.0 == [32, 48, 64, 204])
+            );
+        }
+        assert_eq!(previous, 255);
     }
 
     #[test]
