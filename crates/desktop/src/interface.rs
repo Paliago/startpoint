@@ -4296,8 +4296,11 @@ impl LauncherView {
                         ),
                 )
                 .child(
-                    div().flex().justify_end().child(
-                        button("save-metadata", cx)
+                    div().flex().items_center().justify_between()
+                    .child(button("reidentify-details-game", cx).ghost().border_0().icon(IconName::Search)
+                        .label("Re-identify game…").disabled(self.identity_job.is_some())
+                        .on_click(cx.listener(|view, _, window, cx| view.begin_reidentify(window, cx))))
+                    .child(button("save-metadata", cx)
                             .h(px(34.))
                             .primary()
                             .label("Save details")
@@ -4320,7 +4323,7 @@ impl LauncherView {
                                 } else {
                                     IconName::ChevronRight
                                 })
-                                .label("Collections & progress")
+                                .label("Library organization")
                                 .on_click(cx.listener(|view, _, _, cx| {
                                     view.editor_organization = !view.editor_organization;
                                     cx.notify();
@@ -4346,6 +4349,19 @@ impl LauncherView {
                                     .on_click(cx.listener(|view, _, _, cx| view.save_progress(cx))),
                             ),
                         )
+                        .child(div().pt_3().border_t_1().border_color(cx.theme().border.alpha(0.5)).flex().flex_col().gap_2()
+                            .child(div().flex().child(button("editor-game-visibility", cx).ghost().border_0()
+                                .icon(if game.hidden { IconName::Eye } else { IconName::EyeOff })
+                                .label(if game.hidden { "Unhide game" } else { "Hide from library" })
+                                .on_click(cx.listener(|view, _, window, cx| {
+                                    if let Some(id) = view.selected.clone() {
+                                        view.run_library_game_action(&id, LibraryGameAction::Hidden, window, cx);
+                                    }
+                                }))))
+                            .child(hint("Hiding keeps your artwork, notes and launch history. Restore the game from Hidden games."))
+                            .when(game.provider_id == "manual", |panel| panel.child(div().flex()
+                                .child(button("editor-remove-game", cx).ghost().border_0().label("Remove from library…")
+                                    .on_click(cx.listener(|view, _, window, cx| view.remove_manual_game(window, cx)))))))
                 })
                 .into_any_element(),
             DetailTab::Launch => div()
@@ -4477,8 +4493,6 @@ impl LauncherView {
             .artwork
             .get(&ArtworkKind::Cover)
             .or_else(|| game.artwork.get(&ArtworkKind::Icon));
-        let menu_game = game.clone();
-        let owner = cx.weak_entity();
         div()
             .id("game-editor-shell")
             .size_full()
@@ -4563,45 +4577,7 @@ impl LauncherView {
                                     cx.notify();
                                 }))
                         }),
-                    ))
-                    .child(div().flex_1())
-                    .child(
-                        button("editor-options", cx)
-                            .ghost()
-                            .border_0()
-                            .label("Game options")
-                            .icon(IconName::Ellipsis)
-                            .dropdown_menu(move |mut menu, _, _| {
-                                for (label, icon, action, disabled) in
-                                    library_game_actions(&menu_game).into_iter().filter(
-                                        |(_, _, action, _)| {
-                                            matches!(
-                                                action,
-                                                LibraryGameAction::Reidentify
-                                                    | LibraryGameAction::Hidden
-                                                    | LibraryGameAction::Remove
-                                            )
-                                        },
-                                    )
-                                {
-                                    let owner = owner.clone();
-                                    let id = menu_game.id.clone();
-                                    menu = menu.item(
-                                        PopupMenuItem::new(label)
-                                            .icon(icon)
-                                            .disabled(disabled)
-                                            .on_click(move |_, window, cx| {
-                                                let _ = owner.update(cx, |view, cx| {
-                                                    view.run_library_game_action(
-                                                        &id, action, window, cx,
-                                                    )
-                                                });
-                                            }),
-                                    );
-                                }
-                                menu.min_w(px(210.))
-                            }),
-                    ),
+                    )),
             )
             .child(
                 div()
@@ -4855,9 +4831,27 @@ impl LauncherView {
                             .map(|asset| self.saved_image(game, asset, cx)),
                     ),
                 )
-                .child(hint(
-                    "Select an image to use it. Your original files are kept.",
-                ));
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_3()
+                        .child(div().flex_1().min_w_0().child(hint(
+                            "Select an image to use it. Your original files are kept.",
+                        )))
+                        .child(
+                            button("reidentify-saved-artwork-game", cx)
+                                .ghost()
+                                .border_0()
+                                .icon(IconName::Search)
+                                .label("Re-identify game…")
+                                .disabled(self.identity_job.is_some())
+                                .on_click(cx.listener(|view, _, window, cx| {
+                                    view.begin_reidentify(window, cx)
+                                })),
+                        ),
+                );
         } else if !key_configured {
             panel = panel.child(div().py_6().flex().flex_col().gap_3()
                 .child(div().text_lg().font_weight(FontWeight::MEDIUM).child("More artwork, from SteamGridDB."))
@@ -4893,7 +4887,7 @@ impl LauncherView {
                             button("reidentify-artwork-game", cx)
                                 .ghost()
                                 .border_0()
-                                .label("Change match…")
+                                .label("Re-identify game…")
                                 .disabled(self.identity_job.is_some())
                                 .on_click(cx.listener(|view, _, window, cx| {
                                     view.begin_reidentify(window, cx)
