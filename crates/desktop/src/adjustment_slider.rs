@@ -1,4 +1,4 @@
-//! Focusable, keyboard-operable amount control with a pointer detent at the settled glass default.
+//! Keyboard-operable appearance adjustments with a default detent.
 use crate::components::button;
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -10,44 +10,110 @@ use gpui_component::{
 const DEFAULT_PERCENT: f32 = startpoint_sdk::DEFAULT_TRANSLUCENCY_AMOUNT * 100.;
 const SNAP_DISTANCE: f32 = 2.;
 
+#[derive(Clone, Copy)]
+pub(crate) enum Adjustment {
+    Translucency,
+    Radius,
+    Padding,
+    OutlineStrength,
+}
+
+impl Adjustment {
+    fn range(self) -> (f32, f32, f32) {
+        let defaults = startpoint_sdk::ControlAppearance::default();
+        match self {
+            Self::Translucency => (0., 100., DEFAULT_PERCENT),
+            Self::Radius => (0., 12., defaults.radius),
+            Self::Padding => (8., 20., defaults.horizontal_padding),
+            Self::OutlineStrength => (25., 100., defaults.outline_strength * 100.),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Translucency => "Translucency",
+            Self::Radius => "Control rounding",
+            Self::Padding => "Button padding",
+            Self::OutlineStrength => "Outline strength",
+        }
+    }
+
+    fn display_value(self, value: f32) -> f32 {
+        match self {
+            Self::Translucency | Self::OutlineStrength => value * 100.,
+            _ => value,
+        }
+    }
+
+    fn stored_value(self, value: f32) -> f32 {
+        match self {
+            Self::Translucency | Self::OutlineStrength => value / 100.,
+            _ => value,
+        }
+    }
+
+    fn suffix(self) -> &'static str {
+        match self {
+            Self::Translucency | Self::OutlineStrength => "%",
+            _ => "px",
+        }
+    }
+}
+
 pub(crate) enum Event {
     Changed(f32),
     Released,
 }
 
-pub(crate) struct AmountSlider {
+pub(crate) struct AdjustmentSlider {
+    adjustment: Adjustment,
     state: Entity<SliderState>,
     focus: FocusHandle,
-    percent: f32,
+    value: f32,
     enabled: bool,
     _subscription: Subscription,
 }
 
-impl EventEmitter<Event> for AmountSlider {}
+impl EventEmitter<Event> for AdjustmentSlider {}
 
-impl AmountSlider {
-    pub fn new(amount: f32, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let percent = (amount * 100.).clamp(0., 100.).round();
+impl AdjustmentSlider {
+    pub fn new(
+        adjustment: Adjustment,
+        amount: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let (min, max, default) = adjustment.range();
+        let value = adjustment.display_value(amount);
+        let value = if value.is_finite() {
+            value.clamp(min, max).round()
+        } else {
+            default
+        };
         let state = cx.new(|_| {
             SliderState::new()
-                .min(0.)
-                .max(100.)
+                .min(min)
+                .max(max)
                 .step(1.)
-                .default_value(percent)
+                .default_value(value)
         });
         let subscription = cx.subscribe_in(&state, window, |view, _, event, window, cx| {
             if !view.enabled {
                 return;
             }
             match event {
-                SliderEvent::Change(value) => view.change(pointer_percent(value.end()), window, cx),
+                SliderEvent::Change(value) => {
+                    let value = pointer_value(value.end(), view.adjustment.range());
+                    view.change(value, window, cx);
+                }
                 SliderEvent::Release(_) => cx.emit(Event::Released),
             }
         });
         Self {
+            adjustment,
             state,
             focus: cx.focus_handle(),
-            percent,
+            value,
             enabled: true,
             _subscription: subscription,
         }
@@ -60,11 +126,17 @@ impl AmountSlider {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let percent = (amount * 100.).clamp(0., 100.).round();
-        if self.percent != percent {
-            self.percent = percent;
+        let (min, max, default) = self.adjustment.range();
+        let value = self.adjustment.display_value(amount);
+        let value = if value.is_finite() {
+            value.clamp(min, max).round()
+        } else {
+            default
+        };
+        if self.value != value {
+            self.value = value;
             self.state
-                .update(cx, |state, cx| state.set_value(percent, window, cx));
+                .update(cx, |state, cx| state.set_value(value, window, cx));
             cx.notify();
         }
         if self.enabled != enabled {
@@ -73,23 +145,24 @@ impl AmountSlider {
         }
     }
 
-    fn change(&mut self, percent: f32, window: &mut Window, cx: &mut Context<Self>) {
+    fn change(&mut self, value: f32, window: &mut Window, cx: &mut Context<Self>) {
         // Correct the thumb too; SliderState::set_value deliberately doesn't emit
         // user events, so snapping cannot recursively trigger itself.
         self.state
-            .update(cx, |state, cx| state.set_value(percent, window, cx));
-        if self.percent != percent {
-            self.percent = percent;
-            cx.emit(Event::Changed(percent / 100.));
+            .update(cx, |state, cx| state.set_value(value, window, cx));
+        if self.value != value {
+            self.value = value;
+            cx.emit(Event::Changed(self.adjustment.stored_value(value)));
             cx.notify();
         }
     }
 }
 
-impl Render for AmountSlider {
+impl Render for AdjustmentSlider {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let enabled = self.enabled;
-        let is_default = self.percent == DEFAULT_PERCENT;
+        let (min, max, default) = self.adjustment.range();
+        let is_default = self.value == default;
         div()
             .w_full()
             .flex()
@@ -100,33 +173,36 @@ impl Render for AmountSlider {
                     .flex()
                     .items_center()
                     .justify_between()
+                    .child(div().text_sm().child(format!(
+                        "{} · {:.0}{}",
+                        self.adjustment.label(),
+                        self.value,
+                        self.adjustment.suffix()
+                    )))
                     .child(
-                        div()
-                            .text_sm()
-                            .child(format!("Translucency · {:.0}%", self.percent)),
-                    )
-                    .child(
-                        button("default-translucency", cx)
+                        button("default-adjustment", cx)
                             .ghost()
+                            .border_0()
                             .label("Default")
-                            .tooltip("Restore the default translucency")
+                            .tooltip("Restore the default value")
                             .disabled(!enabled || is_default)
                             .on_click(cx.listener(|view, _, window, cx| {
-                                view.change(DEFAULT_PERCENT, window, cx)
+                                let default = view.adjustment.range().2;
+                                view.change(default, window, cx)
                             })),
                     ),
             )
             .child(
                 div()
-                    .id("translucency-amount")
-                    .key_context("TranslucencyAmount")
+                    .id("appearance-adjustment")
+                    .key_context("AppearanceAdjustment")
                     .track_focus(&self.focus)
                     .tab_stop(enabled)
                     .role(Role::Slider)
-                    .aria_label("Translucency amount")
-                    .aria_numeric_value(self.percent as f64)
-                    .aria_min_numeric_value(0.)
-                    .aria_max_numeric_value(100.)
+                    .aria_label(self.adjustment.label())
+                    .aria_numeric_value(f64::from(self.value))
+                    .aria_min_numeric_value(f64::from(min))
+                    .aria_max_numeric_value(f64::from(max))
                     .aria_numeric_value_step(1.)
                     .relative()
                     .w_full()
@@ -137,7 +213,8 @@ impl Render for AmountSlider {
                     .border_1()
                     .border_color(transparent_black())
                     .when(enabled, |control| {
-                        control.focus(|style| style.border_color(cx.theme().ring.alpha(0.5)))
+                        control
+                            .focus_visible(|style| style.border_color(cx.theme().ring.alpha(0.7)))
                     })
                     .capture_any_mouse_down(cx.listener(
                         |view, event: &MouseDownEvent, window, cx| {
@@ -152,10 +229,13 @@ impl Render for AmountSlider {
                         {
                             return;
                         }
-                        if let Some(percent) =
-                            keyboard_percent(view.percent, &event.keystroke.key, modifiers.shift)
-                        {
-                            view.change(percent, window, cx);
+                        if let Some(value) = keyboard_value(
+                            view.value,
+                            &event.keystroke.key,
+                            modifiers.shift,
+                            view.adjustment.range(),
+                        ) {
+                            view.change(value, window, cx);
                             cx.stop_propagation();
                             window.prevent_default();
                         }
@@ -165,7 +245,8 @@ impl Render for AmountSlider {
                         move |_, window, cx| {
                             let _ = owner.update(cx, |view, cx| {
                                 if view.enabled {
-                                    view.change((view.percent + 1.).min(100.), window, cx);
+                                    let max = view.adjustment.range().1;
+                                    view.change((view.value + 1.).min(max), window, cx);
                                 }
                             });
                         }
@@ -175,7 +256,8 @@ impl Render for AmountSlider {
                         move |_, window, cx| {
                             let _ = owner.update(cx, |view, cx| {
                                 if view.enabled {
-                                    view.change((view.percent - 1.).max(0.), window, cx);
+                                    let min = view.adjustment.range().0;
+                                    view.change((view.value - 1.).max(min), window, cx);
                                 }
                             });
                         }
@@ -191,7 +273,7 @@ impl Render for AmountSlider {
                             .child(
                                 div()
                                     .absolute()
-                                    .left(relative(DEFAULT_PERCENT / 100.))
+                                    .left(relative((default - min) / (max - min)))
                                     .ml(px(-1.))
                                     .top(px(20.))
                                     .w(px(2.))
@@ -204,37 +286,53 @@ impl Render for AmountSlider {
     }
 }
 
-fn pointer_percent(percent: f32) -> f32 {
-    let percent = percent.clamp(0., 100.).round();
-    if (percent - DEFAULT_PERCENT).abs() <= SNAP_DISTANCE {
-        DEFAULT_PERCENT
+fn pointer_value(value: f32, (min, max, default): (f32, f32, f32)) -> f32 {
+    let value = if value.is_finite() {
+        value.clamp(min, max).round()
     } else {
-        percent
+        default
+    };
+    let snap_distance = if max - min > 20. { SNAP_DISTANCE } else { 0. };
+    if (value - default).abs() <= snap_distance {
+        default
+    } else {
+        value
     }
 }
 
-fn keyboard_percent(percent: f32, key: &str, accelerated: bool) -> Option<f32> {
+fn keyboard_value(
+    value: f32,
+    key: &str,
+    accelerated: bool,
+    (min, max, default): (f32, f32, f32),
+) -> Option<f32> {
     let step = if accelerated { 5. } else { 1. };
     let next = match key {
-        "left" | "down" => percent - step,
-        "right" | "up" => percent + step,
-        "home" => return Some(0.),
-        "end" => return Some(100.),
+        "left" | "down" => value - step,
+        "right" | "up" => value + step,
+        "home" => return Some(min),
+        "end" => return Some(max),
         _ => return None,
     };
     // A large keyboard step stops at the notch once, but can always leave it.
-    if (percent < DEFAULT_PERCENT && next > DEFAULT_PERCENT)
-        || (percent > DEFAULT_PERCENT && next < DEFAULT_PERCENT)
-    {
-        Some(DEFAULT_PERCENT)
+    if (value < default && next > default) || (value > default && next < default) {
+        Some(default)
     } else {
-        Some(next.clamp(0., 100.))
+        Some(next.clamp(min, max))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pointer_percent(value: f32) -> f32 {
+        pointer_value(value, Adjustment::Translucency.range())
+    }
+
+    fn keyboard_percent(value: f32, key: &str, accelerated: bool) -> Option<f32> {
+        keyboard_value(value, key, accelerated, Adjustment::Translucency.range())
+    }
 
     #[::core::prelude::v1::test]
     fn pointer_snaps_at_the_current_default_and_can_leave_the_detent() {
@@ -261,5 +359,25 @@ mod tests {
         assert_eq!(keyboard_percent(20., "home", false), Some(0.));
         assert_eq!(keyboard_percent(20., "end", false), Some(100.));
         assert_eq!(keyboard_percent(20., "tab", false), None);
+        for adjustment in [
+            Adjustment::Translucency,
+            Adjustment::Radius,
+            Adjustment::Padding,
+            Adjustment::OutlineStrength,
+        ] {
+            let range = adjustment.range();
+            let (min, max, default) = range;
+            assert_eq!(keyboard_value(default, "home", false, range), Some(min));
+            assert_eq!(keyboard_value(default, "end", false, range), Some(max));
+            assert_eq!(keyboard_value(min, "left", false, range), Some(min));
+            assert_eq!(keyboard_value(max, "right", false, range), Some(max));
+            assert_eq!(pointer_value(f32::NAN, range), default);
+            assert_eq!(pointer_value(min - 10., range), min);
+            assert_eq!(pointer_value(max + 10., range), max);
+            assert_eq!(
+                adjustment.display_value(adjustment.stored_value(default)),
+                default
+            );
+        }
     }
 }

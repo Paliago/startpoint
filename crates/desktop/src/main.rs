@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod adjustment_slider;
 mod appearance;
 mod components;
 mod detail_artwork;
@@ -14,7 +15,6 @@ mod logo_cache;
 mod recents_fade;
 mod theme;
 mod theme_editor;
-mod translucency_slider;
 #[cfg(feature = "self-update")]
 mod updater;
 mod window_state;
@@ -143,32 +143,32 @@ fn main() {
                 KeyBinding::new(
                     "/",
                     interface::FocusSearch,
-                    Some("Startpoint && !Input && !SidebarResize"),
+                    Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
                 ),
                 KeyBinding::new(
                     "down",
                     interface::SelectNext,
-                    Some("Startpoint && !Input && !SidebarResize"),
+                    Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
                 ),
                 KeyBinding::new(
                     "right",
                     interface::SelectNext,
-                    Some("Startpoint && !Input && !SidebarResize"),
+                    Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
                 ),
                 KeyBinding::new(
                     "left",
                     interface::SelectPrevious,
-                    Some("Startpoint && !Input && !SidebarResize"),
+                    Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
                 ),
                 KeyBinding::new(
                     "up",
                     interface::SelectPrevious,
-                    Some("Startpoint && !Input && !SidebarResize"),
+                    Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
                 ),
                 KeyBinding::new(
                     "enter",
                     interface::LaunchSelected,
-                    Some("Startpoint && !Input && !SidebarResize"),
+                    Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
                 ),
                 KeyBinding::new("cmd-,", interface::OpenSettings, Some("Startpoint")),
                 KeyBinding::new("ctrl-,", interface::OpenSettings, Some("Startpoint")),

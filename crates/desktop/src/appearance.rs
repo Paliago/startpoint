@@ -4,6 +4,7 @@ use startpoint_sdk::{AppearanceMode, AppearanceSettings};
 use std::rc::Rc;
 
 pub(crate) fn update_effects(settings: &AppearanceSettings, cx: &mut App) {
+    cx.set_global(crate::components::Controls(settings.controls));
     cx.set_global(crate::glass::Effects {
         window_translucency: settings.window_translucency,
         backdrop_blur: settings.backdrop_blur,
@@ -82,7 +83,8 @@ fn apply_configurations(
         }
         .into();
     }
-    crate::components::configure_glass_theme(Theme::global_mut(cx));
+    let controls = crate::components::control_appearance(cx);
+    crate::components::configure_glass_theme(Theme::global_mut(cx), controls);
     if let Some(window) = window {
         window.set_background_appearance(background(cx));
     }

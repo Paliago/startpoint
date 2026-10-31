@@ -4,25 +4,72 @@
 use crate::glass::{self, Palette};
 use gpui::{prelude::*, *};
 use gpui_component::{
-    ActiveTheme, Disableable, Icon, IconName, Selectable, Sizable, ThemeColor,
+    ActiveTheme, Disableable, FocusableExt, Icon, IconName, Selectable, Sizable, ThemeColor,
     button::{Button, ButtonCustomVariant, ButtonVariants},
     input::{Input, InputState, Textarea, TextareaState},
     menu::{DropdownMenu, PopupMenuItem},
 };
+use startpoint_sdk::ControlAppearance;
 use std::{path::PathBuf, rc::Rc};
+
+pub(crate) struct Controls(pub ControlAppearance);
+impl Global for Controls {}
+
+pub(crate) fn control_appearance(cx: &App) -> ControlAppearance {
+    cx.try_global::<Controls>()
+        .map(|controls| controls.0)
+        .unwrap_or_default()
+}
+
+pub(crate) fn control_border(cx: &App) -> Hsla {
+    let settings = control_appearance(cx);
+    let theme = cx.theme();
+    let emphasis = if theme.background.l < 0.5 {
+        white()
+    } else {
+        black()
+    };
+    theme
+        .border
+        .alpha(1.)
+        .blend(emphasis.alpha(settings.outline_strength * 0.16))
+}
 
 pub(crate) const BUTTON_TEXT_REM: f32 = 0.875;
 
+struct ButtonAccessibility(Button);
+
+impl InteractiveElement for ButtonAccessibility {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.0.interactivity()
+    }
+}
+
+impl StatefulInteractiveElement for ButtonAccessibility {}
+
+pub(crate) fn with_accessible_label(button: Button, label: impl Into<SharedString>) -> Button {
+    // The styled button exposes interactivity but omits the stateful ARIA builders.
+    ButtonAccessibility(button).aria_label(label).0
+}
+
 /// Resolved render tokens only: never alter the authored theme/configuration.
 /// Native variants still own primary/danger, hover, pressed and disabled behavior.
-pub(crate) fn configure_glass_theme(theme: &mut gpui_component::Theme) {
+pub(crate) fn configure_glass_theme(
+    theme: &mut gpui_component::Theme,
+    controls: ControlAppearance,
+) {
     let palette = Palette::from_colors(
         theme.background,
         theme.secondary,
         theme.foreground,
         theme.border,
     );
-    theme.tokens.button = palette.button.into();
+    let fill = if controls.filled_secondary {
+        palette.button
+    } else {
+        theme.background.alpha(1.)
+    };
+    theme.tokens.button = fill.into();
     theme.tokens.button_secondary = theme.tokens.button;
     // Derive interaction emphasis from the same resting fill. Dark controls
     // brighten when engaged; light controls darken, rather than swapping to a
@@ -35,20 +82,14 @@ pub(crate) fn configure_glass_theme(theme: &mut gpui_component::Theme) {
     let mut emphasis_amount: f32 = 0.12;
     while emphasis_amount > 0.
         && crate::theme::contrast(
-            palette.button.blend(emphasis.alpha(emphasis_amount)),
+            fill.blend(emphasis.alpha(emphasis_amount)),
             palette.foreground,
         ) < 4.5
     {
         emphasis_amount = (emphasis_amount - 0.01).max(0.);
     }
-    let hover = palette
-        .button
-        .blend(emphasis.alpha(emphasis_amount * 0.5))
-        .alpha(1.);
-    let active = palette
-        .button
-        .blend(emphasis.alpha(emphasis_amount))
-        .alpha(1.);
+    let hover = fill.blend(emphasis.alpha(emphasis_amount * 0.5)).alpha(1.);
+    let active = fill.blend(emphasis.alpha(emphasis_amount)).alpha(1.);
     theme.tokens.button_hover = hover.into();
     theme.tokens.button_secondary_hover = theme.tokens.button_hover;
     theme.tokens.button_active = active.into();
@@ -115,10 +156,21 @@ pub(crate) fn input(state: &Entity<InputState>, cx: &App) -> Input {
     style_input(Input::new(state).focus_bordered(false), cx)
 }
 
-/// Flat, borderless controls using the same live corner radius as toolbar islands.
+/// Precision controls keep neutral outlines separate from their containing glass.
 /// Native GPUI variants retain their hover, pressed, disabled and focus behavior.
 pub(crate) fn button(id: impl Into<ElementId>, cx: &App) -> Button {
-    button_base(id, cx.theme().radius_lg)
+    let controls = control_appearance(cx);
+    keyboard_focus(button_base(id, px(controls.radius)), cx)
+        .px(px(controls.horizontal_padding))
+        .when(controls.outlines, |button| {
+            button.border_1().border_color(control_border(cx))
+        })
+}
+
+fn keyboard_focus(button: Button, cx: &App) -> Button {
+    button
+        .focus_ring(false)
+        .focus_visible(|style| style.border_1().border_color(cx.theme().ring))
 }
 
 fn button_base(id: impl Into<ElementId>, radius: Pixels) -> Button {
@@ -141,16 +193,16 @@ pub(crate) fn icon_button(
     tooltip: impl Into<SharedString>,
     cx: &App,
 ) -> Button {
-    icon_button_base(id, icon, tooltip, cx.theme().radius_lg)
+    icon_button_base(button(id, cx), icon, tooltip)
 }
 
 fn icon_button_base(
-    id: impl Into<ElementId>,
+    button: Button,
     icon: impl Into<Icon>,
     tooltip: impl Into<SharedString>,
-    radius: Pixels,
 ) -> Button {
-    button_base(id, radius)
+    let tooltip = tooltip.into();
+    with_accessible_label(button, tooltip.clone())
         .secondary()
         .w(px(32.))
         .h(px(32.))
@@ -160,13 +212,20 @@ fn icon_button_base(
 }
 
 fn toolbar_control_base(id: impl Into<ElementId>, radius: Pixels) -> Button {
-    button_base(id, radius).ghost()
+    button_base(id, radius)
+        .ghost()
+        .border_1()
+        .border_color(transparent_black())
 }
 
 /// All toolbar islands use the same neutral hover, pressed and selected fills.
 /// No resting plate; native button behavior still owns focus and disabled states.
 pub(crate) fn toolbar_control(id: impl Into<ElementId>, cx: &App) -> Button {
-    toolbar_control_base(id, cx.theme().radius_lg).custom(
+    keyboard_focus(
+        toolbar_control_base(id, px(control_appearance(cx).radius)),
+        cx,
+    )
+    .custom(
         ButtonCustomVariant::new(cx)
             .color(transparent_black())
             .foreground(cx.theme().foreground.alpha(1.))
@@ -181,7 +240,8 @@ pub(crate) fn toolbar_icon_button(
     tooltip: impl Into<SharedString>,
     cx: &App,
 ) -> Button {
-    toolbar_control(id, cx)
+    let tooltip = tooltip.into();
+    with_accessible_label(toolbar_control(id, cx), tooltip.clone())
         .w(px(32.))
         .p_0()
         .icon(icon)
@@ -219,7 +279,7 @@ pub(crate) fn navigation_tab(
         .toggled(selected)
 }
 
-/// Opaque, accent-selected choices. Unselected items share the choice group's fill.
+/// Neutral selected choices. Unselected items share the choice group's fill.
 pub(crate) fn choice_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
@@ -233,7 +293,14 @@ pub(crate) fn choice_button(
         .label(label)
         .selected(selected)
         .toggled(selected)
-        .when(selected, |button| button.primary())
+        .border_1()
+        .border_color(transparent_black())
+        .when(selected, |button| {
+            button
+                .secondary()
+                .bg(cx.theme().secondary_hover.alpha(1.))
+                .text_color(Palette::of(cx).foreground)
+        })
         .when(!selected, |button| {
             button.text_color(Palette::of(cx).foreground)
         })
@@ -318,7 +385,7 @@ pub(crate) fn choice_dropdown<T: Clone + PartialEq + 'static>(
         .map(|(_, label)| label.clone())
         .unwrap_or_default();
     let on_select = Rc::new(on_select);
-    button(id, cx)
+    with_accessible_label(button(id, cx), label.clone())
         .w_full()
         .min_w_0()
         .h(px(34.))
@@ -347,6 +414,7 @@ pub(crate) fn snug_sidebar_button(mut button: Button, icon: IconName, cx: &App) 
     button
         .small()
         .ghost()
+        .border_0()
         .px_2()
         .font_weight(FontWeight::NORMAL)
         .icon(Icon::new(icon).small())
@@ -443,10 +511,11 @@ pub(crate) fn hint(text: &str) -> Div {
 pub(crate) fn widget_surface(cx: &App) -> Div {
     div()
         .flex_1()
-        .min_w(px(280.))
-        .p_4()
-        .rounded(px(12.))
-        .bg(Palette::of(cx).surface)
+        .min_w(px(240.))
+        .px_2()
+        .py_4()
+        .border_t_1()
+        .border_color(cx.theme().border.alpha(0.5))
 }
 
 /// Place after the app toolbar so both the dimming and hit testing cover it.
@@ -540,7 +609,11 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn icon_buttons_have_equal_hit_targets_without_label_padding() {
-        let mut control = icon_button_base("bell", IconName::Bell, "Notifications", px(12.));
+        let mut control = icon_button_base(
+            button_base("bell", px(12.)),
+            IconName::Bell,
+            "Notifications",
+        );
         let style = control.style();
         assert_eq!(style.size.width, Some(px(32.).into()));
         assert_eq!(style.size.height, Some(px(32.).into()));
@@ -556,7 +629,8 @@ mod tests {
             style.background.is_none(),
             "the shared island owns the fill"
         );
-        assert_eq!(style.border_widths.top, Some(px(0.).into()));
+        assert_eq!(style.border_widths.top, Some(px(1.).into()));
+        assert_eq!(style.border_color, Some(transparent_black()));
         assert!(style.box_shadow.as_ref().is_some_and(Vec::is_empty));
         assert!(style.opacity.is_none(), "do not fade control text or icons");
     }
@@ -584,7 +658,7 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn default_buttons_follow_the_same_radius_as_navbar_containers() {
+    fn button_and_toolbar_bases_honor_their_supplied_radius() {
         for radius in [0., 4., 12., 20.] {
             let mut control = button_base("button-radius", px(radius));
             let mut island = toolbar_island("navbar-radius", px(radius));
@@ -604,7 +678,8 @@ mod tests {
         let original_primary = theme.primary;
         let original_primary_text = theme.button_primary_foreground;
         let original_ring = theme.ring;
-        configure_glass_theme(&mut theme);
+        configure_glass_theme(&mut theme, ControlAppearance::default());
+        assert_eq!(theme.tokens.button.color, theme.background.alpha(1.));
         assert_eq!(theme.background, original_background);
         assert_eq!(theme.primary, original_primary);
         assert_eq!(theme.button_primary_foreground, original_primary_text);
@@ -632,7 +707,27 @@ mod tests {
                 gpui_component::ThemeMode::Dark,
             ] {
                 theme.apply_config(&catalog.configuration(&set.name, mode));
-                configure_glass_theme(&mut theme);
+                configure_glass_theme(&mut theme, ControlAppearance::default());
+                assert_eq!(theme.tokens.button.color, theme.background.alpha(1.));
+                for fill in [
+                    theme.tokens.button.color,
+                    theme.tokens.button_hover.color,
+                    theme.tokens.button_active.color,
+                ] {
+                    assert!(
+                        crate::theme::contrast(fill, theme.button_foreground) >= 4.5,
+                        "quiet controls retain readable labels: {} {}",
+                        set.name,
+                        mode.name()
+                    );
+                }
+                configure_glass_theme(
+                    &mut theme,
+                    ControlAppearance {
+                        filled_secondary: true,
+                        ..Default::default()
+                    },
+                );
                 let normal = theme.tokens.button.color;
                 let hover = theme.tokens.button_hover.color;
                 let active = theme.tokens.button_active.color;

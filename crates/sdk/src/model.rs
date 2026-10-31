@@ -271,6 +271,7 @@ pub struct AppearanceSettings {
     pub window_translucency: bool,
     pub backdrop_blur: bool,
     pub translucency_amount: f32,
+    pub controls: ControlAppearance,
     pub dither_artwork: bool,
     pub start_screen: StartScreen,
     pub dither_recents: bool,
@@ -296,6 +297,7 @@ impl Default for AppearanceSettings {
             window_translucency: true,
             backdrop_blur: true,
             translucency_amount: DEFAULT_TRANSLUCENCY_AMOUNT,
+            controls: ControlAppearance::default(),
             dither_artwork: true,
             start_screen: StartScreen::Recents,
             dither_recents: true,
@@ -312,6 +314,44 @@ impl Default for AppearanceSettings {
             library_sources: false,
             library_favourite_badges: true,
         }
+    }
+}
+
+/// Shared Precision control geometry and emphasis, independent of panel rounding.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ControlAppearance {
+    pub radius: f32,
+    pub horizontal_padding: f32,
+    pub outline_strength: f32,
+    pub outlines: bool,
+    pub filled_secondary: bool,
+    pub compact_launch: bool,
+}
+
+impl Default for ControlAppearance {
+    fn default() -> Self {
+        Self {
+            radius: 6.,
+            horizontal_padding: 12.,
+            outline_strength: 0.65,
+            outlines: true,
+            filled_secondary: false,
+            compact_launch: true,
+        }
+    }
+}
+
+impl ControlAppearance {
+    /// Checks finite values against the supported rounding, padding and outline ranges.
+    pub fn is_valid(self) -> bool {
+        [
+            (self.radius, 0., 12.),
+            (self.horizontal_padding, 8., 20.),
+            (self.outline_strength, 0.25, 1.),
+        ]
+        .into_iter()
+        .all(|(value, min, max)| value.is_finite() && (min..=max).contains(&value))
     }
 }
 
