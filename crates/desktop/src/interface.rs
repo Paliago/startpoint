@@ -4279,17 +4279,11 @@ impl LauncherView {
 
     fn game_editor(&self, game: &Game, cx: &mut Context<Self>) -> AnyElement {
         let game_id = game.id.clone();
-        let (heading, description) = match self.detail_tab {
-            DetailTab::Metadata => (
-                "Game details",
-                "Edit the information shown in your library.",
-            ),
-            DetailTab::Artwork => ("Artwork", "Choose the images you want to see."),
-            DetailTab::Launch => (
-                "Launch configuration",
-                "Keep the original launcher, or choose your own.",
-            ),
-            DetailTab::Journal => ("Journal", "Keep notes for your next session."),
+        let heading = match self.detail_tab {
+            DetailTab::Metadata => "Game details",
+            DetailTab::Artwork => "Artwork",
+            DetailTab::Launch => "Launch configuration",
+            DetailTab::Journal => "Journal",
             DetailTab::Overview => return div().into_any_element(),
         };
         let content = match self.detail_tab {
@@ -4318,16 +4312,28 @@ impl LauncherView {
                         ),
                 )
                 .child(
-                    div().flex().items_center().justify_between()
-                    .child(button("reidentify-details-game", cx).ghost().border_0().icon(IconName::Search)
-                        .label("Re-identify game…").disabled(self.identity_job.is_some())
-                        .on_click(cx.listener(|view, _, window, cx| view.begin_reidentify(window, cx))))
-                    .child(button("save-metadata", cx)
-                            .h(px(34.))
-                            .primary()
-                            .label("Save details")
-                            .on_click(cx.listener(|view, _, _, cx| view.save_metadata(cx))),
-                    ),
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            button("reidentify-details-game", cx)
+                                .ghost()
+                                .border_0()
+                                .icon(IconName::Search)
+                                .label("Re-identify game…")
+                                .disabled(self.identity_job.is_some())
+                                .on_click(cx.listener(|view, _, window, cx| {
+                                    view.begin_reidentify(window, cx)
+                                })),
+                        )
+                        .child(
+                            button("save-metadata", cx)
+                                .h(px(34.))
+                                .primary()
+                                .label("Save details")
+                                .on_click(cx.listener(|view, _, _, cx| view.save_metadata(cx))),
+                        ),
                 )
                 .child(
                     div()
@@ -4371,19 +4377,55 @@ impl LauncherView {
                                     .on_click(cx.listener(|view, _, _, cx| view.save_progress(cx))),
                             ),
                         )
-                        .child(div().pt_3().border_t_1().border_color(cx.theme().border.alpha(0.5)).flex().flex_col().gap_2()
-                            .child(div().flex().child(button("editor-game-visibility", cx).ghost().border_0()
-                                .icon(if game.hidden { IconName::Eye } else { IconName::EyeOff })
-                                .label(if game.hidden { "Unhide game" } else { "Hide from library" })
-                                .on_click(cx.listener(|view, _, window, cx| {
-                                    if let Some(id) = view.selected.clone() {
-                                        view.run_library_game_action(&id, LibraryGameAction::Hidden, window, cx);
-                                    }
-                                }))))
-                            .child(hint("Hiding keeps your artwork, notes and launch history. Restore the game from Hidden games."))
-                            .when(game.provider_id == "manual", |panel| panel.child(div().flex()
-                                .child(button("editor-remove-game", cx).ghost().border_0().label("Remove from library…")
-                                    .on_click(cx.listener(|view, _, window, cx| view.remove_manual_game(window, cx)))))))
+                        .child(
+                            div()
+                                .pt_3()
+                                .border_t_1()
+                                .border_color(cx.theme().border.alpha(0.5))
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .child(
+                                    div().flex().child(
+                                        button("editor-game-visibility", cx)
+                                            .ghost()
+                                            .border_0()
+                                            .icon(if game.hidden {
+                                                IconName::Eye
+                                            } else {
+                                                IconName::EyeOff
+                                            })
+                                            .label(if game.hidden {
+                                                "Unhide game"
+                                            } else {
+                                                "Hide from library"
+                                            })
+                                            .on_click(cx.listener(|view, _, window, cx| {
+                                                if let Some(id) = view.selected.clone() {
+                                                    view.run_library_game_action(
+                                                        &id,
+                                                        LibraryGameAction::Hidden,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
+                                            })),
+                                    ),
+                                )
+                                .when(game.provider_id == "manual", |panel| {
+                                    panel.child(
+                                        div().flex().child(
+                                            button("editor-remove-game", cx)
+                                                .ghost()
+                                                .border_0()
+                                                .label("Remove from library…")
+                                                .on_click(cx.listener(|view, _, window, cx| {
+                                                    view.remove_manual_game(window, cx)
+                                                })),
+                                        ),
+                                    )
+                                }),
+                        )
                 })
                 .into_any_element(),
             DetailTab::Launch => div()
@@ -4400,40 +4442,27 @@ impl LauncherView {
                         .items_start()
                         .gap_3()
                         .child(Icon::new(IconName::ExternalLink).small())
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .child(div().text_sm().font_weight(FontWeight::MEDIUM).child(
-                                    if game.launch_override.is_some() {
-                                        "Custom executable".into()
-                                    } else {
-                                        format!("Launch with {}", source_name(&game.provider_id))
-                                    },
-                                ))
-                                .child(hint(if game.launch_override.is_some() {
-                                    "Your saved launch override is active."
+                        .child(div().flex_1().min_w_0().flex().flex_col().gap_1().child(
+                            div().text_sm().font_weight(FontWeight::MEDIUM).child(
+                                if game.launch_override.is_some() {
+                                    "Custom executable".into()
                                 } else {
-                                    "The original launcher handles updates and launch options."
-                                })),
-                        ),
+                                    format!("Launch with {}", source_name(&game.provider_id))
+                                },
+                            ),
+                        )),
                 )
                 .when(!self.launch_advanced, |panel| {
-                    panel
-                        .child(hint("Most games do not need any changes here."))
-                        .child(
-                            div().flex().child(
-                                button("customize-launch", cx)
-                                    .label("Customize launch…")
-                                    .on_click(cx.listener(|view, _, _, cx| {
-                                        view.launch_advanced = true;
-                                        cx.notify();
-                                    })),
-                            ),
-                        )
+                    panel.child(
+                        div().flex().child(
+                            button("customize-launch", cx)
+                                .label("Customize launch…")
+                                .on_click(cx.listener(|view, _, _, cx| {
+                                    view.launch_advanced = true;
+                                    cx.notify();
+                                })),
+                        ),
+                    )
                 })
                 .when(self.launch_advanced, |panel| {
                     panel
@@ -4616,23 +4645,16 @@ impl LauncherView {
                             .pt_5()
                             .pb_5()
                             .flex()
-                            .items_start()
+                            .items_center()
                             .justify_between()
                             .gap_3()
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .text_xl()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(heading),
-                                    )
-                                    .child(hint(description)),
+                                    .text_xl()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(heading),
                             )
                             .child(
                                 icon_button(
@@ -4827,42 +4849,27 @@ impl LauncherView {
                     ),
             );
         if !self.artwork_online {
-            panel = panel
-                .when(saved.is_empty(), |panel| {
-                    panel.child(
-                        div()
-                            .py_8()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(
+            panel =
+                panel
+                    .when(saved.is_empty(), |panel| {
+                        panel.child(
+                            div().py_8().flex().flex_col().gap_2().child(
                                 div()
-                                    .text_lg()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("Choose your first image."),
-                            )
-                            .child(hint(
-                                "Upload an image, or find artwork from the online library.",
-                            )),
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child("No saved images"),
+                            ),
+                        )
+                    })
+                    .child(
+                        div().flex().flex_wrap().gap_4().children(
+                            saved
+                                .into_iter()
+                                .map(|asset| self.saved_image(game, asset, cx)),
+                        ),
                     )
-                })
-                .child(
-                    div().flex().flex_wrap().gap_4().children(
-                        saved
-                            .into_iter()
-                            .map(|asset| self.saved_image(game, asset, cx)),
-                    ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_3()
-                        .child(div().flex_1().min_w_0().child(hint(
-                            "Select an image to use it. Your original files are kept.",
-                        )))
-                        .child(
+                    .child(
+                        div().flex().justify_end().child(
                             button("reidentify-saved-artwork-game", cx)
                                 .ghost()
                                 .border_0()
@@ -4873,13 +4880,30 @@ impl LauncherView {
                                     view.begin_reidentify(window, cx)
                                 })),
                         ),
-                );
+                    );
         } else if !key_configured {
-            panel = panel.child(div().py_6().flex().flex_col().gap_3()
-                .child(div().text_lg().font_weight(FontWeight::MEDIUM).child("More artwork, from SteamGridDB."))
-                .child(hint("Connect an API key in Settings to browse covers, backgrounds and logos. Your saved images remain available without it."))
-                .child(div().flex().child(button("configure-artwork", cx).label("Connect SteamGridDB")
-                    .on_click(cx.listener(|view, _, window, cx| view.open_settings(&OpenSettings, window, cx))))));
+            panel = panel.child(
+                div()
+                    .py_6()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("SteamGridDB not connected"),
+                    )
+                    .child(
+                        div().flex().child(
+                            button("configure-artwork", cx)
+                                .label("Connect SteamGridDB")
+                                .on_click(cx.listener(|view, _, window, cx| {
+                                    view.open_settings(&OpenSettings, window, cx)
+                                })),
+                        ),
+                    ),
+            );
         } else {
             panel = panel
                 .child(
@@ -4903,7 +4927,7 @@ impl LauncherView {
                                             .unwrap_or_else(|| game.title().to_string()),
                                     ),
                                 )
-                                .child(hint("Artwork provided by SteamGridDB")),
+                                .child(hint("SteamGridDB")),
                         )
                         .child(
                             button("reidentify-artwork-game", cx)
@@ -4939,11 +4963,6 @@ impl LauncherView {
                                 .child(hint("Loading artwork…"))
                         }),
                 )
-                .when(self.artwork_images.is_empty() && !loading, |panel| {
-                    panel.child(hint(
-                        "Your system may ask permission to unlock the saved API key.",
-                    ))
-                })
                 .child(
                     div().flex().flex_wrap().gap_4().children(
                         self.artwork_images
@@ -5000,31 +5019,72 @@ impl LauncherView {
             .configured_credentials
             .contains("steamgriddb");
         let saving = self.identity_job.is_some();
-        div().w_full().flex().flex_col().gap_4()
-            .child(div().text_lg().font_weight(FontWeight::MEDIUM).child("Find the right game"))
-            .child(hint("Choose a match for all artwork categories. Your launcher, notes and uploaded images are kept."))
-            .when(!configured, |view| view.child(self.credential_status(cx)).child(
-                button("identify-configure", cx).label("Configure SteamGridDB")
-                    .on_click(cx.listener(|view, _, window, cx| view.open_settings(&OpenSettings, window, cx)))))
-            .child(input(&self.artwork_search, cx).large().disabled(!configured || saving))
-            .child(div().flex().gap_2()
-                .child(button("identify-search", cx).primary().label("Search games").disabled(!configured || saving)
-                    .on_click(cx.listener(|view, _, _, cx| view.search_artwork(cx))))
-                .child(button("identify-cancel", cx).ghost().border_0().label("Back to artwork").disabled(saving)
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.cancel_artwork();
-                        view.reidentifying = false;
-                        view.artwork_games.clear();
-                        view.artwork_message = None;
-                        cx.notify();
-                    }))))
-            .when(self.artwork_job.is_some() || saving, |view| view.child(Spinner::new().small()))
-            .when_some(self.artwork_message.clone(), |view, message| view.child(hint(&message)))
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Find the right game"),
+            )
+            .when(!configured, |view| {
+                view.child(self.credential_status(cx)).child(
+                    button("identify-configure", cx)
+                        .label("Configure SteamGridDB")
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.open_settings(&OpenSettings, window, cx)
+                        })),
+                )
+            })
+            .child(
+                input(&self.artwork_search, cx)
+                    .large()
+                    .disabled(!configured || saving),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        button("identify-search", cx)
+                            .primary()
+                            .label("Search games")
+                            .disabled(!configured || saving)
+                            .on_click(cx.listener(|view, _, _, cx| view.search_artwork(cx))),
+                    )
+                    .child(
+                        button("identify-cancel", cx)
+                            .ghost()
+                            .border_0()
+                            .label("Back to artwork")
+                            .disabled(saving)
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                view.cancel_artwork();
+                                view.reidentifying = false;
+                                view.artwork_games.clear();
+                                view.artwork_message = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .when(self.artwork_job.is_some() || saving, |view| {
+                view.child(Spinner::new().small())
+            })
+            .when_some(self.artwork_message.clone(), |view, message| {
+                view.child(hint(&message))
+            })
             .children(self.artwork_games.iter().map(|game| {
                 let matched = game.clone();
                 button(SharedString::from(format!("identify-{}", game.id)), cx)
-                    .w_full().label(format!("Use {}", game.name)).disabled(saving)
-                    .on_click(cx.listener(move |view, _, _, cx| view.choose_artwork_game(matched.clone(), cx)))
+                    .w_full()
+                    .label(format!("Use {}", game.name))
+                    .disabled(saving)
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.choose_artwork_game(matched.clone(), cx)
+                    }))
             }))
             .into_any_element()
     }
@@ -5357,9 +5417,6 @@ impl LauncherView {
                             });
                         },
                         cx,
-                    ))
-                    .child(hint(
-                        "Display-only data; your saved games are not modified.",
                     ))
             },
         );
@@ -5865,7 +5922,7 @@ impl LauncherView {
                     })),
             )
             .child(hint(&format!(
-                "{active_days} active day{} · Launches recorded by Startpoint",
+                "{active_days} active day{}",
                 if active_days == 1 { "" } else { "s" }
             )))
             .into_any_element()
@@ -5982,11 +6039,6 @@ impl LauncherView {
                             }),
                     ),
             )
-            .when(collections.is_empty(), |panel| {
-                panel.child(hint(
-                    "Mark a game as completed in Details to track your progress.",
-                ))
-            })
             .into_any_element()
     }
 
@@ -6178,11 +6230,6 @@ impl LauncherView {
                         })),
                 )
             })
-            .when(month_launches == 0, |panel| {
-                panel.child(hint(
-                    "Launch a game through Startpoint to begin your history.",
-                ))
-            })
             .into_any_element()
     }
 
@@ -6230,20 +6277,7 @@ impl LauncherView {
                     ),
             )
             .when(entries.is_empty(), |panel| {
-                panel.child(
-                    div()
-                        .py_3()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_lg()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("Keep a note for next time."),
-                        )
-                        .child(hint("Save a discovery, a reminder, or your next move.")),
-                )
+                panel.child(hint("No notes yet"))
             })
             .children(entries.into_iter().map(|(entry, game)| {
                 let id = game.id.clone();
@@ -6356,7 +6390,7 @@ impl LauncherView {
                     }),
             )
             .when(entries.is_empty(), |panel| {
-                panel.child(hint("No notes yet. Your journal stays on this computer."))
+                panel.child(hint("No notes yet"))
             })
             .children(entries.into_iter().map(|entry| {
                 let saved = entry.clone();
@@ -6454,14 +6488,38 @@ impl LauncherView {
     }
 
     fn activity_overview(&self, cx: &mut Context<Self>) -> AnyElement {
-        div().id("library-activity").size_full().overflow_y_scroll().px_8().pb_8()
-            .child(div().w_full().max_w(px(1100.)).mx_auto().pt(px(CONTENT_TOP)).flex().flex_col().gap_5()
-                .child(div().text_3xl().child("Your activity"))
-                .child(hint("Launches recorded through Startpoint, not playtime. Existing last-played dates are not retroactively counted."))
-                .child(div().w_full().flex().flex_wrap().items_start().gap_4()
-                    .child(widget_surface(cx).child(self.activity_calendar(cx)))
-                    .child(widget_surface(cx).child(self.collection_progress(false, cx))))
-                .child(widget_surface(cx).w_full().child(self.journal_widget(false, cx))))
+        div()
+            .id("library-activity")
+            .size_full()
+            .overflow_y_scroll()
+            .px_8()
+            .pb_8()
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(1100.))
+                    .mx_auto()
+                    .pt(px(CONTENT_TOP))
+                    .flex()
+                    .flex_col()
+                    .gap_5()
+                    .child(div().text_3xl().child("Your activity"))
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_wrap()
+                            .items_start()
+                            .gap_4()
+                            .child(widget_surface(cx).child(self.activity_calendar(cx)))
+                            .child(widget_surface(cx).child(self.collection_progress(false, cx))),
+                    )
+                    .child(
+                        widget_surface(cx)
+                            .w_full()
+                            .child(self.journal_widget(false, cx)),
+                    ),
+            )
             .into_any_element()
     }
 

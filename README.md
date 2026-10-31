@@ -44,6 +44,8 @@ Double-click a game to launch it, or right-click for play, metadata/collections,
 
 The editor uses a game-identity rail with **Details**, **Artwork**, **Launch**, and **Journal** sections. Playback and favourite actions stay in the overview instead of competing with editing. **Re-identify game…** is available in Details and Artwork. Details opens on the main fields; **Library organization** expands to collections, completion, hide/unhide and manual-game removal. There is no separate sidebar options menu. Launch opens on the current launcher, with executable, arguments and directory fields behind **Customize launch…**; saved overrides expand automatically.
 
+Editors, widgets and Customize panels omit instructional subtitles and reassurance captions. Labels, metadata, concise empty states, operational feedback, errors and destructive-action warnings remain visible.
+
 Artwork opens on **Your images**. Select an image tile to use it; the current image has a small check and caption rather than a selection outline or disabled action row. Upload remains beside the artwork categories. **Find more artwork** opens a separate SteamGridDB browsing surface; credentials, matching and network requests are not mixed into the saved-image view. **Re-identify game…** opens the same dedicated identification flow from either saved or online artwork. Saved images and uploads continue to work without an API key.
 
 Compact rows include developer/genre metadata, collections, completion and Startpoint launch counts, alongside availability and optional source/date information. Source labels and launch dates are independent: games with no recorded launch date leave that field empty. Switching layout or density returns the library to its heading and filters.
