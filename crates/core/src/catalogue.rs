@@ -659,4 +659,22 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    #[ignore = "Requires the public GOG catalogue service"]
+    fn live_witcher_gog_product_metadata() {
+        use std::sync::{Arc, atomic::AtomicBool};
+        let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .unwrap();
+        let context = JobContext::new(Arc::new(AtomicBool::new(false)), |_| {});
+        let metadata = gog_metadata(&client, "1495134320", &context).unwrap();
+        assert!(metadata.title.is_some());
+        assert!(metadata.description.is_some());
+        assert!(metadata.developer.is_some());
+        assert!(metadata.genres.is_some());
+        println!("GOG Witcher 3 product: description, developer and genres available");
+    }
 }

@@ -2,6 +2,7 @@
 
 mod adjustment_slider;
 mod appearance;
+mod branding;
 mod components;
 mod detail_artwork;
 mod diagnostics;
@@ -64,7 +65,7 @@ fn main() {
     velopack::VelopackApp::build()
         .set_auto_apply_on_startup(
             updater::supported_platform()
-                && !cfg!(debug_assertions)
+                && !branding::IS_DEV
                 && !std::env::args()
                     .any(|arg| matches!(arg.as_str(), "--example-library" | "--diagnostics")),
         )
@@ -125,6 +126,9 @@ fn main() {
     gpui_platform::application()
         .with_assets(LauncherAssets)
         .run(move |cx| {
+            if branding::IS_DEV {
+                cx.set_app_identity(branding::APP_ID, branding::NAME);
+            }
             gpui_component::init(cx);
             cx.set_global(theme::Catalog::default());
             appearance::apply(&api.snapshot().settings.appearance, None, cx);
@@ -218,19 +222,12 @@ fn main() {
                     window_bounds: Some(bounds),
                     window_min_size: Some(size(px(960.), px(620.))),
                     titlebar: Some(TitlebarOptions {
-                        title: Some(
-                            if example_library {
-                                "Startpoint — Example library"
-                            } else {
-                                "Startpoint"
-                            }
-                            .into(),
-                        ),
+                        title: Some(branding::window_title(example_library).into()),
                         appears_transparent: true,
                         traffic_light_position: Some(point(px(18.), px(14.))),
                     }),
                     window_background: appearance::background(cx),
-                    app_id: Some("startpoint".into()),
+                    app_id: Some(branding::APP_ID.into()),
                     ..Default::default()
                 },
                 move |window, cx| {

@@ -1787,11 +1787,16 @@ impl Shared {
                     }
                 }
             };
+            // The GOG response has already been verified against this exact
+            // product ID, and native_catalogue_key checked the selected identity
+            // against the installed game. Storefront names can change (e.g.
+            // Witcher 3 GOTY is now marketed as Remastered); do not reject the
+            // same product's text just because its current display name differs.
+            // Epic searches by title, so it still needs the title check below.
             if let Some(metadata) = native
-                && metadata
-                    .title
-                    .as_deref()
-                    .is_some_and(|name| catalogue::titles_match(title, name))
+                && metadata.title.as_deref().is_some_and(|name| {
+                    game.provider_id == "gog" || catalogue::titles_match(title, name)
+                })
                 && (metadata.description.is_some()
                     || metadata.developer.is_some()
                     || metadata.genres.is_some())
@@ -2587,12 +2592,13 @@ mod tests {
     }
 
     #[test]
-    fn native_metadata_repairs_disco_and_epic_exclusives_despite_old_steam_misses() {
-        for (provider, discovered, selected, source_id, description, developer) in [
+    fn native_metadata_uses_verified_store_identity_despite_renames_and_steam_misses() {
+        for (provider, discovered, selected, catalogue_title, source_id, description, developer) in [
             (
                 "gog",
                 "Disco Elysium - The Final Cut",
                 "Disco Elysium",
+                "Disco Elysium - The Final Cut",
                 "1771589310",
                 "A detective RPG.",
                 "ZA/UM",
@@ -2601,9 +2607,19 @@ mod tests {
                 "epic",
                 "Alan Wake 2",
                 "Alan Wake 2",
+                "Alan Wake 2",
                 "epic-app",
                 "Two heroes in a horror story.",
                 "Remedy Entertainment",
+            ),
+            (
+                "gog",
+                "The Witcher 3: Wild Hunt - Game of the Year Edition",
+                "The Witcher 3: Wild Hunt",
+                "The Witcher 3: Wild Hunt — Remastered",
+                "1495134320",
+                "Become a professional monster slayer.",
+                "CD PROJEKT RED",
             ),
         ] {
             let mut game = identified_nonsteam_game(provider);
@@ -2632,7 +2648,7 @@ mod tests {
             let mut store = Store::open(&paths).unwrap();
             store.save_games(std::slice::from_ref(&game)).unwrap();
             let metadata = UserMetadata {
-                title: Some(discovered.into()),
+                title: Some(catalogue_title.into()),
                 description: Some(description.into()),
                 developer: Some(developer.into()),
                 genres: Some("RPG / Horror fixture".into()),
@@ -2644,13 +2660,18 @@ mod tests {
                     now(),
                 )
                 .unwrap();
-            store
-                .save_cache(
-                    &format!("steam/catalogue-title-v1/{}", selected.to_lowercase()),
-                    &None::<String>,
-                    now(),
-                )
-                .unwrap();
+            for version in ["v1", "v2"] {
+                store
+                    .save_cache(
+                        &format!(
+                            "steam/catalogue-title-{version}/{}",
+                            selected.to_lowercase()
+                        ),
+                        &None::<String>,
+                        now(),
+                    )
+                    .unwrap();
+            }
             let shared = Shared {
                 image_client: reqwest::blocking::Client::builder()
                     .proxy(reqwest::Proxy::all("http://127.0.0.1:9").unwrap())
@@ -2700,6 +2721,27 @@ mod tests {
             let mut wrong_identity = game.clone();
             wrong_identity.catalogue_metadata.title = Some("Another game: expansion".into());
             assert!(native_catalogue_key(&wrong_identity, "Another game: expansion").is_none());
+            // Even a cached, verified installed-product response must not leak
+            // into an unrelated re-identification or a different expansion.
+            shared
+                .store(|store| {
+                    store.save_cache(
+                        "steam/catalogue-title-v2/another game: expansion",
+                        &None::<String>,
+                        now(),
+                    )
+                })
+                .unwrap();
+            shared
+                .update_game(&game.id, |current| {
+                    *current = wrong_identity.clone();
+                    Ok(())
+                })
+                .unwrap();
+            shared
+                .populate_catalogue_metadata(&wrong_identity, &context)
+                .unwrap();
+            assert_eq!(shared.game(&game.id).unwrap(), wrong_identity);
         }
     }
 

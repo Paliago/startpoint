@@ -1,2 +1,6 @@
 // GPUI loads the app icon from resource 1. Windows also uses it for shortcuts.
+#ifdef STARTPOINT_DEV_ICON
+1 ICON "assets/icons/startpoint-dev.ico"
+#else
 1 ICON "assets/icons/startpoint.ico"
+#endif

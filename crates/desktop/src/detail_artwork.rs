@@ -5,6 +5,19 @@ use startpoint_sdk::{ArtworkAsset, ArtworkKind, Game};
 
 const LOGO_HEIGHT: f32 = 160.;
 
+pub(crate) fn editor_poster_frame(kind: ArtworkKind) -> Div {
+    div()
+        .w_full()
+        .aspect_ratio(if kind == ArtworkKind::Icon {
+            1.
+        } else {
+            2. / 3.
+        })
+        .flex_shrink_0()
+        .rounded(px(5.))
+        .overflow_hidden()
+}
+
 fn logo_frame(height: f32) -> Div {
     div()
         .relative()
@@ -89,6 +102,20 @@ pub(crate) fn heading(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[::core::prelude::v1::test]
+    fn editor_poster_fills_the_sidebar_width_without_squashing_covers_or_icons() {
+        for (kind, ratio) in [(ArtworkKind::Cover, 2. / 3.), (ArtworkKind::Icon, 1.)] {
+            let mut frame = editor_poster_frame(kind);
+            let style = frame.style();
+            assert_eq!(style.size.width, Some(relative(1.).into()));
+            assert_eq!(style.size.height, None);
+            assert_eq!(style.aspect_ratio, Some(ratio));
+            assert_eq!(style.flex_shrink, Some(0.));
+            assert_eq!(style.overflow.x, Some(Overflow::Hidden));
+            assert_eq!(style.overflow.y, Some(Overflow::Hidden));
+        }
+    }
 
     #[::core::prelude::v1::test]
     fn logo_frame_reserves_nonshrinking_height_above_the_description() {

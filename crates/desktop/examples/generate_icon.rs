@@ -7,7 +7,14 @@ const SIZES: [u32; 9] = [16, 20, 24, 32, 40, 48, 64, 128, 256];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/icons");
-    let svg = fs::read(directory.join("startpoint.svg"))?;
+    for name in ["startpoint", "startpoint-dev"] {
+        generate(&directory, name)?;
+    }
+    Ok(())
+}
+
+fn generate(directory: &Path, name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let svg = fs::read(directory.join(format!("{name}.svg")))?;
     let tree = resvg::usvg::Tree::from_data(&svg, &resvg::usvg::Options::default())?;
     let render = |size: u32| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let mut image = resvg::tiny_skia::Pixmap::new(size, size).ok_or("invalid icon size")?;
@@ -21,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         Ok(image.encode_png()?)
     };
-    write_if_changed(&directory.join("startpoint.png"), &render(512)?)?;
+    write_if_changed(&directory.join(format!("{name}.png")), &render(512)?)?;
     let frames = SIZES
         .into_iter()
         .map(|size| render(size).map(|png| (size, png)))
@@ -44,8 +51,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (_, png) in frames {
         ico.extend_from_slice(&png);
     }
-    write_if_changed(&directory.join("startpoint.ico"), &ico)?;
-    println!("Generated startpoint.png (512px) and startpoint.ico (16–256px) from startpoint.svg");
+    write_if_changed(&directory.join(format!("{name}.ico")), &ico)?;
+    println!("Generated {name}.png (512px) and {name}.ico (16–256px) from {name}.svg");
     Ok(())
 }
 

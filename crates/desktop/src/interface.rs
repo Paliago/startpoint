@@ -4859,24 +4859,15 @@ impl LauncherView {
                 .gap_4()
                 .child(
                     div()
-                        .p_4()
-                        .rounded(px(8.))
-                        .bg(cx.theme().secondary.alpha(0.4))
-                        .flex()
-                        .items_start()
-                        .gap_3()
-                        .child(Icon::new(IconName::ExternalLink).small())
-                        .child(div().flex_1().min_w_0().flex().flex_col().gap_1().child(
-                            div().text_sm().font_weight(FontWeight::MEDIUM).child(
-                                if game.steam_launch.is_some() {
-                                    "Launch with Steam".into()
-                                } else if game.launch_override.is_some() {
-                                    "Custom executable".into()
-                                } else {
-                                    format!("Launch with {}", source_name(&game.provider_id))
-                                },
-                            ),
-                        )),
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(if game.steam_launch.is_some() {
+                            "Launch with Steam".into()
+                        } else if game.launch_override.is_some() {
+                            "Custom executable".into()
+                        } else {
+                            format!("Launch with {}", source_name(&game.provider_id))
+                        }),
                 )
                 .when(!self.launch_advanced, |panel| {
                     panel.child(
@@ -4919,22 +4910,17 @@ impl LauncherView {
                     .border_color(cx.theme().border.alpha(0.5))
                     .child(
                         div()
+                            .w_full()
+                            .flex_shrink_0()
                             .flex()
                             .flex_col()
                             .gap_3()
                             .pb_2()
                             .when_some(artwork, |identity, asset| {
                                 identity.child(
-                                    div()
-                                        .w(px(44.))
-                                        .h(px(62.))
-                                        .rounded(px(5.))
-                                        .overflow_hidden()
-                                        .child(image(
-                                            asset.thumbnail_path.clone(),
-                                            ObjectFit::Cover,
-                                            cx,
-                                        )),
+                                    crate::detail_artwork::editor_poster_frame(asset.kind).child(
+                                        image(asset.thumbnail_path.clone(), ObjectFit::Cover, cx),
+                                    ),
                                 )
                             })
                             .child(
@@ -4968,8 +4954,8 @@ impl LauncherView {
                                 .border_0()
                                 .w_full()
                                 .h(px(34.))
-                                .px_2()
-                                .icon(icon)
+                                .px_3()
+                                .icon(Icon::new(icon).small().mr_1())
                                 .label(label)
                                 .child(div().flex_1())
                                 .when(self.detail_tab == tab, |button| {

@@ -6,6 +6,7 @@ rust-version = "1.89"
 default-run = "startpoint"
 
 [features]
+dev-icon = []
 runtime-shaders = ["gpui_platform/runtime_shaders"]
 self-update = ["dep:velopack", "dep:semver", "dep:async-channel"]
 
