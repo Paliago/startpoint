@@ -30,7 +30,7 @@ Packaged apps check for updates in the background after launch; use **Download u
 
 ## Make a release — 1, 2, 3
 
-1. **Prepare `main`.** Set `[workspace.package].version` in `Cargo.toml` (already `0.1.0` for the first release), run `cargo check --workspace --features self-update` to update `Cargo.lock`, then commit/merge and push to `main`. Wait for **Actions → Release** to pass on that exact commit. It produces installable Windows + Apple Silicon Mac previews without publishing.
+1. **Prepare `main`.** Set `[workspace.package].version` in `Cargo.toml`, run `cargo check --workspace --features self-update` to update `Cargo.lock`, then commit/merge and push to `main`. Wait for **Actions → CI** on that exact commit. Main pushes run formatting, release-tooling tests and Windows workspace/updater tests only—no release builds, installers or artifact uploads. For a full Windows + Apple Silicon Mac preview, manually run **Actions → Release → Run workflow** on `main` with `tag` blank and `publish` unchecked.
 2. **Tag that tested commit.** Normal, signed release: `git tag -a v0.1.0 -m "Startpoint 0.1.0"`, then `git push origin v0.1.0`. For the first **unsigned testing release**, use `git tag -a v0.1.0 -m "Startpoint 0.1.0" -m "[unsigned-test]"` instead, then push the tag. Use the matching new version on subsequent releases. Never move/reuse a published tag.
 3. **Install the published release.** Wait for the tag's **Release** run: both platforms must pass before **one GitHub Release** becomes public. Download your installer from [Releases](https://github.com/Paliago/startpoint/releases). To exercise the updater, install `0.1.0`, then release `0.1.1` and use **Download update → Restart to update** without reinstalling.
 

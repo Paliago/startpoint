@@ -1,9 +1,8 @@
 name: Release
-run-name: Release — ${{ inputs.tag || github.ref_name }}
+run-name: ${{ (github.event_name == 'push' || inputs.publish) && 'Publish' || 'Package preview' }} — ${{ inputs.tag || github.ref_name }}
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -130,6 +129,8 @@ jobs:
             ~/.cargo/git
             target
           key: release-v2-${{ matrix.platform }}-${{ steps.rust.outputs.compiler }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            release-v2-${{ matrix.platform }}-${{ steps.rust.outputs.compiler }}-
       - name: Test workspace and updater
         run: cargo test --locked --workspace --features self-update
       - name: Build release executable
