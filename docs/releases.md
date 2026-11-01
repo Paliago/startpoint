@@ -4,16 +4,16 @@ The **Release** workflow builds Windows x64 and macOS Apple Silicon from the **s
 
 ## Flow
 
-- **Push/merge to `main`:** version/provenance checks → two parallel native builds and tests → packaging/validation → one combined Actions artifact. Nothing is published. These are installation previews, not a separate update feed.
+- **Push/merge to `main`:** the **CI** workflow runs formatting and release-tooling tests on Linux, then Windows workspace/updater tests in the debug profile. Dependency/test-build caches are reused. Superseded CI runs are cancelled. No macOS job, release build, packaging SDK, installer generation or artifact upload runs automatically on main.
 - **Push `vX.Y.Z`:** require a stable version matching `Cargo.toml` and `Cargo.lock`, with its commit reachable from `main`. Build all platforms, assemble and validate their hashes/source/signing state, create a draft, upload everything, then publish once as the latest release. If any platform fails, **no partial public release** appears.
-- **Manual run:** Actions → Release → Run workflow on `main`. Leave `tag` blank for a preview; enter an existing tag and select `publish` to retry publication. `allow_unsigned` is an explicit testing opt-in. Publishing without a tag is rejected.
-- **Unsigned tags:** an annotated tag with `[unsigned-test]` on its own message line allows an explicitly labelled testing release. Otherwise publication requires signing on every platform. Main previews permit unsigned packages; incomplete signing configurations still fail rather than silently falling back.
+- **Manual run:** Actions → Release → Run workflow on `main`. Leave `tag` blank and `publish` unchecked for a full Windows + Apple Silicon Mac installable preview; enter an existing tag and select `publish` to retry publication. Runs are labelled **Package preview** or **Publish** accordingly. `allow_unsigned` is an explicit testing opt-in. Publishing without a tag is rejected.
+- **Unsigned tags:** an annotated tag with `[unsigned-test]` on its own message line allows an explicitly labelled testing release. Otherwise publication requires signing on every platform. Manual previews permit unsigned packages; incomplete signing configurations still fail rather than silently falling back.
 
 The concise **1, 2, 3** release guide is in [README.md](../README.md#make-a-release--1-2-3). For `0.1.0`, the workspace version is already correct. To download a preview, open its successful Actions run and extract `startpoint-v0.1.0-all-platforms`; installers are inside.
 
 ## One-time GitHub setup
 
-Default destination: the public **Paliago/startpoint** repository. The workflow's built-in token publishes there; no extra publishing credential is necessary. Enable GitHub Actions. Branch protections should require the release preview jobs before merging release candidates. Protect `v*` tags from deletion/force-push, allowing only release maintainers to create them.
+Default destination: the public **Paliago/startpoint** repository. The workflow's built-in token publishes there; no extra publishing credential is necessary. Enable GitHub Actions. Protect `v*` tags from deletion/force-push, allowing only release maintainers to create them.
 
 Optional separate public release destination:
 
@@ -26,7 +26,7 @@ Keep the destination stable: it is compiled into installed apps. Publishing toke
 
 Configure these under **Settings → Secrets and variables → Actions** before pushing a normal production tag. `0.1.0` can use the explicit unsigned-testing annotation instead.
 
-**No developer accounts for testing:** leave the signing secrets/variables unset. Main previews work without them. Publish `0.1.0` with the README's `[unsigned-test]` annotated tag; the release will be clearly labelled as untrusted testing software. The Mac app is ad-hoc signed locally with identity `-`, requiring no Apple account or certificate; the `.pkg` is unsigned and neither is notarized. Prefer the app ZIP in `~/Applications` for testing and explicitly approve macOS security warnings if allowed. Ad-hoc signing verifies bundle integrity, not who published it. Developer ID signing/notarization is optional future work for trusted public distribution and requires Apple Developer Program credentials.
+**No developer accounts for testing:** leave the signing secrets/variables unset. Manual previews work without them. Publish `0.1.0` with the README's `[unsigned-test]` annotated tag; the release will be clearly labelled as untrusted testing software. The Mac app is ad-hoc signed locally with identity `-`, requiring no Apple account or certificate; the `.pkg` is unsigned and neither is notarized. Prefer the app ZIP in `~/Applications` for testing and explicitly approve macOS security warnings if allowed. Ad-hoc signing verifies bundle integrity, not who published it. Developer ID signing/notarization is optional future work for trusted public distribution and requires Apple Developer Program credentials.
 
 ### Windows: Azure Trusted Signing
 
