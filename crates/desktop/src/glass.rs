@@ -155,6 +155,7 @@ impl Palette {
             theme.border,
         );
         palette.surface.a = effects(cx).opacity(SURFACE_ALPHA);
+        palette.button = theme.tokens.button.color;
         palette
     }
 

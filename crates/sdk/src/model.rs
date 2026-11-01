@@ -329,9 +329,12 @@ pub struct AppearanceSettings {
     pub window_translucency: bool,
     pub backdrop_blur: bool,
     pub translucency_amount: f32,
+    pub controls: ControlAppearance,
     pub dither_artwork: bool,
+    pub dither_artwork_strength: f32,
     pub start_screen: StartScreen,
     pub dither_recents: bool,
+    pub dither_recents_strength: f32,
     pub fade_recents: bool,
     pub recents_activity: bool,
     pub recents_progress: bool,
@@ -354,9 +357,12 @@ impl Default for AppearanceSettings {
             window_translucency: true,
             backdrop_blur: true,
             translucency_amount: DEFAULT_TRANSLUCENCY_AMOUNT,
+            controls: ControlAppearance::default(),
             dither_artwork: true,
+            dither_artwork_strength: DEFAULT_DITHER_STRENGTH,
             start_screen: StartScreen::Recents,
             dither_recents: true,
+            dither_recents_strength: DEFAULT_DITHER_STRENGTH,
             fade_recents: true,
             recents_activity: false,
             recents_progress: false,
@@ -373,8 +379,49 @@ impl Default for AppearanceSettings {
     }
 }
 
+/// Shared Precision control geometry and emphasis, independent of panel rounding.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ControlAppearance {
+    pub radius: f32,
+    pub horizontal_padding: f32,
+    pub outline_strength: f32,
+    pub outlines: bool,
+    pub filled_secondary: bool,
+    pub compact_launch: bool,
+}
+
+impl Default for ControlAppearance {
+    fn default() -> Self {
+        Self {
+            radius: 6.,
+            horizontal_padding: 12.,
+            outline_strength: 0.65,
+            outlines: true,
+            filled_secondary: false,
+            compact_launch: true,
+        }
+    }
+}
+
+impl ControlAppearance {
+    /// Checks finite values against the supported rounding, padding and outline ranges.
+    pub fn is_valid(self) -> bool {
+        [
+            (self.radius, 0., 12.),
+            (self.horizontal_padding, 8., 20.),
+            (self.outline_strength, 0.25, 1.),
+        ]
+        .into_iter()
+        .all(|(value, min, max)| value.is_finite() && (min..=max).contains(&value))
+    }
+}
+
 /// The settled glass appearance is the slider's default detent.
 pub const DEFAULT_TRANSLUCENCY_AMOUNT: f32 = 0.2;
+
+/// Opacity of the original ordered artwork texture.
+pub const DEFAULT_DITHER_STRENGTH: f32 = 0.12;
 
 #[derive(Clone, Debug, Default)]
 pub struct SettingsSnapshot {

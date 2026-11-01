@@ -12,6 +12,9 @@ fn logo_frame(height: f32) -> Div {
         .h(px(height))
         .flex_shrink_0()
         .overflow_hidden()
+        .flex()
+        .items_center()
+        .justify_center()
 }
 
 /// Heroes/backgrounds are intended as clean scenery, unlike branded box covers.
@@ -63,17 +66,14 @@ pub(crate) fn heading(
                     logo_layout(width, logo.width, logo.height, height_limit);
                 logo_frame(frame_height).child(
                     img(logo.path)
-                        // Explicit bounds avoid GPUI's intrinsic/percentage image sizing.
-                        .absolute()
-                        .left(px((width - image_width) / 2.))
-                        .top(px((frame_height - image_height) / 2.))
                         .w(px(image_width))
                         .h(px(image_height))
+                        .flex_shrink_0()
                         .object_fit(ObjectFit::Contain)
                         .with_fallback(move || text().into_any_element()),
                 )
             }
-            State::Pending => logo_frame(LOGO_HEIGHT),
+            State::Pending => logo_frame(LOGO_HEIGHT).child(text()),
             State::Failed => text(),
         },
         None => div()

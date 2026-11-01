@@ -1075,6 +1075,22 @@ impl Shared {
                         "Translucency must be between 0 and 100 percent".into(),
                     ));
                 }
+                if !settings.controls.is_valid() {
+                    return Err(ApiError::Validation(
+                        "Control rounding must be 0–12px, padding 8–20px and outline strength 25–100%".into(),
+                    ));
+                }
+                if [
+                    settings.dither_recents_strength,
+                    settings.dither_artwork_strength,
+                ]
+                .into_iter()
+                .any(|value| !value.is_finite() || !(0. ..=1.).contains(&value))
+                {
+                    return Err(ApiError::Validation(
+                        "Dithering strength must be between 0 and 100 percent".into(),
+                    ));
+                }
                 self.store(|store| {
                     store.save_setting("appearance", &settings)?;
                     self.state
@@ -1915,6 +1931,41 @@ fn restore_appearance_settings(
     if invalid_amount {
         settings.translucency_amount = DEFAULT_TRANSLUCENCY_AMOUNT;
     }
+    let mut invalid_dithering = false;
+    for value in [
+        &mut settings.dither_recents_strength,
+        &mut settings.dither_artwork_strength,
+    ] {
+        if !value.is_finite() || !(0. ..=1.).contains(value) {
+            *value = startpoint_sdk::DEFAULT_DITHER_STRENGTH;
+            invalid_dithering = true;
+        }
+    }
+    let invalid_controls = !settings.controls.is_valid();
+    if invalid_controls {
+        let defaults = AppearanceSettings::default().controls;
+        for (value, min, max, default) in [
+            (&mut settings.controls.radius, 0., 12., defaults.radius),
+            (
+                &mut settings.controls.horizontal_padding,
+                8.,
+                20.,
+                defaults.horizontal_padding,
+            ),
+            (
+                &mut settings.controls.outline_strength,
+                0.25,
+                1.,
+                defaults.outline_strength,
+            ),
+        ] {
+            *value = if value.is_finite() {
+                value.clamp(min, max)
+            } else {
+                default
+            };
+        }
+    }
     if experimental {
         // Adopt the settled Recents defaults once, retaining theme/mode/widgets
         // and all other preferences. Saving removes the experimental keys, so
@@ -1926,7 +1977,11 @@ fn restore_appearance_settings(
     }
     Ok((
         settings,
-        experimental || combined_glass_switch || invalid_amount,
+        experimental
+            || combined_glass_switch
+            || invalid_amount
+            || invalid_controls
+            || invalid_dithering,
     ))
 }
 
@@ -3174,6 +3229,15 @@ mod tests {
         assert!(old.window_translucency);
         assert!(old.backdrop_blur);
         assert_eq!(old.translucency_amount, DEFAULT_TRANSLUCENCY_AMOUNT);
+        assert_eq!(old.controls, startpoint_sdk::ControlAppearance::default());
+        assert_eq!(
+            old.dither_recents_strength,
+            startpoint_sdk::DEFAULT_DITHER_STRENGTH
+        );
+        assert_eq!(
+            old.dither_artwork_strength,
+            startpoint_sdk::DEFAULT_DITHER_STRENGTH
+        );
         for enabled in [false, true] {
             let (combined, changed) = restore_appearance_settings(Some(serde_json::json!({
                 "window_translucency": enabled, "theme": "Custom"
@@ -3200,6 +3264,16 @@ mod tests {
                     window_translucency,
                     backdrop_blur,
                     translucency_amount: 0.35,
+                    dither_recents_strength: 0.07,
+                    dither_artwork_strength: 0.3,
+                    controls: startpoint_sdk::ControlAppearance {
+                        radius: 9.,
+                        horizontal_padding: 18.,
+                        outline_strength: 0.8,
+                        outlines: false,
+                        filled_secondary: true,
+                        compact_launch: false,
+                    },
                     ..old.clone()
                 };
                 let (restored, _) =
@@ -3217,6 +3291,43 @@ mod tests {
             .unwrap();
             assert!(changed);
             assert_eq!(restored.translucency_amount, DEFAULT_TRANSLUCENCY_AMOUNT);
+        }
+        for (radius, padding, strength) in [(-5_f32, 4_f32, -1_f32), (80., 60., 8.)] {
+            let (restored, changed) = restore_appearance_settings(Some(serde_json::json!({
+                "backdrop_blur": true,
+                "controls": {"radius": radius, "horizontal_padding": padding, "outline_strength": strength, "filled_secondary": true}
+            }))).unwrap();
+            assert!(changed);
+            assert!(restored.controls.is_valid());
+            assert!(restored.controls.filled_secondary);
+            assert_eq!(restored.controls.radius, radius.clamp(0., 12.));
+            assert_eq!(restored.controls.horizontal_padding, padding.clamp(8., 20.));
+            assert_eq!(restored.controls.outline_strength, strength.clamp(0.25, 1.));
+        }
+        for (recents, artwork) in [(-0.1, 0.35), (0.08, 1.1)] {
+            let (restored, changed) = restore_appearance_settings(Some(serde_json::json!({
+                "backdrop_blur": true, "dither_recents": false, "dither_artwork": true,
+                "dither_recents_strength": recents, "dither_artwork_strength": artwork
+            })))
+            .unwrap();
+            assert!(changed);
+            assert!(!restored.dither_recents && restored.dither_artwork);
+            assert_eq!(
+                restored.dither_recents_strength,
+                if (0. ..=1.).contains(&recents) {
+                    recents
+                } else {
+                    startpoint_sdk::DEFAULT_DITHER_STRENGTH
+                }
+            );
+            assert_eq!(
+                restored.dither_artwork_strength,
+                if (0. ..=1.).contains(&artwork) {
+                    artwork
+                } else {
+                    startpoint_sdk::DEFAULT_DITHER_STRENGTH
+                }
+            );
         }
     }
 
@@ -3253,7 +3364,7 @@ mod tests {
             .expect("application");
         let events = api.subscribe();
         let executable = std::env::current_exe().expect("test executable");
-        for step in 0..33 {
+        for step in 0..53 {
             let previous_library = api.snapshot().games;
             let game_id = api
                 .snapshot()
@@ -3299,8 +3410,10 @@ mod tests {
                         backdrop_blur: true,
                         translucency_amount: 0.35,
                         dither_artwork: false,
+                        dither_artwork_strength: 0.35,
                         start_screen: StartScreen::Recents,
                         dither_recents: true,
+                        dither_recents_strength: 0.08,
                         fade_recents: true,
                         recents_activity: true,
                         recents_progress: true,
@@ -3313,6 +3426,7 @@ mod tests {
                         library_last_played: false,
                         library_sources: true,
                         library_favourite_badges: false,
+                        controls: Default::default(),
                     },
                 },
                 6 => Command::LaunchGame { game_id },
@@ -3340,6 +3454,34 @@ mod tests {
                         ..AppearanceSettings::default()
                     },
                 },
+                33..=44 => {
+                    let mut settings = AppearanceSettings::default();
+                    match step {
+                        33..=36 => {
+                            settings.controls.radius =
+                                [-1., 13., f32::NAN, f32::INFINITY][step - 33]
+                        }
+                        37..=40 => {
+                            settings.controls.horizontal_padding =
+                                [7., 21., f32::NAN, f32::INFINITY][step - 37]
+                        }
+                        _ => {
+                            settings.controls.outline_strength =
+                                [0.24, 1.01, f32::NAN, f32::INFINITY][step - 41]
+                        }
+                    }
+                    Command::SetAppearance { settings }
+                }
+                45..=52 => {
+                    let mut settings = AppearanceSettings::default();
+                    let value = [-0.1, 1.1, f32::NAN, f32::INFINITY][(step - 45) % 4];
+                    if step < 49 {
+                        settings.dither_recents_strength = value;
+                    } else {
+                        settings.dither_artwork_strength = value;
+                    }
+                    Command::SetAppearance { settings }
+                }
                 24 => Command::SetHidden {
                     game_id,
                     hidden: true,
@@ -3624,8 +3766,10 @@ mod tests {
                 backdrop_blur: true,
                 translucency_amount: 0.35,
                 dither_artwork: false,
+                dither_artwork_strength: 0.35,
                 start_screen: StartScreen::Recents,
                 dither_recents: true,
+                dither_recents_strength: 0.08,
                 fade_recents: true,
                 recents_activity: true,
                 recents_progress: true,
@@ -3638,6 +3782,7 @@ mod tests {
                 library_last_played: false,
                 library_sources: true,
                 library_favourite_badges: false,
+                controls: Default::default(),
             }
         );
         let mut store = Store::open(&paths).expect("migrated store");
