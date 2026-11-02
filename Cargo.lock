@@ -6433,7 +6433,7 @@ dependencies = [
 
 [[package]]
 name = "startpoint"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-channel",
  "chrono",
@@ -6461,7 +6461,7 @@ dependencies = [
 
 [[package]]
 name = "startpoint-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-channel",
  "directories",
@@ -6484,7 +6484,7 @@ dependencies = [
 
 [[package]]
 name = "startpoint-sdk"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "async-channel",
  "serde",
