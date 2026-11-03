@@ -44,14 +44,18 @@ impl LauncherView {
         choice_dropdown(
             "recents-layout",
             self.appearance.recents_layout,
-            [RecentsLayout::Carousel, RecentsLayout::Editorial]
-                .into_iter()
-                .map(|layout| {
-                    let mut settings = self.appearance.clone();
-                    settings.recents_layout = layout;
-                    (layout, crate::design::resolve(&settings).name.into())
-                })
-                .collect(),
+            [
+                RecentsLayout::Carousel,
+                RecentsLayout::Editorial,
+                RecentsLayout::Gallery,
+            ]
+            .into_iter()
+            .map(|layout| {
+                let mut settings = self.appearance.clone();
+                settings.recents_layout = layout;
+                (layout, crate::design::resolve(&settings).name.into())
+            })
+            .collect(),
             self.snapshot.ready,
             move |recents_layout, window, cx| {
                 let _ = owner.update(cx, |view, cx| {

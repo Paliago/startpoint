@@ -308,6 +308,7 @@ pub enum RecentsLayout {
     #[default]
     Carousel,
     Editorial,
+    Gallery,
 }
 
 impl RecentsLayout {
@@ -315,6 +316,7 @@ impl RecentsLayout {
         match self {
             Self::Carousel => "Carousel",
             Self::Editorial => "Editorial Recents",
+            Self::Gallery => "Gallery",
         }
     }
 }

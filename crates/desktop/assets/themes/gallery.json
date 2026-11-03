@@ -1,0 +1,26 @@
+{
+  "name": "Gallery",
+  "themes": [
+    { "name": "Gallery Alternate", "mode": "light" },
+    {
+      "name": "Gallery Night", "mode": "dark", "radius": 8, "radius.lg": 12, "shadow": false,
+      "colors": {
+        "background": "#0c0a09", "foreground": "#eee9dc", "border": "#494238", "input.border": "#756c5c",
+        "muted.background": "#211d19", "muted.foreground": "#aaa08e",
+        "secondary.background": "#211d19", "secondary.foreground": "#eee9dc",
+        "secondary.hover.background": "#302a23", "secondary.active.background": "#3c3429",
+        "primary.background": "#e2d5b9", "primary.foreground": "#17130f",
+        "primary.hover.background": "#f2e8d5", "primary.active.background": "#cbbd9f",
+        "accent.background": "#302a23", "accent.foreground": "#eee9dc",
+        "selection.background": "#4b4031", "ring": "#b9a98c", "caret": "#eee9dc",
+        "switch.background": "#63594a", "switch.thumb.background": "#eee9dc",
+        "popover.background": "#191613", "popover.foreground": "#eee9dc", "sidebar.background": "#0c0a09",
+        "success.background": "#80ad83", "success.foreground": "#0c0a09",
+        "warning.background": "#d4ae63", "warning.foreground": "#0c0a09",
+        "danger.background": "#c66660", "danger.foreground": "#ffffff",
+        "info.background": "#82a5b6", "info.foreground": "#0c0a09",
+        "title_bar.background": "#00000000", "title_bar.border": "#00000000", "overlay": "#00000099"
+      }
+    }
+  ]
+}

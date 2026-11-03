@@ -17,6 +17,7 @@ use crate::{
     theme_editor::{Editor, EditorEvent},
 };
 mod collection;
+mod gallery;
 use chrono::{Datelike, Local, Months, NaiveDate, TimeZone};
 use gpui::{prelude::*, *};
 #[cfg(not(target_os = "windows"))]
@@ -60,7 +61,7 @@ impl RenderOnce for LauncherTitleBar {
             div()
                 .id("title-bar")
                 .w_full()
-                .h(px(HEADER_HEIGHT))
+                .h(px(crate::design::current(_cx).header_height))
                 .px(px(crate::window_chrome::TITLEBAR_PADDING))
                 .flex()
                 .items_center()
@@ -79,7 +80,7 @@ impl RenderOnce for LauncherTitleBar {
         {
             TitleBar::new()
                 .bg(rgba(0x00000000))
-                .h(px(HEADER_HEIGHT))
+                .h(px(crate::design::current(_cx).header_height))
                 .pl(px(crate::window_chrome::TITLEBAR_PADDING))
                 .pr(px(crate::window_chrome::TITLEBAR_PADDING))
                 .border_0()
@@ -289,6 +290,7 @@ enum LauncherCommand {
     SelectGame(GameId),
     LaunchGame(GameId),
     Screen(StartScreen),
+    HiddenLibrary,
     Settings,
     Refresh,
     AddGame,
@@ -432,6 +434,9 @@ pub struct LauncherView {
     carousel_focus: FocusHandle,
     carousel_transition: Option<(Game, Instant)>,
     carousel_image_ready: bool,
+    gallery_motion: crate::gallery::Motion,
+    gallery_reflections: Entity<crate::gallery::Reflections>,
+    gallery_wheel: crate::gallery::Wheel,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -707,6 +712,9 @@ impl LauncherView {
             carousel_focus: cx.focus_handle(),
             carousel_transition: None,
             carousel_image_ready: false,
+            gallery_motion: Default::default(),
+            gallery_reflections: cx.new(|_| Default::default()),
+            gallery_wheel: Default::default(),
             _subscriptions: subscriptions,
         };
         #[cfg(debug_assertions)]
@@ -1924,6 +1932,11 @@ impl LauncherView {
                 LauncherCommand::Screen(StartScreen::Library),
             ),
             (
+                "Show hidden games".into(),
+                IconName::Eye.into(),
+                LauncherCommand::HiddenLibrary,
+            ),
+            (
                 "Show Recents".into(),
                 IconName::GalleryVerticalEnd.into(),
                 LauncherCommand::Screen(StartScreen::Recents),
@@ -2073,6 +2086,12 @@ impl LauncherView {
                 self.submit(Command::LaunchGame { game_id }, cx);
             }
             LauncherCommand::Screen(screen) => self.switch_screen(screen, window, cx),
+            LauncherCommand::HiddenLibrary => {
+                self.library_filter = LibraryFilter::Hidden;
+                self.source_filter = None;
+                self.collection_filter = None;
+                self.show_filtered_library(window, cx);
+            }
             LauncherCommand::Settings => {
                 if !self.settings_open {
                     self.open_settings(&OpenSettings, window, cx);
@@ -2211,7 +2230,7 @@ impl LauncherView {
             .iter()
             .position(|game| self.selected.as_ref() == Some(&game.id))
             .unwrap_or(0);
-        let index = if self.screen == StartScreen::Recents {
+        let index = if self.screen == StartScreen::Recents || self.gallery_active() {
             if forward {
                 (current + 1) % games.len()
             } else {
@@ -2254,7 +2273,10 @@ impl LauncherView {
     }
 
     fn shows_library_details(&self) -> bool {
-        self.selected.is_some() && self.appearance.library_details && !self.detail_closed
+        self.design().recents != crate::design::RecentPresentation::Gallery
+            && self.selected.is_some()
+            && self.appearance.library_details
+            && !self.detail_closed
     }
 
     #[cfg(feature = "self-update")]
@@ -2489,6 +2511,8 @@ impl LauncherView {
             }
             self.appearance = settings;
             if recents_relayout {
+                self.gallery_motion = Default::default();
+                self.gallery_wheel = Default::default();
                 self.collection_motion = Default::default();
                 self.collection_flow = Default::default();
                 self.carousel_transition = None;
@@ -2618,7 +2642,10 @@ impl LauncherView {
             .count();
         let mut sources = BTreeMap::from([("manual".to_string(), self.manual_count())]);
         for provider in &self.snapshot.providers {
-            if matches!(provider.id.as_str(), "steam" | "epic" | "gog" | "example") {
+            if matches!(
+                provider.id.as_str(),
+                "steam" | "epic" | "gog" | "xbox" | "example"
+            ) {
                 sources.insert(provider.id.clone(), 0);
             }
         }
@@ -4142,7 +4169,7 @@ impl LauncherView {
             .top_0()
             .left_0()
             .w_full()
-            .h(px(HEADER_HEIGHT))
+            .h(px(self.design().header_height))
             .block_mouse_except_scroll()
             .when(
                 cfg!(any(target_os = "macos", target_os = "windows")),
@@ -7744,6 +7771,7 @@ impl Render for LauncherView {
         }
         self.prepare_library(window);
         self.prepare_collection(window);
+        self.prepare_gallery(window);
         if self.editorial_active()
             && self.collection_motion.animating()
             && !appearance::reduced_motion()
@@ -7823,6 +7851,8 @@ impl Render for LauncherView {
             && self.selected_game().is_some();
         let content = if self.settings_open {
             self.settings(window, cx)
+        } else if self.gallery_active() {
+            self.gallery(window, cx)
         } else if self.screen == StartScreen::Recents {
             self.recents(window, cx)
         } else if self.screen == StartScreen::Activity {
@@ -8776,6 +8806,7 @@ fn source_name(provider_id: &str) -> &str {
         "steam" => "Steam",
         "epic" => "Epic Games",
         "gog" => "GOG",
+        "xbox" => "Xbox",
         "manual" => "Manually added",
         "example" => "Example library",
         other => other,

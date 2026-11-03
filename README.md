@@ -1,7 +1,7 @@
 # Startpoint
 
 Native Rust/GPUI game launcher. Windows first; macOS supported.
-Steam, Epic, GOG and manual games; editable metadata, artwork, themes and local activity/journals.
+Steam, Epic, GOG, Xbox PC and manual games; editable metadata, artwork, themes and local activity/journals.
 
 ## Run
 
@@ -50,6 +50,16 @@ Packaged apps check for updates in the background after launch; use **Download u
 Production signing setup, preview downloads, failure recovery and local packaging: [docs/releases.md](docs/releases.md). The standalone Windows test-executable workflow remains available.
 
 ## Library views
+
+### Gallery
+
+Choose **Settings → Interface style → Gallery**, or **Customize → Interface style**. Gallery is an artwork-first exhibition: oversized 2:3 portrait covers, a larger centered selection, progressively smaller neighbors, a near-black canvas, serif typography, and soft reflected colors beneath each cover. Reflections are derived from the actual artwork on a worker, cached independently of layout and never written over the originals. Only a handful of neighboring covers are rendered, even with a large installed collection.
+
+Click a neighboring cover to select it; use **Left/Right**, the mouse wheel or horizontal trackpad scrolling to browse. **Play**, **Enter**, or double-click launches through the game's existing store/override route. Transitions can reverse or be interrupted without jumping, wrap at both ends, and respect the OS reduced-motion setting. Gallery never advances automatically. Its home exhibition contains the **five latest visible installed games**, with one fixed dot per game. The dots always represent the same five positions, not a sliding window. Library retains the complete collection and shows an honest **position / total** indicator instead of dots.
+
+Gallery uses the **same three floating toolbar islands as Classic and Editorial**, retaining its dark palette: utility controls, Recents/Library/Activity tabs, and actions/window controls. There is no alternate corner-only header or full-width toolbar fill. **Ctrl/Cmd+F** or **/** opens game search; **Ctrl/Cmd+P/K** opens actions, including **Show hidden games**. Right-click artwork for game management and source/launch details in the editor. There are no sidebars, detail panels, widgets, platform badges or per-cover captions in the exhibition. Windows caption controls and macOS traffic-light clearance remain native. Gallery's dark palette applies to menus, dialogs, search and Settings too; switching designs retains the previous theme, sidebar, layout and widget preferences.
+
+On Windows, Xbox discovery reads registered **GDK games with `MicrosoftGame.config`**, matching their application IDs to the Windows package manifest. Games launch through Windows' registered AppsFolder activation rather than a guessed executable. Enumeration is bounded and cancellable; unreadable/partial registrations retain cached games. Older UWP games without that configuration are not automatically detected; use **Add a game** for unsupported installations. Steam, Epic and GOG continue to use their existing discovery services. No store account credentials are requested.
 
 ### Editorial Recents
 

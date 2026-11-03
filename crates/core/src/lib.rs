@@ -11,20 +11,25 @@ mod steam_shortcuts;
 mod steamgriddb;
 mod storage;
 mod stores;
+mod xbox;
 
 pub use platform::application_paths;
 pub use runtime::LauncherBuilder;
 pub use steam::SteamProvider;
 pub use steamgriddb::SteamGridDbProvider;
 pub use stores::{EpicProvider, GogProvider};
+pub use xbox::XboxProvider;
 
 use startpoint_sdk::{ApiError, Application};
 
 pub fn create_application() -> Result<Application, ApiError> {
-    LauncherBuilder::new()
+    let builder = LauncherBuilder::new()
         .discovery_provider(SteamProvider)
         .discovery_provider(EpicProvider)
-        .discovery_provider(GogProvider)
+        .discovery_provider(GogProvider);
+    #[cfg(target_os = "windows")]
+    let builder = builder.discovery_provider(XboxProvider);
+    builder
         .artwork_provider(SteamGridDbProvider::new()?)
         .build(application_paths()?)
 }

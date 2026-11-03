@@ -3402,7 +3402,11 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(old.recents_layout, RecentsLayout::Carousel);
-        for recents_layout in [RecentsLayout::Editorial, RecentsLayout::Carousel] {
+        for recents_layout in [
+            RecentsLayout::Editorial,
+            RecentsLayout::Carousel,
+            RecentsLayout::Gallery,
+        ] {
             let chosen = AppearanceSettings {
                 recents_layout,
                 ..old.clone()
@@ -3410,10 +3414,10 @@ mod tests {
             let document = serde_json::to_value(&chosen).unwrap();
             assert_eq!(
                 document["recents_layout"],
-                if recents_layout == RecentsLayout::Editorial {
-                    "editorial"
-                } else {
-                    "carousel"
+                match recents_layout {
+                    RecentsLayout::Editorial => "editorial",
+                    RecentsLayout::Carousel => "carousel",
+                    RecentsLayout::Gallery => "gallery",
                 }
             );
             let (restored, migrated) = restore_appearance_settings(Some(document)).unwrap();

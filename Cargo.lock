@@ -6560,6 +6560,7 @@ dependencies = [
  "shlex 2.0.1",
  "startpoint-sdk",
  "steamlocate",
+ "tempfile",
  "uuid",
  "windows-sys 0.59.0",
  "winreg",

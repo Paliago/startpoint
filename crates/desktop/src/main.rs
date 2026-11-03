@@ -9,6 +9,7 @@ mod detail_artwork;
 mod diagnostics;
 mod dithering;
 mod editorial_collection;
+mod gallery;
 mod glass;
 #[cfg(test)]
 mod icon_tests;

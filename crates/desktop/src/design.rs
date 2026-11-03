@@ -21,6 +21,7 @@ pub(crate) enum Material {
 pub(crate) enum RecentPresentation {
     Carousel,
     Organic,
+    Gallery,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -55,6 +56,7 @@ pub(crate) struct Profile {
     pub sidebar_pages: &'static [StartScreen],
     pub sidebar_in_settings: bool,
     pub toolbar_material: Option<ToolbarMaterial>,
+    pub header_height: f32,
 }
 
 const NATIVE_FONT: &str = if cfg!(target_os = "windows") {
@@ -92,6 +94,7 @@ pub(crate) const CLASSIC: Profile = Profile {
     ],
     sidebar_in_settings: true,
     toolbar_material: None,
+    header_height: crate::window_chrome::HEADER_HEIGHT,
 };
 
 pub(crate) const EDITORIAL: Profile = Profile {
@@ -120,6 +123,33 @@ pub(crate) const EDITORIAL: Profile = Profile {
         blur_radius: 12.,
         radius: 12.,
     }),
+    header_height: crate::window_chrome::HEADER_HEIGHT,
+};
+
+pub(crate) const GALLERY: Profile = Profile {
+    name: "Gallery",
+    shell: Shell::ToolbarIslands,
+    material: Material::Paper,
+    recents: RecentPresentation::Gallery,
+    // Recents is a fixed shortlist; Library remains the complete collection.
+    recent_count: 5,
+    palette: PaletteSource::Builtin {
+        source: include_str!("../assets/themes/gallery.json"),
+        mode: ThemeMode::Dark,
+    },
+    body_font: EDITORIAL_BODY,
+    display_font: EDITORIAL_DISPLAY,
+    ambient_motion: false,
+    motion_interval: Duration::from_millis(16),
+    native_translucency: false,
+    sidebar_pages: &[],
+    sidebar_in_settings: false,
+    toolbar_material: Some(ToolbarMaterial {
+        opacity: 0.82,
+        blur_radius: 12.,
+        radius: 12.,
+    }),
+    header_height: crate::window_chrome::HEADER_HEIGHT,
 };
 
 impl Profile {
@@ -161,6 +191,7 @@ pub(crate) fn resolve(settings: &AppearanceSettings) -> &'static Profile {
     match settings.recents_layout {
         RecentsLayout::Carousel => &CLASSIC,
         RecentsLayout::Editorial => &EDITORIAL,
+        RecentsLayout::Gallery => &GALLERY,
     }
 }
 
@@ -221,5 +252,37 @@ mod tests {
         assert!(EDITORIAL.sidebar_allowed(StartScreen::Recents, false));
         assert!(EDITORIAL.sidebar_allowed(StartScreen::Library, false));
         assert!(!EDITORIAL.sidebar_allowed(StartScreen::Recents, true));
+    }
+
+    #[test]
+    fn gallery_is_an_opaque_dark_exhibition_without_sidebars_or_automatic_advancement() {
+        let saved = AppearanceSettings {
+            recents_layout: RecentsLayout::Gallery,
+            sidebar_visible: true,
+            library_details: true,
+            theme: "Custom".into(),
+            ..Default::default()
+        };
+        let before = saved.clone();
+        let profile = resolve(&saved);
+        assert_eq!(profile.shell, CLASSIC.shell);
+        assert_eq!(profile.header_height, CLASSIC.header_height);
+        assert_eq!(
+            profile.toolbar_material.unwrap().radius,
+            EDITORIAL.toolbar_material.unwrap().radius
+        );
+        assert_eq!(profile.recents, RecentPresentation::Gallery);
+        assert_eq!(profile.recent_count, 5);
+        assert!(!profile.native_translucency && !profile.ambient_motion);
+        for screen in [
+            StartScreen::Recents,
+            StartScreen::Library,
+            StartScreen::Activity,
+        ] {
+            assert!(!profile.sidebar_allowed(screen, false));
+            assert!(!profile.sidebar_allowed(screen, true));
+        }
+        assert!(profile.fixed_palette().unwrap().1.is_dark());
+        assert_eq!(saved, before);
     }
 }
