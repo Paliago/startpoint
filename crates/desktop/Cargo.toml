@@ -31,6 +31,7 @@ velopack = { version = "=1.2.161", features = ["public-utils"], optional = true 
 embed-resource = "=3.0.11"
 
 [dev-dependencies]
+async-channel.workspace = true
 # Headless layout/input regression tests; not enabled in the application build.
 gpui = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54", features = ["test-support"] }
 resvg = { version = "=0.45.1", default-features = false }

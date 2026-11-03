@@ -1,0 +1,26 @@
+{
+  "name": "Editorial",
+  "themes": [
+    {
+      "name": "Editorial Paper", "mode": "light", "radius": 12, "radius.lg": 18, "shadow": false,
+      "colors": {
+        "background": "#f9efdf", "foreground": "#302c27", "border": "#c8bba7", "input.border": "#ac9c85",
+        "muted.background": "#efe4d2", "muted.foreground": "#706453",
+        "secondary.background": "#f3e8d7", "secondary.foreground": "#302c27",
+        "secondary.hover.background": "#e9dcc7", "secondary.active.background": "#dfcfb6",
+        "primary.background": "#302c27", "primary.foreground": "#fff8ec",
+        "primary.hover.background": "#474036", "primary.active.background": "#1c1915",
+        "accent.background": "#e9dcc7", "accent.foreground": "#302c27",
+        "selection.background": "#dfcfb6", "ring": "#76624a", "caret": "#302c27",
+        "switch.background": "#c8bba7", "switch.thumb.background": "#fff8ec",
+        "popover.background": "#fff8ec", "popover.foreground": "#302c27", "sidebar.background": "#f9efdf",
+        "success.background": "#416445", "success.foreground": "#ffffff",
+        "warning.background": "#866020", "warning.foreground": "#ffffff",
+        "danger.background": "#a33f37", "danger.foreground": "#ffffff",
+        "info.background": "#46687a", "info.foreground": "#ffffff",
+        "title_bar.background": "#00000000", "title_bar.border": "#00000000", "overlay": "#302c272a"
+      }
+    },
+    { "name": "Editorial Paper Alternate", "mode": "dark" }
+  ]
+}

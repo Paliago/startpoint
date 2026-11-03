@@ -148,6 +148,18 @@ impl Palette {
 
     pub(crate) fn of(cx: &App) -> Self {
         let theme = cx.theme();
+        if crate::design::current(cx).material == crate::design::Material::Paper {
+            return Self {
+                surface: theme.popover.alpha(1.),
+                button: theme.tokens.button.color,
+                input: theme.muted.alpha(1.),
+                rim: theme.border.alpha(1.),
+                highlight: transparent_black(),
+                foreground: theme.foreground.alpha(1.),
+                muted: theme.muted_foreground.alpha(1.),
+                shadow: transparent_black(),
+            };
+        }
         let mut palette = Self::from_colors(
             theme.background,
             theme.secondary,
@@ -160,6 +172,9 @@ impl Palette {
     }
 
     pub(crate) fn shadows(self) -> Vec<BoxShadow> {
+        if self.shadow.a == 0. {
+            return Vec::new();
+        }
         vec![
             BoxShadow {
                 color: self.shadow,
@@ -213,12 +228,16 @@ fn button_fill(panel: Hsla, background: Hsla, foreground: Hsla) -> Hsla {
 
 pub(crate) fn surface<T: Styled>(element: T, radius: f32, cx: &App) -> T {
     let palette = Palette::of(cx);
-    element
+    let panel = element
         .rounded(px(radius))
         .border_0()
         .bg(palette.surface)
         .text_color(palette.foreground)
-        .shadow(palette.shadows())
+        .shadow(palette.shadows());
+    match crate::design::current(cx).material {
+        crate::design::Material::SmokedGlass => panel,
+        crate::design::Material::Paper => panel.border_1().border_color(palette.rim),
+    }
 }
 
 /// Keep blur and sharp content in a single ordered layer. Delegating layout and
@@ -228,6 +247,28 @@ pub(crate) fn frosted(radius: f32, blur_radius: f32, child: impl IntoElement) ->
         radius,
         blur_radius,
         child: child.into_any_element(),
+        follow_panel_material: true,
+    }
+}
+
+/// Only the individual toolbar islands get a translucent surface. The gaps
+/// between them remain completely clear, independently of paper panel styling.
+pub(crate) fn toolbar_surface<T: Styled + IntoElement>(
+    panel: T,
+    material: crate::design::ToolbarMaterial,
+    cx: &App,
+) -> Frosted {
+    Frosted {
+        radius: material.radius,
+        blur_radius: material.blur_radius,
+        follow_panel_material: false,
+        child: panel
+            .rounded(px(material.radius))
+            .border_0()
+            .bg(cx.theme().muted.alpha(material.opacity))
+            .text_color(cx.theme().foreground)
+            .shadow_none()
+            .into_any_element(),
     }
 }
 
@@ -235,6 +276,19 @@ pub(crate) struct Frosted {
     radius: f32,
     blur_radius: f32,
     child: AnyElement,
+    follow_panel_material: bool,
+}
+
+impl Frosted {
+    fn resolved_blur(&self, cx: &App) -> f32 {
+        if !self.follow_panel_material {
+            return self.blur_radius;
+        }
+        match crate::design::current(cx).material {
+            crate::design::Material::SmokedGlass => effects(cx).panel_blur(self.blur_radius),
+            crate::design::Material::Paper => 0.,
+        }
+    }
 }
 
 impl Element for Frosted {
@@ -281,7 +335,7 @@ impl Element for Frosted {
         cx: &mut App,
     ) {
         window.paint_layer(bounds, |window| {
-            let radius = effects(cx).panel_blur(self.blur_radius);
+            let radius = self.resolved_blur(cx);
             if radius > 0. {
                 window.paint_backdrop_blur(bounds, Corners::all(px(self.radius)), px(radius));
             }
@@ -300,6 +354,39 @@ impl IntoElement for Frosted {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn editorial_toolbar_islands_blur_without_enabling_paper_panel_or_desktop_blur() {
+        let mut app = TestApp::new();
+        app.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::theme::Catalog::default());
+            crate::appearance::apply(
+                &startpoint_sdk::AppearanceSettings {
+                    recents_layout: startpoint_sdk::RecentsLayout::Editorial,
+                    window_translucency: false,
+                    backdrop_blur: false,
+                    ..Default::default()
+                },
+                None,
+                cx,
+            );
+            let material = crate::design::current(cx).toolbar_material.unwrap();
+            let header = toolbar_surface(div(), material, cx);
+            let panel = frosted(18., BLUR_RADIUS, div());
+            assert_eq!(header.resolved_blur(cx), material.blur_radius);
+            assert_eq!(header.radius, 12.);
+            assert_eq!(panel.resolved_blur(cx), 0.);
+            assert_eq!(
+                native_background(effects(cx)),
+                WindowBackgroundAppearance::Opaque
+            );
+            for artwork in [black(), white()] {
+                let surface = artwork.blend(cx.theme().muted.alpha(material.opacity));
+                assert!(crate::theme::contrast(surface, cx.theme().foreground) >= 4.5);
+            }
+        });
+    }
 
     #[::core::prelude::v1::test]
     fn panel_blur_is_always_enabled_and_only_native_blur_follows_the_switch() {

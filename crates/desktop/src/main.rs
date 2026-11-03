@@ -4,9 +4,11 @@ mod adjustment_slider;
 mod appearance;
 mod branding;
 mod components;
+mod design;
 mod detail_artwork;
 mod diagnostics;
 mod dithering;
+mod editorial_collection;
 mod glass;
 #[cfg(test)]
 mod icon_tests;
@@ -20,6 +22,7 @@ mod theme;
 mod theme_editor;
 #[cfg(feature = "self-update")]
 mod updater;
+mod window_chrome;
 mod window_state;
 
 use gpui::{prelude::*, *};
@@ -141,6 +144,8 @@ fn main() {
                 KeyBinding::new("ctrl-f", interface::FocusSearch, Some("Startpoint")),
                 KeyBinding::new("cmd-k", interface::OpenCommands, Some("Startpoint")),
                 KeyBinding::new("ctrl-k", interface::OpenCommands, Some("Startpoint")),
+                KeyBinding::new("cmd-p", interface::OpenCommands, Some("Startpoint")),
+                KeyBinding::new("ctrl-p", interface::OpenCommands, Some("Startpoint")),
                 KeyBinding::new("cmd-b", interface::ToggleSidebar, Some("Startpoint")),
                 KeyBinding::new("ctrl-b", interface::ToggleSidebar, Some("Startpoint")),
                 KeyBinding::new("cmd-r", interface::RefreshLibrary, Some("Startpoint")),

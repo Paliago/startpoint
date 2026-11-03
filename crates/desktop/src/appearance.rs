@@ -4,9 +4,11 @@ use startpoint_sdk::{AppearanceMode, AppearanceSettings};
 use std::rc::Rc;
 
 pub(crate) fn update_effects(settings: &AppearanceSettings, cx: &mut App) {
+    crate::design::install(settings, cx);
+    let design = crate::design::current(cx);
     cx.set_global(crate::components::Controls(settings.controls));
     cx.set_global(crate::glass::Effects {
-        window_translucency: settings.window_translucency,
+        window_translucency: settings.window_translucency && design.native_translucency,
         backdrop_blur: settings.backdrop_blur,
         translucency_amount: settings.translucency_amount,
     });
@@ -14,6 +16,16 @@ pub(crate) fn update_effects(settings: &AppearanceSettings, cx: &mut App) {
 
 pub(crate) fn apply(settings: &AppearanceSettings, window: Option<&mut Window>, cx: &mut App) {
     update_effects(settings, cx);
+    let profile = crate::design::current(cx);
+    if let Some((configuration, mode)) = profile.fixed_palette() {
+        sync_native_appearance(if mode.is_dark() {
+            AppearanceMode::Dark
+        } else {
+            AppearanceMode::Light
+        });
+        apply_configurations(configuration.clone(), configuration, mode, window, cx);
+        return;
+    }
     let mode = settings.mode;
     sync_native_appearance(mode);
     let system = window
@@ -35,6 +47,16 @@ pub(crate) fn apply(settings: &AppearanceSettings, window: Option<&mut Window>, 
 }
 
 pub(crate) fn preview(theme: &ThemeSet, mode: ThemeMode, window: &mut Window, cx: &mut App) {
+    if let Some((configuration, design_mode)) = crate::design::current(cx).fixed_palette() {
+        apply_configurations(
+            configuration.clone(),
+            configuration,
+            design_mode,
+            Some(window),
+            cx,
+        );
+        return;
+    }
     sync_native_appearance(if mode.is_dark() {
         AppearanceMode::Dark
     } else {
@@ -76,15 +98,17 @@ fn apply_configurations(
     theme.dark_theme = dark;
     Theme::change(resolved, window.as_deref_mut(), cx);
     if native_font {
-        Theme::global_mut(cx).font_family = if cfg!(target_os = "windows") {
-            "Bahnschrift"
-        } else {
-            "Avenir Next"
-        }
-        .into();
+        Theme::global_mut(cx).font_family = crate::design::current(cx).body_font.into();
     }
     let controls = crate::components::control_appearance(cx);
-    crate::components::configure_glass_theme(Theme::global_mut(cx), controls);
+    match crate::design::current(cx).material {
+        crate::design::Material::SmokedGlass => {
+            crate::components::configure_glass_theme(Theme::global_mut(cx), controls)
+        }
+        crate::design::Material::Paper => {
+            crate::components::configure_paper_theme(Theme::global_mut(cx), controls)
+        }
+    }
     if let Some(window) = window {
         window.set_background_appearance(background(cx));
     }

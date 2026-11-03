@@ -125,8 +125,60 @@ pub(crate) fn configure_glass_theme(
     theme.colors.foreground.a = 1.;
 }
 
+pub(crate) fn configure_paper_theme(
+    theme: &mut gpui_component::Theme,
+    controls: ControlAppearance,
+) {
+    configure_glass_theme(theme, controls);
+    let fill = if controls.filled_secondary {
+        theme.secondary
+    } else {
+        theme.background
+    }
+    .alpha(1.);
+    theme.tokens.button = fill.into();
+    theme.tokens.button_secondary = fill.into();
+    theme.tokens.button_hover = theme.secondary_hover.alpha(1.).into();
+    theme.tokens.button_secondary_hover = theme.tokens.button_hover;
+    theme.tokens.button_active = theme.secondary_active.alpha(1.).into();
+    theme.tokens.button_secondary_active = theme.tokens.button_active;
+    theme.tokens.popover = theme.popover.alpha(1.).into();
+}
+
+pub(crate) fn page_title(label: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .text_3xl()
+        .font_family(crate::design::current(cx).display_font)
+        .child(label.into())
+}
+
 pub(crate) fn glass_panel<T: Styled + IntoElement>(panel: T, cx: &App) -> glass::Frosted {
     glass_panel_with_blur(panel, glass::BLUR_RADIUS, cx)
+}
+
+pub(crate) fn toolbar_rounding(cx: &App) -> Pixels {
+    crate::design::current(cx)
+        .toolbar_material
+        .map(|material| px(material.radius))
+        .unwrap_or_else(|| cx.theme().radius_lg)
+}
+
+pub(crate) fn toolbar_panel<T: Styled + IntoElement>(panel: T, cx: &App) -> glass::Frosted {
+    toolbar_panel_with_blur(panel, glass::BLUR_RADIUS, cx)
+}
+
+pub(crate) fn toolbar_panel_with_blur<T: Styled + IntoElement>(
+    panel: T,
+    blur: f32,
+    cx: &App,
+) -> glass::Frosted {
+    match crate::design::current(cx).toolbar_material {
+        Some(mut material) => {
+            material.blur_radius *= (blur / glass::BLUR_RADIUS).clamp(0., 1.);
+            glass::toolbar_surface(panel, material, cx)
+        }
+        None => glass_panel_with_blur(panel, blur, cx),
+    }
 }
 
 pub(crate) fn glass_panel_with_blur<T: Styled + IntoElement>(
@@ -417,7 +469,9 @@ pub(crate) fn snug_sidebar_button(mut button: Button, icon: IconName, cx: &App) 
         .px_2()
         .font_weight(FontWeight::NORMAL)
         .icon(Icon::new(icon).small())
-        .hover(|button| button.text_color(Palette::of(cx).foreground))
+        // Button owns its hover handler; registering another on the builder
+        // collides with that handler when a Library sidebar is rendered.
+        .text_color(Palette::of(cx).foreground)
 }
 
 pub(crate) fn sidebar_label(label: impl Into<SharedString>) -> Div {
@@ -518,13 +572,13 @@ pub(crate) fn widget_surface(cx: &App) -> Div {
 }
 
 /// Place after the app toolbar so both the dimming and hit testing cover it.
-pub(crate) fn modal_backdrop(id: impl Into<ElementId>) -> Stateful<Div> {
+pub(crate) fn modal_backdrop(id: impl Into<ElementId>, scrim: Hsla) -> Stateful<Div> {
     div()
         .id(id)
         .absolute()
         .inset_0()
         .occlude()
-        .bg(gpui::black().alpha(0.45))
+        .bg(scrim)
         .flex()
         .items_center()
         .justify_center()
@@ -693,7 +747,7 @@ mod tests {
 
     #[::core::prelude::v1::test]
     fn modal_backdrop_covers_every_edge_including_the_toolbar() {
-        let mut backdrop = modal_backdrop("test-backdrop");
+        let mut backdrop = modal_backdrop("test-backdrop", black().alpha(0.45));
         let style = backdrop.style();
         assert_eq!(style.inset.top, Some(px(0.).into()));
         assert_eq!(style.inset.bottom, Some(px(0.).into()));

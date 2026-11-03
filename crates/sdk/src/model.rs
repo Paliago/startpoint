@@ -304,6 +304,23 @@ impl LibraryLayout {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum RecentsLayout {
+    #[default]
+    Carousel,
+    Editorial,
+}
+
+impl RecentsLayout {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Carousel => "Carousel",
+            Self::Editorial => "Editorial Recents",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LibraryDensity {
     Small,
     #[default]
@@ -334,6 +351,7 @@ pub struct AppearanceSettings {
     pub dither_artwork_strength: f32,
     pub dither_artwork_size: f32,
     pub start_screen: StartScreen,
+    pub recents_layout: RecentsLayout,
     pub dither_recents: bool,
     pub dither_recents_strength: f32,
     pub dither_recents_size: f32,
@@ -364,6 +382,7 @@ impl Default for AppearanceSettings {
             dither_artwork_strength: DEFAULT_DITHER_STRENGTH,
             dither_artwork_size: DEFAULT_DITHER_SIZE,
             start_screen: StartScreen::Recents,
+            recents_layout: RecentsLayout::default(),
             dither_recents: true,
             dither_recents_strength: DEFAULT_DITHER_STRENGTH,
             dither_recents_size: DEFAULT_DITHER_SIZE,

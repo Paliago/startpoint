@@ -3394,6 +3394,35 @@ mod tests {
     }
 
     #[test]
+    fn editorial_recents_defaults_compatibly_and_preserves_carousel_preferences() {
+        use startpoint_sdk::RecentsLayout;
+        let old: AppearanceSettings = serde_json::from_value(serde_json::json!({
+            "theme": "Custom", "mode": "dark", "recents_activity": true,
+            "fade_recents": false, "dither_recents": false, "sidebar_visible": true
+        }))
+        .unwrap();
+        assert_eq!(old.recents_layout, RecentsLayout::Carousel);
+        for recents_layout in [RecentsLayout::Editorial, RecentsLayout::Carousel] {
+            let chosen = AppearanceSettings {
+                recents_layout,
+                ..old.clone()
+            };
+            let document = serde_json::to_value(&chosen).unwrap();
+            assert_eq!(
+                document["recents_layout"],
+                if recents_layout == RecentsLayout::Editorial {
+                    "editorial"
+                } else {
+                    "carousel"
+                }
+            );
+            let (restored, migrated) = restore_appearance_settings(Some(document)).unwrap();
+            assert!(!migrated);
+            assert_eq!(restored, chosen);
+        }
+    }
+
+    #[test]
     fn dither_defaults_are_three_pixels_and_twenty_percent_without_overwriting_saved_values() {
         for settings in [
             AppearanceSettings::default(),
@@ -3543,6 +3572,7 @@ mod tests {
                         dither_artwork_strength: 0.35,
                         dither_artwork_size: 3.,
                         start_screen: StartScreen::Recents,
+                        recents_layout: startpoint_sdk::RecentsLayout::Editorial,
                         dither_recents: true,
                         dither_recents_strength: 0.08,
                         dither_recents_size: 8.,
@@ -3911,6 +3941,7 @@ mod tests {
                 dither_artwork_strength: 0.35,
                 dither_artwork_size: 3.,
                 start_screen: StartScreen::Recents,
+                recents_layout: startpoint_sdk::RecentsLayout::Editorial,
                 dither_recents: true,
                 dither_recents_strength: 0.08,
                 dither_recents_size: 8.,
