@@ -16,6 +16,7 @@ use crate::{
     theme,
     theme_editor::{Editor, EditorEvent},
 };
+mod cinematic;
 mod collection;
 mod gallery;
 use chrono::{Datelike, Local, Months, NaiveDate, TimeZone};
@@ -439,6 +440,9 @@ pub struct LauncherView {
     gallery_reflections: Entity<crate::gallery::Reflections>,
     gallery_gpu: Entity<crate::gallery_gpu::GalleryGpu>,
     gallery_wheel: crate::gallery::Wheel,
+    cinematic_scene: crate::cinematic::Scene,
+    cinematic_artwork: Entity<crate::cinematic::ArtworkCache>,
+    cinematic_motion: crate::gallery::Motion,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -722,10 +726,15 @@ impl LauncherView {
             gallery_reflections: cx.new(|_| Default::default()),
             gallery_gpu: cx.new(|_| Default::default()),
             gallery_wheel: Default::default(),
+            cinematic_scene: Default::default(),
+            cinematic_artwork: cx.new(|_| Default::default()),
+            cinematic_motion: Default::default(),
             _subscriptions: subscriptions,
         };
         view._subscriptions
             .push(cx.observe(&view.gallery_gpu, |_, _, cx| cx.notify()));
+        view._subscriptions
+            .push(cx.observe(&view.cinematic_artwork, |_, _, cx| cx.notify()));
         #[cfg(debug_assertions)]
         {
             view.apply_stress_data();
@@ -2072,6 +2081,13 @@ impl LauncherView {
         }
         match command {
             LauncherCommand::SelectGame(id) => {
+                if self.design().recents == crate::design::RecentPresentation::Cinematic
+                    && self.recent_games().iter().any(|game| game.id == id)
+                {
+                    self.switch_screen(StartScreen::Recents, window, cx);
+                    self.select_game(id, window, cx);
+                    return;
+                }
                 self.library_filter = if self
                     .snapshot
                     .games
@@ -2286,8 +2302,11 @@ impl LauncherView {
     }
 
     fn shows_library_details(&self) -> bool {
-        self.design().recents != crate::design::RecentPresentation::Gallery
-            && self.selected.is_some()
+        !matches!(
+            self.design().recents,
+            crate::design::RecentPresentation::Gallery
+                | crate::design::RecentPresentation::Cinematic
+        ) && self.selected.is_some()
             && self.appearance.library_details
             && !self.detail_closed
     }
@@ -2498,6 +2517,9 @@ impl LauncherView {
             .refresh(window, self.appearance.pause_in_background, force);
         let paused = self.render_power.paused();
         self.gallery_motion.set_paused(paused, Instant::now());
+        self.cinematic_motion.set_paused(paused, Instant::now());
+        self.cinematic_scene
+            .set_paused(paused || !self.cinematic_active(), Instant::now());
         self.gallery_gpu.update(cx, |gpu, _| {
             gpu.set_paused(paused || !self.gallery_active())
         });
@@ -2548,6 +2570,8 @@ impl LauncherView {
             self.appearance = settings;
             if recents_relayout {
                 self.gallery_motion = Default::default();
+                self.cinematic_motion = Default::default();
+                self.cinematic_scene = Default::default();
                 self.gallery_wheel = Default::default();
                 self.collection_motion = Default::default();
                 self.collection_flow = Default::default();
@@ -7825,6 +7849,7 @@ impl Render for LauncherView {
         self.prepare_library(window);
         self.prepare_collection(window);
         self.prepare_gallery(window, cx);
+        self.prepare_cinematic(window, cx);
         if self.editorial_active()
             && !self.render_power.paused()
             && self.collection_motion.animating()
@@ -7905,6 +7930,8 @@ impl Render for LauncherView {
             && self.selected_game().is_some();
         let content = if self.settings_open {
             self.settings(window, cx)
+        } else if self.cinematic_active() {
+            self.cinematic(window, cx)
         } else if self.gallery_active() {
             self.gallery(window, cx)
         } else if self.screen == StartScreen::Recents {

@@ -22,6 +22,7 @@ pub(crate) enum RecentPresentation {
     Carousel,
     Organic,
     Gallery,
+    Cinematic,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -152,6 +153,14 @@ pub(crate) const GALLERY: Profile = Profile {
     header_height: crate::window_chrome::HEADER_HEIGHT,
 };
 
+pub(crate) const CINEMATIC: Profile = Profile {
+    name: "Cinematic",
+    recents: RecentPresentation::Cinematic,
+    // The filmstrip is a viewport into every installed game, not a shortlist.
+    recent_count: usize::MAX,
+    ..GALLERY
+};
+
 impl Profile {
     pub fn editable_palette(&self) -> bool {
         matches!(self.palette, PaletteSource::Authored)
@@ -192,6 +201,7 @@ pub(crate) fn resolve(settings: &AppearanceSettings) -> &'static Profile {
         RecentsLayout::Carousel => &CLASSIC,
         RecentsLayout::Editorial => &EDITORIAL,
         RecentsLayout::Gallery => &GALLERY,
+        RecentsLayout::Cinematic => &CINEMATIC,
     }
 }
 
@@ -282,6 +292,25 @@ mod tests {
             assert!(!profile.sidebar_allowed(screen, false));
             assert!(!profile.sidebar_allowed(screen, true));
         }
+        assert!(profile.fixed_palette().unwrap().1.is_dark());
+        assert_eq!(saved, before);
+    }
+
+    #[test]
+    fn cinematic_unifies_all_installed_games_without_mutating_other_design_preferences() {
+        let saved = AppearanceSettings {
+            recents_layout: RecentsLayout::Cinematic,
+            sidebar_visible: true,
+            theme: "Custom".into(),
+            ..Default::default()
+        };
+        let before = saved.clone();
+        let profile = resolve(&saved);
+        assert_eq!(profile.name, "Cinematic");
+        assert_eq!(profile.recent_count, usize::MAX);
+        assert_eq!(profile.recents, RecentPresentation::Cinematic);
+        assert!(!profile.ambient_motion && !profile.native_translucency);
+        assert!(!profile.sidebar_allowed(StartScreen::Recents, false));
         assert!(profile.fixed_palette().unwrap().1.is_dark());
         assert_eq!(saved, before);
     }

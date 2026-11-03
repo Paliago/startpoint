@@ -3,6 +3,7 @@
 mod adjustment_slider;
 mod appearance;
 mod branding;
+mod cinematic;
 mod components;
 mod design;
 mod detail_artwork;
@@ -41,6 +42,9 @@ impl AssetSource for LauncherAssets {
             "icons/pause.svg" => Some(include_bytes!("../assets/pause.svg")),
             "icons/play.svg" => Some(include_bytes!("../assets/play.svg")),
             "icons/star-filled.svg" => Some(include_bytes!("../assets/star-filled.svg")),
+            "icons/cinematic-play.svg" => {
+                Some(include_bytes!("../assets/icons/cinematic-play.svg"))
+            }
             _ => None,
         };
         match bytes {
@@ -57,12 +61,25 @@ impl AssetSource for LauncherAssets {
                 "icons/pause.svg",
                 "icons/play.svg",
                 "icons/star-filled.svg",
+                "icons/cinematic-play.svg",
             ]
             .into_iter()
             .filter(|asset| asset.starts_with(path))
             .map(SharedString::from),
         );
         Ok(assets)
+    }
+}
+
+#[cfg(test)]
+#[::core::prelude::v1::test]
+fn cinematic_icons_are_embedded_in_the_native_asset_source() {
+    let assets = LauncherAssets;
+    let listed = assets.list("icons/").unwrap();
+    for path in ["icons/cinematic-play.svg"] {
+        assert!(listed.iter().any(|listed| listed.as_ref() == path));
+        let bytes = assets.load(path).unwrap().expect("native packaged icon");
+        resvg::usvg::Tree::from_data(&bytes, &resvg::usvg::Options::default()).expect("valid SVG");
     }
 }
 

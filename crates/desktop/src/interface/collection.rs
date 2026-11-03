@@ -49,6 +49,7 @@ impl LauncherView {
                 RecentsLayout::Carousel,
                 RecentsLayout::Editorial,
                 RecentsLayout::Gallery,
+                RecentsLayout::Cinematic,
             ]
             .into_iter()
             .map(|layout| {

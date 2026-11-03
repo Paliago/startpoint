@@ -3424,6 +3424,7 @@ mod tests {
             RecentsLayout::Editorial,
             RecentsLayout::Carousel,
             RecentsLayout::Gallery,
+            RecentsLayout::Cinematic,
         ] {
             let chosen = AppearanceSettings {
                 recents_layout,
@@ -3436,6 +3437,7 @@ mod tests {
                     RecentsLayout::Editorial => "editorial",
                     RecentsLayout::Carousel => "carousel",
                     RecentsLayout::Gallery => "gallery",
+                    RecentsLayout::Cinematic => "cinematic",
                 }
             );
             let (restored, migrated) = restore_appearance_settings(Some(document)).unwrap();
