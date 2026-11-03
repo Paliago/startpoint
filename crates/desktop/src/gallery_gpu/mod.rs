@@ -1,5 +1,6 @@
 //! A lazy, bounded wgpu scene worker under native GPUI controls. At most one
 //! pending scene and one completed frame exist. Idle scenes do not render.
+mod material;
 mod renderer;
 pub(crate) mod scene;
 use gpui::{prelude::*, *};

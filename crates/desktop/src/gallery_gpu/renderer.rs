@@ -1,6 +1,7 @@
 //! wgpu owns scene shading and world-space visibility. The initial GPUI bridge
 //! reads a bounded offscreen target on this worker; it is deliberately not
 //! described as zero-copy. No GPU waits or image decoding run on the UI thread.
+use super::material;
 use super::scene::{MAX_COVERS, POSTER_HEIGHT, POSTER_WIDTH, Scene};
 use bytemuck::{Pod, Zeroable};
 use gpui::RenderImage;
@@ -163,30 +164,26 @@ impl Renderer {
                 ..Default::default()
             });
             let material = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Static satin floor grain"),
+                label: Some("Cached polished concrete roughness / reflectivity / wear"),
                 size: wgpu::Extent3d {
-                    width: 128,
-                    height: 128,
+                    width: material::SIZE,
+                    height: material::SIZE,
                     depth_or_array_layers: 1,
                 },
-                mip_level_count: 8,
+                mip_level_count: material::MIPS,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R8Unorm,
+                format: wgpu::TextureFormat::Rgba8Unorm,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
-            let mut grain = image::GrayImage::from_fn(128, 128, |x, y| {
-                let mut hash = x.wrapping_mul(1973) ^ y.wrapping_mul(9277) ^ 0x68bc21eb;
-                hash = (hash ^ (hash >> 16)).wrapping_mul(0x7feb352d);
-                image::Luma([(hash >> 24) as u8])
-            });
-            for mip in 0..8 {
+            let mut grain = material::pixels();
+            for mip in 0..material::MIPS {
                 if mip > 0 {
                     grain = image::imageops::resize(
                         &grain,
-                        128 >> mip,
-                        128 >> mip,
+                        material::SIZE >> mip,
+                        material::SIZE >> mip,
                         image::imageops::FilterType::Triangle,
                     );
                 }
@@ -200,7 +197,7 @@ impl Renderer {
                     grain.as_raw(),
                     wgpu::TexelCopyBufferLayout {
                         offset: 0,
-                        bytes_per_row: Some(grain.width()),
+                        bytes_per_row: Some(grain.width() * 4),
                         rows_per_image: Some(grain.height()),
                     },
                     wgpu::Extent3d {
