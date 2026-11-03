@@ -6,6 +6,7 @@ mod branding;
 mod components;
 mod detail_artwork;
 mod diagnostics;
+mod dithering;
 mod glass;
 #[cfg(test)]
 mod icon_tests;

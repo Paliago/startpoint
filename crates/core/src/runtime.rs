@@ -1091,6 +1091,17 @@ impl Shared {
                         "Dithering strength must be between 0 and 100 percent".into(),
                     ));
                 }
+                if [settings.dither_recents_size, settings.dither_artwork_size]
+                    .into_iter()
+                    .any(|value| {
+                        !value.is_finite()
+                            || !(1. ..=startpoint_sdk::MAX_DITHER_SIZE).contains(&value)
+                    })
+                {
+                    return Err(ApiError::Validation(
+                        "Dithering size must be between 1 and 12 pixels".into(),
+                    ));
+                }
                 self.store(|store| {
                     store.save_setting("appearance", &settings)?;
                     self.state
@@ -1947,6 +1958,15 @@ fn restore_appearance_settings(
         }
     }
     let invalid_controls = !settings.controls.is_valid();
+    for value in [
+        &mut settings.dither_recents_size,
+        &mut settings.dither_artwork_size,
+    ] {
+        if !value.is_finite() || !(1. ..=startpoint_sdk::MAX_DITHER_SIZE).contains(value) {
+            *value = startpoint_sdk::DEFAULT_DITHER_SIZE;
+            invalid_dithering = true;
+        }
+    }
     if invalid_controls {
         let defaults = AppearanceSettings::default().controls;
         for (value, min, max, default) in [
@@ -3374,6 +3394,74 @@ mod tests {
     }
 
     #[test]
+    fn dither_defaults_are_three_pixels_and_twenty_percent_without_overwriting_saved_values() {
+        for settings in [
+            AppearanceSettings::default(),
+            serde_json::from_str("{}").unwrap(),
+        ] {
+            assert_eq!(settings.dither_recents_size, 3.);
+            assert_eq!(settings.dither_artwork_size, 3.);
+            assert_eq!(settings.dither_recents_strength, 0.2);
+            assert_eq!(settings.dither_artwork_strength, 0.2);
+        }
+        let (saved, changed) = restore_appearance_settings(Some(serde_json::json!({
+            "backdrop_blur": true,
+            "dither_recents_size": 2., "dither_artwork_size": 6.,
+            "dither_recents_strength": 0.12, "dither_artwork_strength": 0.65
+        })))
+        .unwrap();
+        assert!(!changed);
+        assert_eq!(saved.dither_recents_size, 2.);
+        assert_eq!(saved.dither_artwork_size, 6.);
+        assert_eq!(saved.dither_recents_strength, 0.12);
+        assert_eq!(saved.dither_artwork_strength, 0.65);
+    }
+
+    #[test]
+    fn dither_size_preferences_default_and_round_trip_independently_of_intensity() {
+        let old: AppearanceSettings = serde_json::from_value(serde_json::json!({
+            "theme": "Custom", "dither_recents_strength": 0.07, "dither_artwork_strength": 0.3
+        }))
+        .unwrap();
+        assert_eq!(old.dither_recents_size, startpoint_sdk::DEFAULT_DITHER_SIZE);
+        assert_eq!(old.dither_artwork_size, startpoint_sdk::DEFAULT_DITHER_SIZE);
+        for size in 1..=startpoint_sdk::MAX_DITHER_SIZE as u32 {
+            let chosen = AppearanceSettings {
+                dither_recents_size: size as f32,
+                dither_artwork_size: startpoint_sdk::MAX_DITHER_SIZE + 1. - size as f32,
+                ..old.clone()
+            };
+            let (restored, _) =
+                restore_appearance_settings(Some(serde_json::to_value(&chosen).unwrap())).unwrap();
+            assert_eq!(restored, chosen);
+        }
+        for (recents, artwork) in [(0., 8.), (6., 13.)] {
+            let chosen = AppearanceSettings {
+                dither_recents_size: recents,
+                dither_artwork_size: artwork,
+                ..old.clone()
+            };
+            let (restored, changed) =
+                restore_appearance_settings(Some(serde_json::to_value(&chosen).unwrap())).unwrap();
+            assert!(changed);
+            let expected = AppearanceSettings {
+                dither_recents_size: if recents < 1. {
+                    startpoint_sdk::DEFAULT_DITHER_SIZE
+                } else {
+                    recents
+                },
+                dither_artwork_size: if artwork > startpoint_sdk::MAX_DITHER_SIZE {
+                    startpoint_sdk::DEFAULT_DITHER_SIZE
+                } else {
+                    artwork
+                },
+                ..chosen
+            };
+            assert_eq!(restored, expected);
+        }
+    }
+
+    #[test]
     fn application_api_preserves_edits_launch_configuration_and_persistence() {
         let previous_settings: AppearanceSettings =
             serde_json::from_str(r#"{"mode":"dark","dither_artwork":true}"#)
@@ -3406,7 +3494,7 @@ mod tests {
             .expect("application");
         let events = api.subscribe();
         let executable = std::env::current_exe().expect("test executable");
-        for step in 0..53 {
+        for step in 0..61 {
             let previous_library = api.snapshot().games;
             let game_id = api
                 .snapshot()
@@ -3453,9 +3541,11 @@ mod tests {
                         translucency_amount: 0.35,
                         dither_artwork: false,
                         dither_artwork_strength: 0.35,
+                        dither_artwork_size: 3.,
                         start_screen: StartScreen::Recents,
                         dither_recents: true,
                         dither_recents_strength: 0.08,
+                        dither_recents_size: 8.,
                         fade_recents: true,
                         recents_activity: true,
                         recents_progress: true,
@@ -3521,6 +3611,16 @@ mod tests {
                         settings.dither_recents_strength = value;
                     } else {
                         settings.dither_artwork_strength = value;
+                    }
+                    Command::SetAppearance { settings }
+                }
+                53..=60 => {
+                    let mut settings = AppearanceSettings::default();
+                    let value = [0., 13., f32::NAN, f32::INFINITY][(step - 53) % 4];
+                    if step < 57 {
+                        settings.dither_recents_size = value;
+                    } else {
+                        settings.dither_artwork_size = value;
                     }
                     Command::SetAppearance { settings }
                 }
@@ -3809,9 +3909,11 @@ mod tests {
                 translucency_amount: 0.35,
                 dither_artwork: false,
                 dither_artwork_strength: 0.35,
+                dither_artwork_size: 3.,
                 start_screen: StartScreen::Recents,
                 dither_recents: true,
                 dither_recents_strength: 0.08,
+                dither_recents_size: 8.,
                 fade_recents: true,
                 recents_activity: true,
                 recents_progress: true,

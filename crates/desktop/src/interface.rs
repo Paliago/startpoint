@@ -342,10 +342,11 @@ pub struct LauncherView {
     library_filter: LibraryFilter,
     sort_recent: bool,
     appearance: AppearanceSettings,
-    appearance_sliders: [Entity<AdjustmentSlider>; 6],
+    appearance_sliders: [Entity<AdjustmentSlider>; 8],
     #[cfg(debug_assertions)]
     stress_case: &'static str,
     recents_fade: Entity<RecentsFade>,
+    library_artwork: Entity<RecentsFade>,
     appearance_loaded: bool,
     appearance_job: Option<JobId>,
     themes_loading: bool,
@@ -417,7 +418,6 @@ pub struct LauncherView {
     library_reveal: Option<usize>,
     favourites_available: bool,
     favourites_transition: Option<(f32, Instant)>,
-    artwork_texture: Arc<Image>,
     carousel_elapsed: Duration,
     carousel_tick: Option<Instant>,
     carousel_paused: bool,
@@ -480,6 +480,14 @@ impl LauncherView {
                 Adjustment::ArtworkDithering,
                 appearance_settings.dither_artwork_strength,
             ),
+            (
+                Adjustment::RecentsDitherSize,
+                appearance_settings.dither_recents_size,
+            ),
+            (
+                Adjustment::ArtworkDitherSize,
+                appearance_settings.dither_artwork_size,
+            ),
         ];
         let appearance_sliders = adjustments.map(|(adjustment, value)| {
             cx.new(|cx| AdjustmentSlider::new(adjustment, value, window, cx))
@@ -509,6 +517,12 @@ impl LauncherView {
                                 }
                                 Adjustment::ArtworkDithering => {
                                     view.appearance.dither_artwork_strength = *value
+                                }
+                                Adjustment::RecentsDitherSize => {
+                                    view.appearance.dither_recents_size = *value
+                                }
+                                Adjustment::ArtworkDitherSize => {
+                                    view.appearance.dither_artwork_size = *value
                                 }
                             }
                             appearance::update_effects(&view.appearance, cx);
@@ -592,6 +606,7 @@ impl LauncherView {
                 "Demo data"
             },
             recents_fade: cx.new(|_| RecentsFade::default()),
+            library_artwork: cx.new(|_| RecentsFade::default()),
             appearance_loaded,
             appearance_job: None,
             themes_loading: false,
@@ -672,10 +687,6 @@ impl LauncherView {
             library_reveal: None,
             favourites_available: false,
             favourites_transition: None,
-            artwork_texture: Arc::new(Image::from_bytes(
-                ImageFormat::Svg,
-                include_bytes!("../assets/dither.svg").to_vec(),
-            )),
             carousel_elapsed: Duration::ZERO,
             carousel_tick: None,
             carousel_paused: appearance::reduced_motion(),
@@ -3573,31 +3584,6 @@ impl LauncherView {
         true
     }
 
-    fn artwork_texture(&self, window: &Window) -> Div {
-        let mut texture = div()
-            .absolute()
-            .inset_0()
-            .overflow_hidden()
-            .opacity(self.appearance.dither_artwork_strength);
-        let viewport = window.viewport_size();
-        let mut y = px(0.);
-        while y < viewport.height {
-            let mut x = px(0.);
-            while x < viewport.width {
-                texture = texture.child(
-                    img(self.artwork_texture.clone())
-                        .absolute()
-                        .left(x)
-                        .top(y)
-                        .size(px(256.)),
-                );
-                x += px(256.);
-            }
-            y += px(256.);
-        }
-        texture
-    }
-
     fn recents_backdrop_image(
         &self,
         game: &Game,
@@ -3629,6 +3615,7 @@ impl LauncherView {
                 } else {
                     0.
                 },
+                self.appearance.dither_recents_size,
                 self.appearance.fade_recents,
                 window,
                 cx,
@@ -4276,9 +4263,29 @@ impl LauncherView {
             })
     }
 
-    fn hero(&self, game: &Game, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn hero(&self, game: &Game, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let artwork = crate::detail_artwork::background(game);
         let metadata = game.effective_metadata();
+        let bounds = size(
+            px(DETAIL_WIDTH),
+            window.viewport_size().height.max(px(620.)),
+        );
+        let treated = artwork
+            .filter(|_| {
+                self.appearance.dither_artwork && self.appearance.dither_artwork_strength > 0.
+            })
+            .and_then(|asset| {
+                self.library_artwork.update(cx, |cache, cx| {
+                    cache.artwork(
+                        asset.image_path.clone(),
+                        bounds,
+                        self.appearance.dither_artwork_strength,
+                        self.appearance.dither_artwork_size,
+                        window,
+                        cx,
+                    )
+                })
+            });
         div()
             .image_cache(self.full_resolution_images.clone())
             .relative()
@@ -4286,15 +4293,20 @@ impl LauncherView {
             .overflow_hidden()
             .bg(cx.theme().background.alpha(0.35))
             .text_color(cx.theme().foreground)
-            .child(div().absolute().size_full().child(match artwork {
-                Some(asset) => {
-                    image(asset.image_path.clone(), ObjectFit::Cover, cx).into_any_element()
-                }
-                None => div().size_full().bg(cx.theme().muted).into_any_element(),
-            }))
-            .when(
-                self.appearance.dither_artwork && artwork.is_some(),
-                |hero| hero.child(self.artwork_texture(window)),
+            .child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .child(match (treated, artwork) {
+                        (Some(image), _) => img(image)
+                            .size_full()
+                            .object_fit(ObjectFit::Cover)
+                            .into_any_element(),
+                        (None, Some(asset)) => {
+                            image(asset.image_path.clone(), ObjectFit::Cover, cx).into_any_element()
+                        }
+                        (None, None) => div().size_full().bg(cx.theme().muted).into_any_element(),
+                    }),
             )
             .child(div().absolute().size_full().bg(linear_gradient(
                 180.,
@@ -4434,7 +4446,12 @@ impl LauncherView {
             .into_any_element()
     }
 
-    fn detail_overview(&self, game: &Game, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn detail_overview(
+        &self,
+        game: &Game,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         div()
             .relative()
             .w(px(DETAIL_WIDTH))
@@ -5986,6 +6003,7 @@ impl LauncherView {
                             );
                         })),
                 )
+                .child(self.appearance_sliders[6].clone())
                 .child(self.appearance_sliders[4].clone())
                 .child(
                     Switch::new("recents-background-fade")
@@ -6213,6 +6231,7 @@ impl LauncherView {
                                 }))
                         }),
                     )
+                    .child(self.appearance_sliders[7].clone())
                     .child(self.appearance_sliders[5].clone())
             });
         floating_panel(
@@ -7591,6 +7610,14 @@ impl Render for LauncherView {
             ),
             (
                 self.appearance.dither_artwork_strength,
+                self.appearance.dither_artwork,
+            ),
+            (
+                self.appearance.dither_recents_size,
+                self.appearance.dither_recents,
+            ),
+            (
+                self.appearance.dither_artwork_size,
                 self.appearance.dither_artwork,
             ),
         ];

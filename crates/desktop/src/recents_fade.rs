@@ -25,7 +25,7 @@ pub(crate) struct RecentsFade {
 }
 
 impl RecentsFade {
-    /// Flatten artwork, grain and the settled fade off-thread, then apply shell
+    /// Flatten artwork, color dithering and the settled fade off-thread, then apply shell
     /// alpha exactly once. Stacked translucent quads would approach opacity.
     pub fn image(
         &mut self,
@@ -33,7 +33,57 @@ impl RecentsFade {
         color: Hsla,
         size: Size<Pixels>,
         dither_strength: f32,
+        dither_size: f32,
         fade: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Arc<RenderImage>> {
+        self.request(
+            path,
+            color,
+            size,
+            dither_strength,
+            dither_size,
+            fade,
+            false,
+            window,
+            cx,
+        )
+    }
+
+    /// The Library uses the same cached worker without flattening source alpha
+    /// or applying the Recents fade. Its existing gradient stays in the view.
+    pub fn artwork(
+        &mut self,
+        path: PathBuf,
+        size: Size<Pixels>,
+        dither_strength: f32,
+        dither_size: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Arc<RenderImage>> {
+        self.request(
+            Some(path),
+            gpui::transparent_black(),
+            size,
+            dither_strength,
+            dither_size,
+            false,
+            true,
+            window,
+            cx,
+        )
+    }
+
+    fn request(
+        &mut self,
+        path: Option<PathBuf>,
+        color: Hsla,
+        size: Size<Pixels>,
+        dither_strength: f32,
+        dither_size: f32,
+        fade: bool,
+        preserve_alpha: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Arc<RenderImage>> {
@@ -53,7 +103,9 @@ impl RecentsFade {
             width: ((width * scale / 64.).round().max(1.) * 64.) as u32,
             height: ((height * scale / 64.).round().max(1.) * 64.) as u32,
             dither_strength: (dither_strength * 100.).round() as u8,
+            dither_size: crate::dithering::cell_size(dither_size) as u8,
             fade,
+            preserve_alpha,
         };
         self.recent.retain(|old| old != &key);
         self.recent.push_back(key.clone());
@@ -73,13 +125,14 @@ impl RecentsFade {
         if image.is_some() {
             return image;
         }
-        // Keep the matching ready surface pinned while a new strength is composited.
+        // Keep the matching ready surface pinned while new dithering is composited.
         let fallback = self.recent.iter().rev().find_map(|previous| {
             if previous.path != key.path
                 || previous.color != key.color
                 || previous.width != key.width
                 || previous.height != key.height
                 || previous.fade != key.fade
+                || previous.preserve_alpha != key.preserve_alpha
             {
                 return None;
             }
@@ -131,7 +184,9 @@ struct BackdropKey {
     width: u32,
     height: u32,
     dither_strength: u8,
+    dither_size: u8,
     fade: bool,
+    preserve_alpha: bool,
 }
 
 struct BackdropAsset;
@@ -186,6 +241,15 @@ impl Asset for BackdropAsset {
 }
 
 fn backdrop_pixels(key: &BackdropKey, artwork: Option<&RgbaImage>) -> RgbaImage {
+    let treated = artwork.filter(|_| key.dither_strength > 0).map(|image| {
+        crate::dithering::apply(image, u32::from(key.dither_size), key.dither_strength)
+    });
+    if key.preserve_alpha {
+        return treated
+            .or_else(|| artwork.cloned())
+            .unwrap_or_else(|| RgbaImage::new(key.width, key.height));
+    }
+    let artwork = treated.as_ref().or(artwork);
     let theme = [
         (key.color >> 24) as u8,
         (key.color >> 16) as u8,
@@ -198,20 +262,6 @@ fn backdrop_pixels(key: &BackdropKey, artwork: Option<&RgbaImage>) -> RgbaImage 
             let alpha = f32::from(pixel[3]) / 255.;
             for channel in 0..3 {
                 rgb[channel] = rgb[channel] * (1. - alpha) + f32::from(pixel[channel]) * alpha;
-            }
-            if key.dither_strength > 0 {
-                // The same ordered 2px pattern as assets/dither.svg.
-                let rank: f32 = [
-                    [15., 7., 13., 5.],
-                    [3., 11., 1., 9.],
-                    [12., 4., 14., 6.],
-                    [0., 8., 2., 10.],
-                ][(y as usize / 2) % 4][(x as usize / 2) % 4];
-                let grain = if rank >= 8. { 255. } else { 0. };
-                let alpha = (rank - 7.5).abs() / 7.5 * (f32::from(key.dither_strength) / 100.);
-                for channel in &mut rgb {
-                    *channel = *channel * (1. - alpha) + grain * alpha;
-                }
             }
         }
         if key.fade {
@@ -277,7 +327,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn artwork_grain_and_fade_never_make_the_translucent_backdrop_opaque() {
+    fn artwork_dithering_and_fade_never_make_the_translucent_backdrop_opaque() {
         let artwork = RgbaImage::from_pixel(64, 40, image::Rgba([160, 80, 40, 255]));
         for alpha in [204u8, 255] {
             for dither in [false, true] {
@@ -288,7 +338,9 @@ mod tests {
                         width: 64,
                         height: 40,
                         dither_strength: if dither { 12 } else { 0 },
+                        dither_size: 2,
                         fade,
+                        preserve_alpha: false,
                     };
                     for image in [
                         backdrop_pixels(&key, Some(&artwork)),
@@ -302,11 +354,7 @@ mod tests {
                     let image = backdrop_pixels(&key, Some(&artwork));
                     assert_eq!(
                         image.get_pixel(0, 0).0[..3],
-                        if dither {
-                            [171, 101, 66]
-                        } else {
-                            [160, 80, 40]
-                        }
+                        if dither { [171, 86, 43] } else { [160, 80, 40] }
                     );
                 }
             }
@@ -324,7 +372,9 @@ mod tests {
                 width: 64,
                 height: 40,
                 dither_strength: strength,
+                dither_size: 2,
                 fade: false,
+                preserve_alpha: false,
             };
             let image = backdrop_pixels(&key, Some(&artwork));
             assert!(image.get_pixel(0, 0)[0] >= previous);
@@ -348,6 +398,106 @@ mod tests {
             );
         }
         assert_eq!(previous, 255);
+    }
+
+    #[test]
+    fn dither_size_enlarges_the_pattern_without_changing_intensity_alpha_or_fade() {
+        let artwork = RgbaImage::from_pixel(48, 48, image::Rgba([160, 80, 40, 255]));
+        let mut key = BackdropKey {
+            path: None,
+            color: 0x203040cc,
+            width: 48,
+            height: 48,
+            dither_strength: 12,
+            dither_size: 2,
+            fade: false,
+            preserve_alpha: false,
+        };
+        let original = backdrop_pixels(&key, Some(&artwork));
+        key.dither_size = 6;
+        let enlarged = backdrop_pixels(&key, Some(&artwork));
+        assert_ne!(original, enlarged);
+        for y in 0..16 {
+            for x in 0..16 {
+                for dy in 0..3 {
+                    for dx in 0..3 {
+                        assert_eq!(
+                            original.get_pixel(x, y),
+                            enlarged.get_pixel(x * 3 + dx, y * 3 + dy)
+                        );
+                    }
+                }
+            }
+        }
+        for size in 1..=12 {
+            key.dither_size = size;
+            let image = backdrop_pixels(&key, Some(&artwork));
+            assert!(image.pixels().all(|pixel| pixel[3] == 204));
+            assert_eq!(image.get_pixel(0, 0), original.get_pixel(0, 0));
+            key.fade = true;
+            assert_eq!(
+                backdrop_pixels(&key, Some(&artwork)).get_pixel(47, 47).0,
+                [32, 48, 64, 204]
+            );
+            key.fade = false;
+            key.dither_strength = 0;
+            assert!(
+                backdrop_pixels(&key, Some(&artwork))
+                    .pixels()
+                    .all(|pixel| pixel.0 == [160, 80, 40, 204])
+            );
+            key.dither_strength = 12;
+        }
+    }
+
+    #[test]
+    fn library_treatment_preserves_source_alpha_and_does_not_apply_the_recents_fade() {
+        let artwork = RgbaImage::from_fn(64, 40, |x, y| image::Rgba([128, 64, 32, (x + y) as u8]));
+        let key = BackdropKey {
+            path: None,
+            color: 0x203040cc,
+            width: 64,
+            height: 40,
+            dither_strength: 100,
+            dither_size: 2,
+            fade: false,
+            preserve_alpha: true,
+        };
+        let image = backdrop_pixels(&key, Some(&artwork));
+        assert_eq!(image, crate::dithering::apply(&artwork, 2, 100));
+        for (original, treated) in artwork.pixels().zip(image.pixels()) {
+            assert_eq!(original[3], treated[3]);
+        }
+        assert!(
+            backdrop_pixels(&key, None)
+                .pixels()
+                .all(|pixel| pixel.0 == [0, 0, 0, 0])
+        );
+    }
+
+    #[test]
+    fn recents_and_library_use_the_same_color_dithering_at_the_shared_defaults() {
+        let settings = startpoint_sdk::AppearanceSettings::default();
+        let artwork = RgbaImage::from_fn(64, 40, |x, y| {
+            image::Rgba([(x * 4) as u8, (y * 6) as u8, 80, 255])
+        });
+        let mut key = BackdropKey {
+            path: None,
+            color: 0x203040ff,
+            width: 64,
+            height: 40,
+            dither_strength: (settings.dither_recents_strength * 100.).round() as u8,
+            dither_size: crate::dithering::cell_size(settings.dither_recents_size) as u8,
+            fade: false,
+            preserve_alpha: false,
+        };
+        let recents = backdrop_pixels(&key, Some(&artwork));
+        key.preserve_alpha = true;
+        key.dither_strength = (settings.dither_artwork_strength * 100.).round() as u8;
+        key.dither_size = crate::dithering::cell_size(settings.dither_artwork_size) as u8;
+        assert_eq!(recents, backdrop_pixels(&key, Some(&artwork)));
+        assert_eq!(recents, crate::dithering::apply(&artwork, 3, 20));
+        assert_ne!(recents, artwork);
     }
 
     #[test]
