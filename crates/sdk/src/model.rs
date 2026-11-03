@@ -332,9 +332,11 @@ pub struct AppearanceSettings {
     pub controls: ControlAppearance,
     pub dither_artwork: bool,
     pub dither_artwork_strength: f32,
+    pub dither_artwork_size: f32,
     pub start_screen: StartScreen,
     pub dither_recents: bool,
     pub dither_recents_strength: f32,
+    pub dither_recents_size: f32,
     pub fade_recents: bool,
     pub recents_activity: bool,
     pub recents_progress: bool,
@@ -360,9 +362,11 @@ impl Default for AppearanceSettings {
             controls: ControlAppearance::default(),
             dither_artwork: true,
             dither_artwork_strength: DEFAULT_DITHER_STRENGTH,
+            dither_artwork_size: DEFAULT_DITHER_SIZE,
             start_screen: StartScreen::Recents,
             dither_recents: true,
             dither_recents_strength: DEFAULT_DITHER_STRENGTH,
+            dither_recents_size: DEFAULT_DITHER_SIZE,
             fade_recents: true,
             recents_activity: false,
             recents_progress: false,
@@ -420,8 +424,10 @@ impl ControlAppearance {
 /// The settled glass appearance is the slider's default detent.
 pub const DEFAULT_TRANSLUCENCY_AMOUNT: f32 = 0.2;
 
-/// Opacity of the original ordered artwork texture.
-pub const DEFAULT_DITHER_STRENGTH: f32 = 0.12;
+/// Default blend between the original artwork and Bayer-quantized colors.
+pub const DEFAULT_DITHER_STRENGTH: f32 = 0.2;
+pub const DEFAULT_DITHER_SIZE: f32 = 3.;
+pub const MAX_DITHER_SIZE: f32 = 12.;
 
 #[derive(Clone, Debug, Default)]
 pub struct SettingsSnapshot {

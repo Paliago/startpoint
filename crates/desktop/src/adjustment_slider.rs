@@ -18,6 +18,8 @@ pub(crate) enum Adjustment {
     OutlineStrength,
     RecentsDithering,
     ArtworkDithering,
+    RecentsDitherSize,
+    ArtworkDitherSize,
 }
 
 impl Adjustment {
@@ -31,6 +33,11 @@ impl Adjustment {
             Self::RecentsDithering | Self::ArtworkDithering => {
                 (0., 100., startpoint_sdk::DEFAULT_DITHER_STRENGTH * 100.)
             }
+            Self::RecentsDitherSize | Self::ArtworkDitherSize => (
+                1.,
+                startpoint_sdk::MAX_DITHER_SIZE,
+                startpoint_sdk::DEFAULT_DITHER_SIZE,
+            ),
         }
     }
 
@@ -40,7 +47,8 @@ impl Adjustment {
             Self::Radius => "Control rounding",
             Self::Padding => "Button padding",
             Self::OutlineStrength => "Outline strength",
-            Self::RecentsDithering | Self::ArtworkDithering => "Dithering strength",
+            Self::RecentsDithering | Self::ArtworkDithering => "Dithering intensity",
+            Self::RecentsDitherSize | Self::ArtworkDitherSize => "Dithering size",
         }
     }
 
@@ -361,6 +369,31 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
+    fn dither_size_uses_pixels_and_can_reach_every_cell_size() {
+        for adjustment in [Adjustment::RecentsDitherSize, Adjustment::ArtworkDitherSize] {
+            assert_eq!(adjustment.suffix(), "px");
+            assert_eq!(adjustment.range(), (1., 12., 3.));
+            for value in 1..=12 {
+                let value = value as f32;
+                assert_eq!(pointer_value(value, adjustment.range()), value);
+                assert_eq!(adjustment.stored_value(value), value);
+            }
+            assert_eq!(
+                keyboard_value(3., "left", false, adjustment.range()),
+                Some(2.)
+            );
+            assert_eq!(
+                keyboard_value(3., "right", false, adjustment.range()),
+                Some(4.)
+            );
+        }
+        for adjustment in [Adjustment::RecentsDithering, Adjustment::ArtworkDithering] {
+            assert_eq!(adjustment.range(), (0., 100., 20.));
+            assert_eq!(adjustment.stored_value(adjustment.range().2), 0.2);
+        }
+    }
+
+    #[::core::prelude::v1::test]
     fn arrow_keys_reach_and_leave_the_default_without_getting_trapped() {
         assert_eq!(keyboard_percent(19., "right", false), Some(20.));
         assert_eq!(keyboard_percent(20., "right", false), Some(21.));
@@ -381,6 +414,8 @@ mod tests {
             Adjustment::OutlineStrength,
             Adjustment::RecentsDithering,
             Adjustment::ArtworkDithering,
+            Adjustment::RecentsDitherSize,
+            Adjustment::ArtworkDitherSize,
         ] {
             let range = adjustment.range();
             let (min, max, default) = range;
