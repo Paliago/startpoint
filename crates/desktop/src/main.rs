@@ -15,6 +15,7 @@ mod interface;
 mod library_layout;
 mod logo_cache;
 mod recents_fade;
+mod rounding;
 mod theme;
 mod theme_editor;
 #[cfg(feature = "self-update")]

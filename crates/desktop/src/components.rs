@@ -1,7 +1,10 @@
 //! Shared presentation primitives. Keep screen-specific state and actions in views.
 //! UI vocabulary: action button, icon button, choice group, choice dropdown,
 //! navigation tab, toolbar island, path row, glass panel and customize panel.
-use crate::glass::{self, Palette};
+use crate::{
+    glass::{self, Palette},
+    rounding::Rounding,
+};
 use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Disableable, FocusableExt, Icon, IconName, Selectable, Sizable, ThemeColor,
@@ -131,14 +134,14 @@ pub(crate) fn glass_panel_with_blur<T: Styled + IntoElement>(
     blur: f32,
     cx: &App,
 ) -> glass::Frosted {
-    let radius = f32::from(cx.theme().radius_lg);
+    let radius = f32::from(Rounding::of(cx).panel);
     glass::frosted(radius, blur, glass::surface(panel, radius, cx))
 }
 
 pub(crate) fn style_input<T: Styled>(input: T, cx: &App) -> T {
     let palette = Palette::of(cx);
     input
-        .rounded(cx.theme().radius)
+        .rounded(Rounding::of(cx).control)
         .bg(palette.input)
         .text_color(palette.foreground)
         .border_1()
@@ -160,7 +163,7 @@ pub(crate) fn input(state: &Entity<InputState>, cx: &App) -> Input {
 /// Native GPUI variants retain their hover, pressed, disabled and focus behavior.
 pub(crate) fn button(id: impl Into<ElementId>, cx: &App) -> Button {
     let controls = control_appearance(cx);
-    keyboard_focus(button_base(id, px(controls.radius)), cx)
+    keyboard_focus(button_base(id, Rounding::of(cx).control), cx)
         .px(px(controls.horizontal_padding))
         .when(controls.outlines, |button| {
             button.border_1().border_color(control_border(cx))
@@ -221,11 +224,7 @@ fn toolbar_control_base(id: impl Into<ElementId>, radius: Pixels) -> Button {
 /// All toolbar islands use the same neutral hover, pressed and selected fills.
 /// No resting plate; native button behavior still owns focus and disabled states.
 pub(crate) fn toolbar_control(id: impl Into<ElementId>, cx: &App) -> Button {
-    keyboard_focus(
-        toolbar_control_base(id, px(control_appearance(cx).radius)),
-        cx,
-    )
-    .custom(
+    keyboard_focus(toolbar_control_base(id, Rounding::of(cx).control), cx).custom(
         ButtonCustomVariant::new(cx)
             .color(transparent_black())
             .foreground(cx.theme().foreground.alpha(1.))
@@ -313,7 +312,7 @@ pub(crate) fn choice_group(cx: &App) -> Div {
         .items_center()
         .gap(px(2.))
         .p(px(2.))
-        .rounded(cx.theme().radius)
+        .rounded(Rounding::of(cx).choice_group())
         .bg(Palette::of(cx).input)
         .map(|mut control| {
             control.style().align_self = Some(AlignSelf::FlexStart);
@@ -361,7 +360,7 @@ pub(crate) fn navigation_row(id: impl Into<ElementId>, selected: bool, cx: &App)
     let palette = Palette::of(cx);
     div()
         .id(id)
-        .rounded(cx.theme().radius)
+        .rounded(Rounding::of(cx).control)
         .cursor_pointer()
         .text_color(palette.foreground)
         .when(selected, |row| row.bg(palette.input))
@@ -537,7 +536,7 @@ pub(crate) fn floating_panel(
     top: f32,
     width: f32,
     window: &Window,
-    _cx: &App,
+    cx: &App,
 ) -> Stateful<Div> {
     div()
         .id(id)
@@ -549,17 +548,88 @@ pub(crate) fn floating_panel(
         .overflow_y_scroll()
         .occlude()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .rounded(px(12.))
+        .rounded(Rounding::of(cx).panel)
         .p_4()
 }
 
 pub(crate) fn image(path: PathBuf, fit: ObjectFit, cx: &App) -> Img {
-    let colors = cx.theme().colors;
+    image_with_radius(path, fit, px(0.), cx.theme().colors)
+}
+
+/// GPUI overflow masks are rectangular. Round the image itself, not just its
+/// parent, and give the loading/error placeholder the exact same contour.
+pub(crate) fn rounded_image(path: PathBuf, fit: ObjectFit, radius: Pixels, cx: &App) -> Img {
+    image_with_radius(path, fit, radius, cx.theme().colors)
+}
+
+fn image_with_radius(path: PathBuf, fit: ObjectFit, radius: Pixels, colors: ThemeColor) -> Img {
     img(path)
         .size_full()
         .object_fit(fit)
-        .with_fallback(move || placeholder("Image unavailable", colors).into_any_element())
+        .rounded(radius)
+        .with_fallback(move || {
+            rounded_placeholder("Image unavailable", colors, radius).into_any_element()
+        })
 }
+
+pub(crate) fn rounded_placeholder(title: &str, colors: ThemeColor, radius: Pixels) -> Div {
+    placeholder(title, colors).rounded(radius)
+}
+
+/// Card geometry budgets padding, not an invisible border. A transparent 1px
+/// border would steal space from the bottom caption and distort cover ratios.
+pub(crate) fn artwork_card_frame(radius: Pixels) -> Div {
+    div()
+        .border_0()
+        .p(px(crate::rounding::CARD_INSET))
+        .rounded(radius)
+}
+
+/// Captions sit just inside the artwork edges, with extra bottom breathing room.
+/// Fixed-height library captions must include this bottom padding in their height.
+pub(crate) fn artwork_card_caption() -> Div {
+    div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .flex_shrink_0()
+        .gap(px(4.))
+        .px(px(crate::rounding::CARD_CAPTION_SIDE_INSET))
+        .pb(px(crate::rounding::CARD_CAPTION_INSET))
+}
+
+/// Selected hover subtly lifts the opaque selection instead of replacing it
+/// with the pressed fill. Keep rest, hover and press distinct without a new hue.
+pub(crate) fn artwork_card_states(
+    card: Stateful<Div>,
+    selected: bool,
+    colors: ThemeColor,
+) -> Stateful<Div> {
+    let selected_hover = colors
+        .secondary
+        .alpha(1.)
+        .blend(colors.secondary_hover.alpha(0.5));
+    card.when(selected, |card| card.bg(colors.secondary.alpha(1.)))
+        .hover(move |card| {
+            card.bg(if selected {
+                selected_hover
+            } else {
+                colors.secondary.alpha(0.45)
+            })
+        })
+        .active(move |card| {
+            card.bg(if selected {
+                colors.secondary_active.alpha(1.)
+            } else {
+                colors.secondary_hover
+            })
+        })
+}
+
+#[cfg(test)]
+#[path = "card_tests.rs"]
+mod card_tests;
 
 pub(crate) fn placeholder(title: &str, colors: ThemeColor) -> Div {
     div()
@@ -584,6 +654,42 @@ pub(crate) fn placeholder(title: &str, colors: ThemeColor) -> Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn artwork_hover_frames_have_equal_padding_and_no_hidden_border() {
+        let mut frame = artwork_card_frame(px(12.));
+        let style = frame.style();
+        for padding in [
+            style.padding.top,
+            style.padding.bottom,
+            style.padding.left,
+            style.padding.right,
+        ] {
+            assert_eq!(padding, Some(px(crate::rounding::CARD_INSET).into()));
+        }
+        for border in [
+            style.border_widths.top,
+            style.border_widths.bottom,
+            style.border_widths.left,
+            style.border_widths.right,
+        ] {
+            assert_eq!(border, Some(px(0.).into()));
+        }
+    }
+
+    #[::core::prelude::v1::test]
+    fn artwork_images_and_placeholders_round_their_own_painted_corners() {
+        let colors = gpui_component::Theme::default().colors;
+        for radius in [0., 4., 8., 16.] {
+            let mut image =
+                image_with_radius("cover.png".into(), ObjectFit::Cover, px(radius), colors);
+            let mut placeholder = rounded_placeholder("", colors, px(radius));
+            assert_eq!(image.style().corner_radii, placeholder.style().corner_radii);
+            assert_eq!(image.style().corner_radii.top_left, Some(px(radius).into()));
+            assert_eq!(image.style().size.width, Some(relative(1.).into()));
+            assert_eq!(image.style().size.height, Some(relative(1.).into()));
+        }
+    }
 
     #[::core::prelude::v1::test]
     fn modal_backdrop_covers_every_edge_including_the_toolbar() {

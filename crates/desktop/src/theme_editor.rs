@@ -412,7 +412,7 @@ impl Render for Editor {
                             })),
                     ),
             )
-            .child(div().text_sm().child("Corner radius"))
+            .child(div().text_sm().child("Surface corner radius"))
             .child(
                 div()
                     .flex()
