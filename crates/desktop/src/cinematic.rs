@@ -18,6 +18,8 @@ pub(crate) const NEUTRAL_ACCENT: [f32; 3] = [0.78, 0.70, 0.54];
 pub(crate) enum ArtworkKey {
     Landscape(PathBuf),
     SoftCover(PathBuf),
+    Portrait(PathBuf),
+    Book(PathBuf),
 }
 
 pub(crate) fn artwork_key(game: &Game) -> Option<ArtworkKey> {
@@ -35,12 +37,14 @@ pub(crate) fn artwork_key(game: &Game) -> Option<ArtworkKey> {
 pub(crate) struct Artwork {
     pub image: Option<Arc<RenderImage>>,
     pub accent: [f32; 3],
+    pub luminance: f32,
 }
 impl Default for Artwork {
     fn default() -> Self {
         Self {
             image: None,
             accent: NEUTRAL_ACCENT,
+            luminance: 0.5,
         }
     }
 }
@@ -51,8 +55,12 @@ pub(crate) struct ArtworkCache {
     pinned: Vec<ArtworkKey>,
     cleanup_scheduled: bool,
     pending: Vec<ArtworkKey>,
+    capacity: usize,
 }
 impl ArtworkCache {
+    pub fn set_capacity(&mut self, capacity: usize) {
+        self.capacity = capacity.max(4);
+    }
     pub fn load(
         &mut self,
         key: &ArtworkKey,
@@ -103,7 +111,7 @@ impl ArtworkCache {
         let mut changed = false;
         // At most three composited frames plus the loading destination. All
         // images are bounded to 1920×1200, independent of source file size/DPI.
-        while self.recent.len() > 4 {
+        while self.recent.len() > self.capacity.max(4) {
             let Some(index) = self.recent.iter().position(|key| !pinned.contains(key)) else {
                 break;
             };
@@ -131,18 +139,37 @@ impl Asset for ArtworkAsset {
         _: &mut App,
     ) -> impl std::future::Future<Output = Artwork> + Send + 'static {
         async move {
-            let (path, soften) = match key {
-                ArtworkKey::Landscape(path) => (path, false),
-                ArtworkKey::SoftCover(path) => (path, true),
+            let (path, soften, portrait, book) = match key {
+                ArtworkKey::Landscape(path) => (path, false, false, false),
+                ArtworkKey::SoftCover(path) => (path, true, false, false),
+                ArtworkKey::Portrait(path) => (path, false, true, false),
+                ArtworkKey::Book(path) => (path, false, false, true),
             };
             let Ok(source) = image::open(path) else {
                 return Artwork::default();
             };
-            let accent = artwork_accent(&source.thumbnail(48, 32).to_rgba8());
+            let sample = source.thumbnail(48, 32).to_rgba8();
+            let accent = artwork_accent(&sample);
+            let luminance = sample
+                .pixels()
+                .map(|p| {
+                    (0.2126 * f32::from(p[0]) + 0.7152 * f32::from(p[1]) + 0.0722 * f32::from(p[2]))
+                        / 255.
+                })
+                .sum::<f32>()
+                / (sample.width() * sample.height()).max(1) as f32;
             let mut pixels = if soften {
                 source
                     .resize_to_fill(960, 600, image::imageops::FilterType::Triangle)
                     .blur(24.)
+                    .to_rgba8()
+            } else if portrait {
+                source
+                    .resize(1024, 1536, image::imageops::FilterType::Triangle)
+                    .to_rgba8()
+            } else if book {
+                source
+                    .resize(1920, 1400, image::imageops::FilterType::Triangle)
                     .to_rgba8()
             } else {
                 source
@@ -161,6 +188,7 @@ impl Asset for ArtworkAsset {
             Artwork {
                 image: Some(Arc::new(RenderImage::new([Frame::new(pixels)]))),
                 accent,
+                luminance,
             }
         }
     }
@@ -225,14 +253,27 @@ pub(crate) struct Scene {
     target: Option<Layer>,
     started: Option<Instant>,
     paused_at: Option<Instant>,
+    duration: Option<Duration>,
 }
 impl Scene {
+    pub fn luminance(&self, now: Instant) -> f32 {
+        let layers = self.layers(now);
+        if layers.is_empty() {
+            0.5
+        } else {
+            layers.iter().map(|l| l.artwork.luminance * l.weight).sum()
+        }
+    }
+    pub fn set_duration(&mut self, duration: Duration) {
+        self.duration = Some(duration);
+    }
     fn progress(&self, now: Instant) -> f32 {
         let now = self.paused_at.unwrap_or(now);
         let t = self
             .started
             .map_or(1., |start| {
-                now.saturating_duration_since(start).as_secs_f32() / TRANSITION.as_secs_f32()
+                now.saturating_duration_since(start).as_secs_f32()
+                    / self.duration.unwrap_or(TRANSITION).as_secs_f32()
             })
             .clamp(0., 1.);
         t * t * (3. - 2. * t)
@@ -415,6 +456,7 @@ mod tests {
         Artwork {
             image: None,
             accent: color,
+            luminance: 0.5,
         }
     }
     fn key(name: &str) -> Option<ArtworkKey> {

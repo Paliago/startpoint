@@ -3425,6 +3425,9 @@ mod tests {
             RecentsLayout::Carousel,
             RecentsLayout::Gallery,
             RecentsLayout::Cinematic,
+            RecentsLayout::InfiniteWall,
+            RecentsLayout::FilmReel,
+            RecentsLayout::ArtBook,
         ] {
             let chosen = AppearanceSettings {
                 recents_layout,
@@ -3438,6 +3441,9 @@ mod tests {
                     RecentsLayout::Carousel => "carousel",
                     RecentsLayout::Gallery => "gallery",
                     RecentsLayout::Cinematic => "cinematic",
+                    RecentsLayout::InfiniteWall => "infinite_wall",
+                    RecentsLayout::FilmReel => "film_reel",
+                    RecentsLayout::ArtBook => "art_book",
                 }
             );
             let (restored, migrated) = restore_appearance_settings(Some(document)).unwrap();

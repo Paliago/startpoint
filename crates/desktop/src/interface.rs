@@ -19,6 +19,7 @@ use crate::{
 mod cinematic;
 mod collection;
 mod gallery;
+mod scenes;
 use chrono::{Datelike, Local, Months, NaiveDate, TimeZone};
 use gpui::{prelude::*, *};
 #[cfg(not(target_os = "windows"))]
@@ -94,8 +95,9 @@ impl RenderOnce for LauncherTitleBar {
 #[cfg(target_os = "windows")]
 fn windows_window_controls(window: &Window, cx: &App) -> impl IntoElement {
     let maximized = window.is_maximized();
-    let foreground = cx.theme().foreground;
-    let hover = cx.theme().tokens.button_hover.color;
+    let palette = crate::art_scenes::material::chrome(cx);
+    let foreground = palette.map_or(cx.theme().foreground, |p| p.ink);
+    let hover = palette.map_or(cx.theme().tokens.button_hover.color, |p| p.ink.alpha(0.09));
     let active = cx.theme().tokens.button_active.color;
     div()
         .id("windows-window-controls")
@@ -443,6 +445,8 @@ pub struct LauncherView {
     cinematic_scene: crate::cinematic::Scene,
     cinematic_artwork: Entity<crate::cinematic::ArtworkCache>,
     cinematic_motion: crate::gallery::Motion,
+    art_scenes: crate::art_scenes::State,
+    scene_artwork: Entity<crate::cinematic::ArtworkCache>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -729,12 +733,16 @@ impl LauncherView {
             cinematic_scene: Default::default(),
             cinematic_artwork: cx.new(|_| Default::default()),
             cinematic_motion: Default::default(),
+            art_scenes: Default::default(),
+            scene_artwork: cx.new(|_| Default::default()),
             _subscriptions: subscriptions,
         };
         view._subscriptions
             .push(cx.observe(&view.gallery_gpu, |_, _, cx| cx.notify()));
         view._subscriptions
             .push(cx.observe(&view.cinematic_artwork, |_, _, cx| cx.notify()));
+        view._subscriptions
+            .push(cx.observe(&view.scene_artwork, |_, _, cx| cx.notify()));
         #[cfg(debug_assertions)]
         {
             view.apply_stress_data();
@@ -756,7 +764,9 @@ impl LauncherView {
                     if view.render_power.paused() {
                         return crate::render_power::PROBE_INTERVAL;
                     }
-                    if view.tick_ambient_artwork(cx) {
+                    if view.tick_art_scenes(cx) {
+                        Duration::from_millis(100)
+                    } else if view.tick_ambient_artwork(cx) {
                         view.design().motion_interval
                     } else if view.advance_carousel(window, cx) {
                         Duration::from_millis(50)
@@ -1775,6 +1785,41 @@ impl LauncherView {
         cx: &mut Context<Self>,
     ) {
         let modifiers = event.keystroke.modifiers;
+        if self.art_scene_active()
+            && (self.art_scene_mode() == Some(crate::art_scenes::Mode::Wall)
+                || self.art_scenes.overview.target > 0.)
+            && self.art_scenes.focus.is_none()
+            && !self.collection_overlay_open()
+            && modifiers.number_of_modifiers() == 0
+            && matches!(event.keystroke.key.as_str(), "up" | "down")
+        {
+            let games = self.recent_games();
+            if !games.is_empty() {
+                let current = games
+                    .iter()
+                    .position(|game| self.selected.as_ref() == Some(&game.id))
+                    .unwrap_or(0);
+                let columns = crate::art_scenes::WallLayout::new(
+                    self.main_content_width(window),
+                    f32::from(window.viewport_size().height),
+                )
+                .columns;
+                let index = if event.keystroke.key == "down" {
+                    (current + columns).min(games.len() - 1)
+                } else {
+                    current.saturating_sub(columns)
+                };
+                let id = games[index].id.clone();
+                self.art_scenes.hover(
+                    Some(id.clone()),
+                    appearance::reduced_motion(),
+                    Instant::now(),
+                );
+                self.select_recent_game(id, window, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         if (modifiers.platform || modifiers.control)
             && modifiers.number_of_modifiers() == 1
             && matches!(event.keystroke.key.as_str(), "f" | "k" | "p")
@@ -1832,6 +1877,9 @@ impl LauncherView {
     }
 
     fn open_command_bar(&mut self, mode: CommandMode, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(focus) = &mut self.art_scenes.focus {
+            focus.launch = false;
+        }
         if self.command_mode.is_none() {
             self.command_previous_focus = window.focused(cx);
         }
@@ -2081,7 +2129,8 @@ impl LauncherView {
         }
         match command {
             LauncherCommand::SelectGame(id) => {
-                if self.design().recents == crate::design::RecentPresentation::Cinematic
+                if (self.design().recents == crate::design::RecentPresentation::Cinematic
+                    || self.art_scene_mode().is_some())
                     && self.recent_games().iter().any(|game| game.id == id)
                 {
                     self.switch_screen(StartScreen::Recents, window, cx);
@@ -2193,6 +2242,14 @@ impl LauncherView {
             self.customization_open = false;
         } else if self.settings_open {
             self.settings_open = false;
+        } else if self.art_scene_active()
+            && self
+                .art_scenes
+                .dismiss(appearance::reduced_motion(), Instant::now())
+        {
+            self.focus.focus(window, cx);
+            cx.notify();
+            return;
         } else if self.detail_tab != DetailTab::Overview {
             self.close_editor(window, cx);
             return;
@@ -2206,6 +2263,7 @@ impl LauncherView {
     }
 
     fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        self.art_scenes.focus = None;
         if self.command_mode.is_some() {
             self.close_command_bar(window, cx);
         }
@@ -2218,7 +2276,11 @@ impl LauncherView {
         cx.notify();
     }
 
-    fn launch_selected(&mut self, _: &LaunchSelected, _: &mut Window, cx: &mut Context<Self>) {
+    fn launch_selected(&mut self, _: &LaunchSelected, window: &mut Window, cx: &mut Context<Self>) {
+        if self.art_scene_active() && !self.collection_overlay_open() {
+            self.launch_art_scene(window, cx);
+            return;
+        }
         if self.command_mode.is_none()
             && !self.settings_open
             && !self.jobs_open
@@ -2241,6 +2303,9 @@ impl LauncherView {
     }
 
     fn move_selection(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.art_scene_active() && self.art_scenes.focus.is_some() {
+            return;
+        }
         if self.command_mode.is_some()
             || self.settings_open
             || self.jobs_open
@@ -2271,6 +2336,15 @@ impl LauncherView {
             current.saturating_sub(1)
         };
         let id = games[index].id.clone();
+        if self.art_scene_mode() == Some(crate::art_scenes::Mode::Wall)
+            || self.art_scenes.overview.target > 0.
+        {
+            self.art_scenes.hover(
+                Some(id.clone()),
+                appearance::reduced_motion(),
+                Instant::now(),
+            );
+        }
         if self.screen == StartScreen::Recents {
             self.select_recent_game(id, window, cx);
         } else {
@@ -2286,6 +2360,7 @@ impl LauncherView {
     }
 
     fn switch_screen(&mut self, screen: StartScreen, window: &mut Window, cx: &mut Context<Self>) {
+        self.art_scenes.focus = None;
         self.carousel_elapsed = Duration::ZERO;
         self.carousel_tick = None;
         self.carousel_transition = None;
@@ -2306,6 +2381,9 @@ impl LauncherView {
             self.design().recents,
             crate::design::RecentPresentation::Gallery
                 | crate::design::RecentPresentation::Cinematic
+                | crate::design::RecentPresentation::InfiniteWall
+                | crate::design::RecentPresentation::FilmReel
+                | crate::design::RecentPresentation::ArtBook
         ) && self.selected.is_some()
             && self.appearance.library_details
             && !self.detail_closed
@@ -2518,6 +2596,8 @@ impl LauncherView {
         let paused = self.render_power.paused();
         self.gallery_motion.set_paused(paused, Instant::now());
         self.cinematic_motion.set_paused(paused, Instant::now());
+        self.art_scenes
+            .pause(paused || !self.art_scene_active(), Instant::now());
         self.cinematic_scene
             .set_paused(paused || !self.cinematic_active(), Instant::now());
         self.gallery_gpu.update(cx, |gpu, _| {
@@ -2572,6 +2652,7 @@ impl LauncherView {
                 self.gallery_motion = Default::default();
                 self.cinematic_motion = Default::default();
                 self.cinematic_scene = Default::default();
+                self.art_scenes = Default::default();
                 self.gallery_wheel = Default::default();
                 self.collection_motion = Default::default();
                 self.collection_flow = Default::default();
@@ -4347,7 +4428,8 @@ impl LauncherView {
                                         || (!self.settings_open
                                             && !self.customization_open
                                             && self.theme_editor.is_none()
-                                            && self.detail_tab == DetailTab::Overview),
+                                            && self.detail_tab == DetailTab::Overview
+                                            && !self.art_scene_layer_open()),
                                 )
                                 .on_click(cx.listener(
                                     |view, _, window, cx| view.dismiss(&DismissPanel, window, cx),
@@ -7850,6 +7932,12 @@ impl Render for LauncherView {
         self.prepare_collection(window);
         self.prepare_gallery(window, cx);
         self.prepare_cinematic(window, cx);
+        self.prepare_art_scenes(window, cx);
+        cx.set_global(crate::art_scenes::material::Chrome(
+            (self.art_scene_active()
+                && self.art_scene_mode() == Some(crate::art_scenes::Mode::Book))
+            .then(|| self.book_palette()),
+        ));
         if self.editorial_active()
             && !self.render_power.paused()
             && self.collection_motion.animating()
@@ -7930,6 +8018,8 @@ impl Render for LauncherView {
             && self.selected_game().is_some();
         let content = if self.settings_open {
             self.settings(window, cx)
+        } else if self.art_scene_active() {
+            self.art_scene(window, cx)
         } else if self.cinematic_active() {
             self.cinematic(window, cx)
         } else if self.gallery_active() {

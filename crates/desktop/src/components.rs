@@ -276,12 +276,13 @@ fn toolbar_control_base(id: impl Into<ElementId>, radius: Pixels) -> Button {
 /// All toolbar islands use the same neutral hover, pressed and selected fills.
 /// No resting plate; native button behavior still owns focus and disabled states.
 pub(crate) fn toolbar_control(id: impl Into<ElementId>, cx: &App) -> Button {
+    let palette = crate::art_scenes::material::chrome(cx);
     keyboard_focus(toolbar_control_base(id, Rounding::of(cx).control), cx).custom(
         ButtonCustomVariant::new(cx)
             .color(transparent_black())
-            .foreground(cx.theme().foreground.alpha(1.))
-            .hover(cx.theme().tokens.button_hover.color)
-            .active(cx.theme().tokens.button_active.color),
+            .foreground(palette.map_or(cx.theme().foreground.alpha(1.), |p| p.ink))
+            .hover(palette.map_or(cx.theme().tokens.button_hover.color, |p| p.ink.alpha(0.09)))
+            .active(palette.map_or(cx.theme().tokens.button_active.color, |p| p.ink.alpha(0.15))),
     )
 }
 

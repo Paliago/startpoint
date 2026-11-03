@@ -258,6 +258,7 @@ pub(crate) fn toolbar_surface<T: Styled + IntoElement>(
     material: crate::design::ToolbarMaterial,
     cx: &App,
 ) -> Frosted {
+    let palette = crate::art_scenes::material::chrome(cx);
     Frosted {
         radius: material.radius,
         blur_radius: material.blur_radius,
@@ -265,8 +266,10 @@ pub(crate) fn toolbar_surface<T: Styled + IntoElement>(
         child: panel
             .rounded(px(material.radius))
             .border_0()
-            .bg(cx.theme().muted.alpha(material.opacity))
-            .text_color(cx.theme().foreground)
+            .bg(palette
+                .map_or(cx.theme().muted, |p| p.paper)
+                .alpha(material.opacity))
+            .text_color(palette.map_or(cx.theme().foreground, |p| p.ink))
             .shadow_none()
             .into_any_element(),
     }

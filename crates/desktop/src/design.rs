@@ -23,6 +23,9 @@ pub(crate) enum RecentPresentation {
     Organic,
     Gallery,
     Cinematic,
+    InfiniteWall,
+    FilmReel,
+    ArtBook,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -161,6 +164,25 @@ pub(crate) const CINEMATIC: Profile = Profile {
     ..GALLERY
 };
 
+pub(crate) const INFINITE_WALL: Profile = Profile {
+    name: "Infinite Wall",
+    recents: RecentPresentation::InfiniteWall,
+    ..CINEMATIC
+};
+pub(crate) const FILM_REEL: Profile = Profile {
+    name: "Film Reel",
+    recents: RecentPresentation::FilmReel,
+    ..CINEMATIC
+};
+pub(crate) const ART_BOOK: Profile = Profile {
+    name: "Art Book",
+    recents: RecentPresentation::ArtBook,
+    recent_count: usize::MAX,
+    sidebar_pages: &[],
+    ambient_motion: false,
+    ..EDITORIAL
+};
+
 impl Profile {
     pub fn editable_palette(&self) -> bool {
         matches!(self.palette, PaletteSource::Authored)
@@ -202,6 +224,9 @@ pub(crate) fn resolve(settings: &AppearanceSettings) -> &'static Profile {
         RecentsLayout::Editorial => &EDITORIAL,
         RecentsLayout::Gallery => &GALLERY,
         RecentsLayout::Cinematic => &CINEMATIC,
+        RecentsLayout::InfiniteWall => &INFINITE_WALL,
+        RecentsLayout::FilmReel => &FILM_REEL,
+        RecentsLayout::ArtBook => &ART_BOOK,
     }
 }
 
@@ -313,5 +338,30 @@ mod tests {
         assert!(!profile.sidebar_allowed(StartScreen::Recents, false));
         assert!(profile.fixed_palette().unwrap().1.is_dark());
         assert_eq!(saved, before);
+    }
+
+    #[test]
+    fn artwork_scene_designs_keep_shared_chrome_and_provider_independent_scope() {
+        for (layout, kind) in [
+            (
+                RecentsLayout::InfiniteWall,
+                RecentPresentation::InfiniteWall,
+            ),
+            (RecentsLayout::FilmReel, RecentPresentation::FilmReel),
+            (RecentsLayout::ArtBook, RecentPresentation::ArtBook),
+        ] {
+            let settings = AppearanceSettings {
+                recents_layout: layout,
+                sidebar_visible: true,
+                ..Default::default()
+            };
+            let profile = resolve(&settings);
+            assert_eq!(profile.shell, Shell::ToolbarIslands);
+            assert_eq!(profile.header_height, CLASSIC.header_height);
+            assert_eq!(profile.recents, kind);
+            assert_eq!(profile.recent_count, usize::MAX);
+            assert!(!profile.sidebar_allowed(StartScreen::Recents, false));
+            assert!(!profile.ambient_motion);
+        }
     }
 }

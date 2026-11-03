@@ -2,6 +2,7 @@
 
 mod adjustment_slider;
 mod appearance;
+mod art_scenes;
 mod branding;
 mod cinematic;
 mod components;

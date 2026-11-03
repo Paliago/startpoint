@@ -310,6 +310,9 @@ pub enum RecentsLayout {
     Editorial,
     Gallery,
     Cinematic,
+    InfiniteWall,
+    FilmReel,
+    ArtBook,
 }
 
 impl RecentsLayout {
@@ -319,6 +322,9 @@ impl RecentsLayout {
             Self::Editorial => "Editorial Recents",
             Self::Gallery => "Gallery",
             Self::Cinematic => "Cinematic",
+            Self::InfiniteWall => "Infinite Wall",
+            Self::FilmReel => "Film Reel",
+            Self::ArtBook => "Art Book",
         }
     }
 }
