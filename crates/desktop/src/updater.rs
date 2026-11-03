@@ -310,7 +310,7 @@ impl Updater {
             .flex_col()
             .gap_2()
             .p_3()
-            .rounded_md()
+            .rounded(crate::rounding::Rounding::of(cx).surface)
             .bg(cx.theme().accent)
             .child(
                 div()

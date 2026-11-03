@@ -2,15 +2,17 @@ use crate::{
     adjustment_slider::{Adjustment, AdjustmentSlider, Event as AdjustmentEvent},
     appearance,
     components::{
-        BUTTON_TEXT_REM, EditableFieldState, button, choice_button, choice_dropdown, choice_group,
-        eyebrow, field, floating_panel, glass_panel, glass_panel_with_blur, hint, icon_button,
-        image, input, modal_backdrop, navigation_row, navigation_tab, path_row, placeholder,
-        sidebar_label, snug_sidebar_button, toolbar_icon_button, toolbar_island, widget_surface,
-        with_accessible_label,
+        BUTTON_TEXT_REM, EditableFieldState, artwork_card_caption, artwork_card_frame,
+        artwork_card_states, button, choice_button, choice_dropdown, choice_group, eyebrow, field,
+        floating_panel, glass_panel, glass_panel_with_blur, hint, icon_button, image, input,
+        modal_backdrop, navigation_row, navigation_tab, path_row, rounded_image,
+        rounded_placeholder, sidebar_label, snug_sidebar_button, toolbar_icon_button,
+        toolbar_island, widget_surface, with_accessible_label,
     },
     image_cache::ArtworkImageCache,
     library_layout::{CONTENT_TOP, DETAIL_WIDTH, Geometry as LibraryGeometry, filter_reveal},
     recents_fade::RecentsFade,
+    rounding::Rounding,
     theme,
     theme_editor::{Editor, EditorEvent},
 };
@@ -2189,7 +2191,11 @@ impl LauncherView {
             current.saturating_sub(1)
         };
         let id = games[index].id.clone();
-        self.select_game(id, window, cx);
+        if self.screen == StartScreen::Recents {
+            self.select_recent_game(id, window, cx);
+        } else {
+            self.select_game(id, window, cx);
+        }
         if self.screen == StartScreen::Library {
             self.library_reveal = Some(index);
         }
@@ -2782,6 +2788,7 @@ impl LauncherView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         // ponytail: long labels clip to one line; restore ellipses after GPUI fixes width-sensitive text caching.
+        let rounding = Rounding::of(cx);
         let id = game.id.clone();
         let launch_id = id.clone();
         let group = SharedString::from(format!("library-hover-{}", id.0));
@@ -2802,7 +2809,7 @@ impl LauncherView {
             .gap_3()
             .px_2()
             .py_2()
-            .rounded_md()
+            .rounded(rounding.card())
             .cursor_pointer()
             .when(selected, |row| row.bg(cx.theme().secondary_hover.alpha(1.)))
             .hover(|style| style.bg(cx.theme().muted))
@@ -2811,14 +2818,19 @@ impl LauncherView {
                     .w(px(geometry.artwork_height * 1.8125))
                     .h(px(geometry.artwork_height))
                     .flex_shrink_0()
-                    .rounded(px(6.))
+                    .rounded(rounding.artwork)
                     .overflow_hidden()
                     .bg(cx.theme().muted)
                     .child(match cover {
-                        Some(asset) => image(asset.thumbnail_path.clone(), ObjectFit::Cover, cx)
-                            .rounded(px(6.))
+                        Some(asset) => rounded_image(
+                            asset.thumbnail_path.clone(),
+                            ObjectFit::Cover,
+                            rounding.artwork,
+                            cx,
+                        )
+                        .into_any_element(),
+                        None => rounded_placeholder("", cx.theme().colors, rounding.artwork)
                             .into_any_element(),
-                        None => placeholder("", cx.theme().colors).into_any_element(),
                     }),
             )
             .child(
@@ -3075,6 +3087,10 @@ impl LauncherView {
         let group = SharedString::from(format!("library-hover-{}", id.0));
         let selected = self.selected.as_ref() == Some(&id);
         let compact = self.appearance.library_layout == LibraryLayout::Compact;
+        let rounding = Rounding::of(cx);
+        let date = last_played(game);
+        let show_date = self.appearance.library_last_played && !date.is_empty();
+        let metadata_lines = usize::from(show_date) + usize::from(self.appearance.library_sources);
         let cover = if self.appearance.library_layout == LibraryLayout::Tiles {
             game.artwork
                 .get(&ArtworkKind::Background)
@@ -3088,7 +3104,7 @@ impl LauncherView {
         let artwork = div()
             .relative()
             .overflow_hidden()
-            .rounded(px(8.))
+            .rounded(rounding.artwork)
             .bg(cx.theme().muted)
             .h(px(geometry.artwork_height))
             .flex_shrink_0()
@@ -3097,10 +3113,16 @@ impl LauncherView {
             })
             .when(!compact, |art| art.w_full())
             .child(match cover {
-                Some(asset) => {
-                    image(asset.thumbnail_path.clone(), ObjectFit::Cover, cx).into_any_element()
+                Some(asset) => rounded_image(
+                    asset.thumbnail_path.clone(),
+                    ObjectFit::Cover,
+                    rounding.artwork,
+                    cx,
+                )
+                .into_any_element(),
+                None => {
+                    rounded_placeholder("", cx.theme().colors, rounding.artwork).into_any_element()
                 }
-                None => placeholder("", cx.theme().colors).into_any_element(),
             })
             .when(
                 !compact && self.appearance.library_favourite_badges,
@@ -3169,104 +3191,92 @@ impl LauncherView {
                         ),
                 )
             });
-        let caption = div()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .gap(px(4.))
-            .when(compact, |caption| caption.flex_1())
-            .when(!compact, |caption| {
-                caption
-                    .w_full()
-                    .px_1()
-                    .h(px(geometry.caption_height))
-                    .flex_shrink_0()
-            })
-            .child(single_line_title(
-                SharedString::from(format!("library-title-{}", id.0)),
-                game.title(),
-                px(geometry.title_font_size),
-                FontWeight::SEMIBOLD,
-            ))
-            .when(compact, |caption| {
-                let launches = self
-                    .snapshot
-                    .activity
-                    .iter()
-                    .map(|day| day.games.get(&game.id).copied().unwrap_or(0))
-                    .fold(0u32, u32::saturating_add);
-                let summary = compact_summary(game, launches);
-                caption.child(library_metadata(&summary, geometry))
-            })
-            .when(!compact && self.appearance.library_last_played, |caption| {
-                caption.child(library_metadata(&last_played(game), geometry))
-            })
-            .when(!compact && self.appearance.library_sources, |caption| {
-                caption.child(library_metadata(source_name(&game.provider_id), geometry))
-            });
-        let card = div()
-            .id(SharedString::from(format!("library-card-{}", id.0)))
-            .group(group.clone())
-            .flex_1()
-            .min_w_0()
-            .h(px(geometry.row_height - geometry.gap))
-            .flex()
-            .gap(px(6.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(transparent_black())
-            .p(px(4.))
-            .when(compact, |card| card.flex_row().items_center().px_2())
-            .when(!compact, |card| card.flex_col())
-            .when(selected, |card| card.bg(cx.theme().secondary.alpha(0.7)))
-            .hover(|card| {
-                card.bg(if selected {
-                    cx.theme().secondary_hover.alpha(0.8)
+        let caption = if compact {
+            div().flex_1().flex().flex_col().gap(px(4.))
+        } else {
+            artwork_card_caption().h(px(geometry.caption_height_for(metadata_lines)))
+        }
+        .min_w_0()
+        .child(single_line_title(
+            SharedString::from(format!("library-title-{}", id.0)),
+            game.title(),
+            px(geometry.title_font_size),
+            FontWeight::SEMIBOLD,
+        ))
+        .when(compact, |caption| {
+            let launches = self
+                .snapshot
+                .activity
+                .iter()
+                .map(|day| day.games.get(&game.id).copied().unwrap_or(0))
+                .fold(0u32, u32::saturating_add);
+            let summary = compact_summary(game, launches);
+            caption.child(library_metadata(&summary, geometry))
+        })
+        .when(!compact && show_date, |caption| {
+            caption.child(library_metadata(&date, geometry))
+        })
+        .when(!compact && self.appearance.library_sources, |caption| {
+            caption.child(library_metadata(source_name(&game.provider_id), geometry))
+        });
+        let card = artwork_card_states(
+            artwork_card_frame(rounding.card())
+                .id(SharedString::from(format!("library-card-{}", id.0)))
+                .group(group.clone())
+                .flex_1()
+                .min_w_0()
+                .h(px(if compact {
+                    geometry.row_height - geometry.gap
                 } else {
-                    cx.theme().secondary.alpha(0.45)
-                })
-            })
-            .active(|card| card.bg(cx.theme().secondary_hover))
-            .cursor_pointer()
-            .child(artwork)
-            .child(caption)
-            .when(compact, |card| {
+                    geometry.card_height_for(metadata_lines)
+                }))
+                .flex()
+                .gap(px(crate::library_layout::CARD_CAPTION_GAP))
+                .when(compact, |card| card.flex_row().items_center().px_2())
+                .when(!compact, |card| card.flex_col()),
+            selected,
+            cx.theme().colors,
+        )
+        .cursor_pointer()
+        .child(artwork)
+        .child(caption)
+        .when(compact, |card| {
+            card.child(
+                div()
+                    .w(window.rem_size() * 10.5)
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(4.))
+                    .child(library_metadata(
+                        &library_source_status(game, self.appearance.library_sources),
+                        geometry,
+                    ))
+                    .when(show_date, |column| {
+                        column.child(library_metadata(&date, geometry))
+                    }),
+            )
+        })
+        .when(
+            compact && self.appearance.library_favourite_badges,
+            |card| {
                 card.child(
                     div()
-                        .w(window.rem_size() * 10.5)
-                        .flex_shrink_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(4.))
-                        .child(library_metadata(
-                            &library_source_status(game, self.appearance.library_sources),
-                            geometry,
-                        ))
-                        .when(self.appearance.library_last_played, |column| {
-                            column.child(library_metadata(&last_played(game), geometry))
-                        }),
+                        .when(!game.favourite, |star| {
+                            star.opacity(0.)
+                                .group_hover(group.clone(), |style| style.opacity(1.))
+                        })
+                        .child(self.library_favourite_button(game, cx)),
                 )
-            })
-            .when(
-                compact && self.appearance.library_favourite_badges,
-                |card| {
-                    card.child(
-                        div()
-                            .when(!game.favourite, |star| {
-                                star.opacity(0.)
-                                    .group_hover(group.clone(), |style| style.opacity(1.))
-                            })
-                            .child(self.library_favourite_button(game, cx)),
-                    )
-                },
-            )
-            .on_click(cx.listener(move |view, _, window, cx| {
-                view.select_game(id.clone(), window, cx);
-                view.focus.focus(window, cx);
-            }))
-            .on_double_click(cx.listener(move |view, _, window, cx| {
-                view.run_library_game_action(&launch_id, LibraryGameAction::Launch, window, cx)
-            }));
+            },
+        )
+        .on_click(cx.listener(move |view, _, window, cx| {
+            view.select_game(id.clone(), window, cx);
+            view.focus.focus(window, cx);
+        }))
+        .on_double_click(cx.listener(move |view, _, window, cx| {
+            view.run_library_game_action(&launch_id, LibraryGameAction::Launch, window, cx)
+        }));
         self.with_library_context_menu(game, card, cx)
     }
 
@@ -3473,6 +3483,8 @@ impl LauncherView {
     }
 
     fn recent_card(&self, game: &Game, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let rounding = Rounding::of(cx);
+        let date = last_played(game);
         let id = game.id.clone();
         let artwork = game
             .artwork
@@ -3480,66 +3492,76 @@ impl LauncherView {
             .or_else(|| game.artwork.get(&ArtworkKind::Cover))
             .or_else(|| game.artwork.get(&ArtworkKind::Icon));
         let selected = self.selected.as_ref() == Some(&id);
-        let card = div()
-            .id(SharedString::from(format!("recent-{}", id.0)))
-            .flex_1()
-            .min_w_0()
-            .max_w(px(280.))
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_1()
-            .rounded(px(8.))
-            .border_1()
-            .border_color(transparent_black())
-            .when(!self.appearance.fade_recents, |card| {
-                card.bg(cx.theme().background.alpha(0.94))
-            })
-            .when(selected, |card| card.bg(cx.theme().secondary.alpha(0.7)))
-            .hover(|card| {
-                card.bg(if selected {
-                    cx.theme().secondary_hover.alpha(0.8)
-                } else {
-                    cx.theme().secondary.alpha(0.45)
-                })
-            })
-            .active(|card| card.bg(cx.theme().secondary_hover))
-            .cursor_pointer()
-            .child(
-                div()
-                    .relative()
-                    .w_full()
-                    .h(px(120.))
-                    .rounded(px(8.))
-                    .overflow_hidden()
-                    .child(match artwork {
-                        Some(asset) => image(asset.thumbnail_path.clone(), ObjectFit::Cover, cx)
-                            .absolute()
-                            .inset_0()
-                            .rounded(px(6.))
-                            .into_any_element(),
-                        None => placeholder("", cx.theme().colors).into_any_element(),
-                    }),
-            )
-            .child(single_line_title(
-                SharedString::from(format!("recent-card-title-{}", id.0)),
-                game.title(),
-                window.rem_size() * 0.875,
-                FontWeight::SEMIBOLD,
-            ))
-            .child(
-                div()
-                    .w_full()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .line_clamp(1)
-                    .child(last_played(game)),
-            )
-            .on_click(cx.listener(move |view, _, window, cx| {
-                view.select_game(id.clone(), window, cx);
-                view.focus.focus(window, cx);
-            }));
+        let card = artwork_card_states(
+            artwork_card_frame(rounding.card())
+                .id(SharedString::from(format!("recent-{}", id.0)))
+                .flex_1()
+                .min_w_0()
+                .max_w(px(280.))
+                .flex()
+                .flex_col()
+                .gap_2()
+                .when(!self.appearance.fade_recents, |card| {
+                    card.bg(cx.theme().background.alpha(0.94))
+                }),
+            selected,
+            cx.theme().colors,
+        )
+        .cursor_pointer()
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .h(px(120.))
+                .flex_shrink_0()
+                .rounded(rounding.artwork)
+                .overflow_hidden()
+                .child(match artwork {
+                    Some(asset) => rounded_image(
+                        asset.thumbnail_path.clone(),
+                        ObjectFit::Cover,
+                        rounding.artwork,
+                        cx,
+                    )
+                    .absolute()
+                    .inset_0()
+                    .into_any_element(),
+                    None => rounded_placeholder("", cx.theme().colors, rounding.artwork)
+                        .into_any_element(),
+                }),
+        )
+        .child(
+            artwork_card_caption()
+                .gap_2()
+                .child(single_line_title(
+                    SharedString::from(format!("recent-card-title-{}", id.0)),
+                    game.title(),
+                    window.rem_size() * 0.875,
+                    FontWeight::SEMIBOLD,
+                ))
+                .when(!date.is_empty(), |caption| {
+                    caption.child(
+                        div()
+                            .w_full()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .line_clamp(1)
+                            .child(date),
+                    )
+                }),
+        )
+        .on_click(cx.listener(move |view, _, window, cx| {
+            view.select_recent_game(id.clone(), window, cx);
+        }));
         self.with_library_context_menu(game, card, cx)
+    }
+
+    /// Manual navigation stays on the chosen game until explicitly resumed.
+    /// Automatic advancement must keep using `select_game` instead.
+    fn select_recent_game(&mut self, id: GameId, window: &mut Window, cx: &mut Context<Self>) {
+        self.carousel_paused = true;
+        self.select_game(id, window, cx);
+        self.focus.focus(window, cx);
     }
 
     fn carousel_is_paused(&self, window: &Window, cx: &App) -> bool {
@@ -3867,12 +3889,11 @@ impl LauncherView {
                                                         )
                                                         .on_click(cx.listener(
                                                             move |view, _, window, cx| {
-                                                                view.select_game(
+                                                                view.select_recent_game(
                                                                     id.clone(),
                                                                     window,
                                                                     cx,
                                                                 );
-                                                                view.focus.focus(window, cx);
                                                             },
                                                         ))
                                                 },
@@ -3936,7 +3957,7 @@ impl LauncherView {
                                     ),
                             )
                             .child(
-                                div().w_full().flex().gap_3().children(
+                                div().w_full().flex().items_start().gap_3().children(
                                     games
                                         .into_iter()
                                         .map(|game| self.recent_card(game, window, cx)),
@@ -4326,7 +4347,7 @@ impl LauncherView {
                         div()
                             .px_3()
                             .py_1()
-                            .rounded_lg()
+                            .rounded(Rounding::of(cx).surface)
                             .bg(crate::glass::Palette::of(cx).button)
                             .text_xs()
                             .child(source_name(&game.provider_id).to_string()),
@@ -4934,10 +4955,15 @@ impl LauncherView {
                             .gap_3()
                             .pb_2()
                             .when_some(artwork, |identity, asset| {
+                                let radius = Rounding::of(cx).artwork;
                                 identity.child(
-                                    crate::detail_artwork::editor_poster_frame(asset.kind).child(
-                                        image(asset.thumbnail_path.clone(), ObjectFit::Cover, cx),
-                                    ),
+                                    crate::detail_artwork::editor_poster_frame(asset.kind, radius)
+                                        .child(rounded_image(
+                                            asset.thumbnail_path.clone(),
+                                            ObjectFit::Cover,
+                                            radius,
+                                            cx,
+                                        )),
                                 )
                             })
                             .child(
@@ -5065,7 +5091,7 @@ impl LauncherView {
                     .tab_group()
                     .w(px(860.).min(window.viewport_size().width - px(64.)))
                     .h((window.viewport_size().height - px(64.)).min(px(720.)))
-                    .rounded(cx.theme().radius_lg)
+                    .rounded(Rounding::of(cx).panel)
                     .overflow_hidden()
                     .shadow_lg()
                     .occlude()
@@ -6840,7 +6866,7 @@ impl LauncherView {
                     .flex_col()
                     .gap_2()
                     .p_3()
-                    .rounded(cx.theme().radius)
+                    .rounded(Rounding::of(cx).surface)
                     .bg(crate::glass::Palette::of(cx).input.alpha(0.3))
                     .child(hint(&timestamp_label(entry.created_at)))
                     .child(div().text_sm().child(entry.text.clone()))
@@ -7333,7 +7359,7 @@ impl LauncherView {
         let panel = div()
             .w(px(560.))
             .max_w(relative(0.9))
-            .rounded(px(12.))
+            .rounded(Rounding::of(cx).panel)
             .shadow_lg()
             .p_3()
             .flex()
@@ -7370,11 +7396,14 @@ impl LauncherView {
                                                 })
                                             })
                                             .map(|asset| {
-                                                img(asset.thumbnail_path.clone())
-                                                    .size(px(28.))
-                                                    .object_fit(ObjectFit::Cover)
-                                                    .rounded(px(5.))
-                                                    .into_any_element()
+                                                rounded_image(
+                                                    asset.thumbnail_path.clone(),
+                                                    ObjectFit::Cover,
+                                                    Rounding::of(cx).artwork,
+                                                    cx,
+                                                )
+                                                .size(px(28.))
+                                                .into_any_element()
                                             }),
                                         _ => None,
                                     }
@@ -7451,7 +7480,7 @@ impl LauncherView {
             .overflow_y_scroll()
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .rounded_md()
+            .rounded(Rounding::of(cx).panel)
             .p_4()
             .flex()
             .flex_col()
@@ -7492,7 +7521,7 @@ impl LauncherView {
                         .flex_col()
                         .gap_2()
                         .p_3()
-                        .rounded_md()
+                        .rounded(Rounding::of(cx).surface)
                         .bg(cx.theme().accent)
                         .child(div().text_sm().child(notice))
                         .child(
@@ -7808,6 +7837,7 @@ fn artwork_option(
     current: bool,
     cx: &App,
 ) -> Button {
+    let radius = Rounding::of(cx).artwork;
     let (width, height) = match kind {
         ArtworkKind::Cover => (148., 210.),
         ArtworkKind::Background => (252., 142.),
@@ -7846,16 +7876,19 @@ fn artwork_option(
                     .w_full()
                     .h(px(height))
                     .flex_shrink_0()
-                    .rounded(px(6.))
+                    .rounded(radius)
                     .overflow_hidden()
                     .bg(cx.theme().secondary.alpha(0.4))
                     .when(!current, |figure| {
                         figure.group_hover(group, |style| style.opacity(0.88))
                     })
                     .child(match preview {
-                        Some(path) => image(path, ObjectFit::Contain, cx).into_any_element(),
+                        Some(path) => {
+                            rounded_image(path, ObjectFit::Contain, radius, cx).into_any_element()
+                        }
                         None => {
-                            placeholder("Preview unavailable", cx.theme().colors).into_any_element()
+                            rounded_placeholder("Preview unavailable", cx.theme().colors, radius)
+                                .into_any_element()
                         }
                     }),
             )
@@ -8590,7 +8623,7 @@ fn single_line_title(
         .id(id)
         .w_full()
         .min_w_0()
-        .h(font_size * 1.2)
+        .h((font_size * 1.2).ceil())
         .line_height(relative(1.2))
         .text_size(font_size)
         .font_weight(weight)

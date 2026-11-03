@@ -5,7 +5,7 @@ use startpoint_sdk::{ArtworkAsset, ArtworkKind, Game};
 
 const LOGO_HEIGHT: f32 = 160.;
 
-pub(crate) fn editor_poster_frame(kind: ArtworkKind) -> Div {
+pub(crate) fn editor_poster_frame(kind: ArtworkKind, radius: Pixels) -> Div {
     div()
         .w_full()
         .aspect_ratio(if kind == ArtworkKind::Icon {
@@ -14,7 +14,7 @@ pub(crate) fn editor_poster_frame(kind: ArtworkKind) -> Div {
             2. / 3.
         })
         .flex_shrink_0()
-        .rounded(px(5.))
+        .rounded(radius)
         .overflow_hidden()
 }
 
@@ -106,12 +106,13 @@ mod tests {
     #[::core::prelude::v1::test]
     fn editor_poster_fills_the_sidebar_width_without_squashing_covers_or_icons() {
         for (kind, ratio) in [(ArtworkKind::Cover, 2. / 3.), (ArtworkKind::Icon, 1.)] {
-            let mut frame = editor_poster_frame(kind);
+            let mut frame = editor_poster_frame(kind, px(8.));
             let style = frame.style();
             assert_eq!(style.size.width, Some(relative(1.).into()));
             assert_eq!(style.size.height, None);
             assert_eq!(style.aspect_ratio, Some(ratio));
             assert_eq!(style.flex_shrink, Some(0.));
+            assert_eq!(style.corner_radii.top_left, Some(px(8.).into()));
             assert_eq!(style.overflow.x, Some(Overflow::Hidden));
             assert_eq!(style.overflow.y, Some(Overflow::Hidden));
         }

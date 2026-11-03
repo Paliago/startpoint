@@ -232,7 +232,7 @@ impl Render for AdjustmentSlider {
                     .h(px(36.))
                     .px_2()
                     .pt_1()
-                    .rounded(px(6.))
+                    .rounded(crate::rounding::Rounding::of(cx).control)
                     .border_1()
                     .border_color(transparent_black())
                     .when(enabled, |control| {

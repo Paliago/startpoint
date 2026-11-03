@@ -2,6 +2,7 @@ use startpoint_sdk::{AppearanceSettings, LibraryDensity, LibraryLayout};
 
 pub(crate) const CONTENT_TOP: f32 = 64.;
 pub(crate) const DETAIL_WIDTH: f32 = 380.;
+pub(crate) const CARD_CAPTION_GAP: f32 = 6.;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Geometry {
@@ -10,7 +11,6 @@ pub(crate) struct Geometry {
     pub artwork_height: f32,
     pub row_height: f32,
     pub gap: f32,
-    pub caption_height: f32,
     pub title_font_size: f32,
     pub metadata_font_size: f32,
     pub metadata_height: f32,
@@ -37,23 +37,32 @@ impl Geometry {
         let artwork_height = match settings.library_layout {
             LibraryLayout::Pills => [48., 64., 80.][size],
             LibraryLayout::Compact => [28., 36., 44.][size],
-            LibraryLayout::Covers => (card_width - 8.).max(1.) * 1.5,
-            LibraryLayout::Tiles => (card_width - 8.).max(1.) * 9. / 16.,
+            LibraryLayout::Covers => (card_width - 2. * crate::rounding::CARD_INSET).max(1.) * 1.5,
+            LibraryLayout::Tiles => {
+                (card_width - 2. * crate::rounding::CARD_INSET).max(1.) * 9. / 16.
+            }
         };
         let title_font_size = rem * 0.875;
         let metadata_font_size = rem * 0.75;
         let metadata_height = (metadata_font_size * 1.2).ceil();
         let metadata_lines =
             usize::from(settings.library_last_played) + usize::from(settings.library_sources);
-        let caption_height = title_font_size * 1.2 + metadata_lines as f32 * (metadata_height + 4.);
+        let caption_height = (title_font_size * 1.2).ceil()
+            + metadata_lines as f32 * (metadata_height + 4.)
+            + crate::rounding::CARD_CAPTION_INSET;
         let row_height = match settings.library_layout {
             LibraryLayout::Pills => artwork_height + 20.,
             LibraryLayout::Compact => {
                 (artwork_height + 16.).max(title_font_size * 1.2 + metadata_height + 4. + 8.)
             }
-            // Only 4px of card padding per edge and a 6px artwork/caption gap.
-            // Spacing between cards belongs to the row gap, not an empty footer.
-            LibraryLayout::Covers | LibraryLayout::Tiles => artwork_height + caption_height + 14.,
+            // Caption height includes its own bottom inset, separate from the
+            // 4px artwork gutter and the spacing between virtual rows.
+            LibraryLayout::Covers | LibraryLayout::Tiles => {
+                artwork_height
+                    + caption_height
+                    + 2. * crate::rounding::CARD_INSET
+                    + CARD_CAPTION_GAP
+            }
         } + gap;
         Self {
             columns,
@@ -61,11 +70,25 @@ impl Geometry {
             artwork_height,
             row_height,
             gap,
-            caption_height,
             title_font_size,
             metadata_font_size,
             metadata_height,
         }
+    }
+
+    pub fn caption_height_for(self, visible_metadata_lines: usize) -> f32 {
+        (self.title_font_size * 1.2).ceil()
+            + visible_metadata_lines as f32 * (self.metadata_height + 4.)
+            + crate::rounding::CARD_CAPTION_INSET
+    }
+
+    /// Virtual rows retain their maximum height, but a hover plate should hug
+    /// the actual text rather than extending over an absent date/source line.
+    pub fn card_height_for(self, visible_metadata_lines: usize) -> f32 {
+        self.artwork_height
+            + CARD_CAPTION_GAP
+            + self.caption_height_for(visible_metadata_lines)
+            + 2. * crate::rounding::CARD_INSET
     }
 }
 
@@ -167,11 +190,58 @@ mod tests {
                     let footer = geometry.row_height
                         - geometry.gap
                         - geometry.artwork_height
-                        - geometry.caption_height;
+                        - geometry
+                            .caption_height_for(usize::from(last_played) + usize::from(sources));
                     assert!(
                         (footer - 14.).abs() < 0.01,
                         "only 8px total padding plus 6px image/caption gap"
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hover_plate_bottom_padding_is_constant_with_any_visible_caption_lines() {
+        for layout in [LibraryLayout::Covers, LibraryLayout::Tiles] {
+            for density in [
+                LibraryDensity::Small,
+                LibraryDensity::Medium,
+                LibraryDensity::Large,
+            ] {
+                for rem in [12., 14., 16., 20.] {
+                    let settings = AppearanceSettings {
+                        library_layout: layout,
+                        library_density: density,
+                        library_last_played: true,
+                        library_sources: true,
+                        ..Default::default()
+                    };
+                    let geometry = Geometry::new(840., &settings, rem);
+                    for lines in 0..=2 {
+                        let bottom = geometry.card_height_for(lines)
+                            - crate::rounding::CARD_INSET
+                            - geometry.artwork_height
+                            - CARD_CAPTION_GAP
+                            - (geometry.caption_height_for(lines)
+                                - crate::rounding::CARD_CAPTION_INSET);
+                        assert!(
+                            (bottom
+                                - (crate::rounding::CARD_INSET
+                                    + crate::rounding::CARD_CAPTION_INSET))
+                                .abs()
+                                < 0.001
+                        );
+                        assert!(
+                            geometry.card_height_for(lines)
+                                <= geometry.row_height - geometry.gap + 0.001
+                        );
+                    }
+                    assert!(
+                        (geometry.card_height_for(2) - (geometry.row_height - geometry.gap)).abs()
+                            < 0.001
+                    );
+                    assert!(geometry.card_height_for(0) < geometry.card_height_for(1));
                 }
             }
         }
