@@ -16,12 +16,13 @@ impl LauncherView {
     /// Drive ambient artwork from the existing UI timer, not hover notifications
     /// or a renderer's current-view cache. It also runs behind open UI panels.
     pub(super) fn tick_ambient_artwork(&mut self, cx: &mut Context<Self>) -> bool {
-        let running = self.design().ambient_enabled(
-            self.editorial_active(),
-            self.snapshot.ready,
-            self.recent_games().len(),
-            appearance::reduced_motion(),
-        );
+        let running = !self.render_power.paused()
+            && self.design().ambient_enabled(
+                self.editorial_active(),
+                self.snapshot.ready,
+                self.recent_games().len(),
+                appearance::reduced_motion(),
+            );
         self.collection_flow.update(running);
         if running {
             cx.notify();
@@ -510,6 +511,7 @@ mod tests {
             ]);
         });
         let mut window = app.open_window(|window, cx| LauncherView::new(api.clone(), window, cx));
+        window.update(|_, window, _| window.activate_window());
         window.draw();
         window.read(|view, cx| {
             assert!(view.editorial_active());
@@ -538,6 +540,25 @@ mod tests {
             }
             view.customization_open = false;
         });
+        let mut other = app.open_window(|window, cx| LauncherView::new(api.clone(), window, cx));
+        other.update(|_, window, _| window.activate_window());
+        window.update(|view, window, cx| {
+            view.refresh_render_power(window, true, cx);
+            assert!(view.render_power.paused());
+            assert!(!view.tick_ambient_artwork(cx));
+            let frozen = view.collection_flow.seconds();
+            assert!(!view.tick_ambient_artwork(cx));
+            assert_eq!(view.collection_flow.seconds(), frozen);
+            // Turning the preference off restores ambient effects while
+            // unfocused, without changing the user's layout or selection.
+            view.appearance.pause_in_background = false;
+            view.refresh_render_power(window, true, cx);
+            assert!(!view.render_power.paused());
+            assert_eq!(view.tick_ambient_artwork(cx), !appearance::reduced_motion());
+            view.appearance.pause_in_background = true;
+            window.activate_window();
+        });
+        window.draw();
         // The main Recents screen supports the same sidebar toggle as Classic.
         // Its artwork must reflow inside the remaining width, not overflow it.
         window.simulate_keystroke("ctrl-b");

@@ -6519,7 +6519,10 @@ name = "startpoint"
 version = "0.1.4"
 dependencies = [
  "async-channel",
+ "bytemuck",
  "chrono",
+ "core-foundation 0.10.0",
+ "core-graphics 0.24.0",
  "embed-resource",
  "gpui",
  "gpui-component",
@@ -6530,6 +6533,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+ "pollster 0.4.0",
  "raw-window-handle",
  "resvg 0.45.1",
  "semver",
@@ -6538,6 +6542,7 @@ dependencies = [
  "startpoint-sdk",
  "tempfile",
  "velopack",
+ "wgpu",
  "windows-sys 0.61.2",
  "zip",
 ]

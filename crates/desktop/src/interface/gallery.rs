@@ -9,8 +9,8 @@ impl LauncherView {
             && matches!(self.screen, StartScreen::Recents | StartScreen::Library)
     }
 
-    pub(super) fn prepare_gallery(&mut self, window: &mut Window) {
-        if !self.gallery_active() {
+    pub(super) fn prepare_gallery(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.gallery_active() || self.render_power.paused() {
             return;
         }
         let games = self.displayed_games();
@@ -24,6 +24,32 @@ impl LauncherView {
             .update(index, count, appearance::reduced_motion(), now);
         if self.gallery_motion.animating(now) {
             window.request_animation_frame();
+        }
+        if self.snapshot.ready && count > 0 {
+            let position = self.gallery_motion.position(now);
+            let covers = self
+                .displayed_games()
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, game)| {
+                    let offset = exhibition::relative(index, position, count);
+                    (offset.abs() < 3.).then(|| crate::gallery_gpu::scene::Cover {
+                        id: game.id.clone(),
+                        path: game
+                            .artwork
+                            .get(&ArtworkKind::Cover)
+                            .map(|art| art.image_path.clone()),
+                        offset,
+                    })
+                })
+                .collect();
+            let scene = crate::gallery_gpu::scene::Scene::new(
+                self.main_content_width(window),
+                f32::from(window.viewport_size().height),
+                covers,
+            );
+            self.gallery_gpu
+                .update(cx, |gpu, cx| gpu.request(scene, window, cx));
         }
     }
 
@@ -45,6 +71,22 @@ impl LauncherView {
             f32::from(window.viewport_size().height),
         );
         let position = self.gallery_motion.position(Instant::now());
+        let gpu = self.gallery_gpu.read(cx);
+        let frame = gpu
+            .frame()
+            .filter(|frame| {
+                frame
+                    .scene
+                    .covers
+                    .iter()
+                    .any(|cover| self.selected.as_ref() == Some(&cover.id))
+                    && frame
+                        .scene
+                        .covers
+                        .iter()
+                        .all(|cover| games.iter().any(|game| game.id == cover.id))
+            })
+            .cloned();
         let mut placements = games
             .iter()
             .enumerate()
@@ -62,27 +104,46 @@ impl LauncherView {
             .size_full()
             .relative()
             .overflow_hidden();
-        for (_, game, _, placement) in &placements {
-            if let Some(asset) = game.artwork.get(&ArtworkKind::Cover) {
-                let reflection = self.gallery_reflections.update(cx, |reflections, cx| {
-                    reflections.image(asset.image_path.clone(), window, cx)
-                });
-                stage = stage.when_some(reflection, |stage, reflection| {
-                    stage.child(
-                        div()
-                            .absolute()
-                            .left(px(placement.x - placement.width * 0.08))
-                            .top(px(placement.y + placement.height))
-                            .w(px(placement.width * 1.16))
-                            .h(px(placement.height * 0.32))
-                            .opacity(placement.opacity * (1. - placement.shade))
-                            .child(exhibition::reflection_image(reflection)),
-                    )
-                });
+        if let Some(frame) = &frame {
+            stage = stage.child(crate::gallery_gpu::frame_image(frame));
+            placements = frame
+                .scene
+                .placements()
+                .into_iter()
+                .filter_map(|(id, placement)| {
+                    let index = games.iter().position(|game| game.id == id)?;
+                    Some((
+                        index,
+                        games[index],
+                        exhibition::relative(index, position, games.len()),
+                        placement,
+                    ))
+                })
+                .collect();
+            placements.sort_by(|a, b| b.2.abs().total_cmp(&a.2.abs()));
+        } else {
+            for (_, game, _, placement) in &placements {
+                if let Some(asset) = game.artwork.get(&ArtworkKind::Cover) {
+                    let reflection = self.gallery_reflections.update(cx, |reflections, cx| {
+                        reflections.image(asset.image_path.clone(), window, cx)
+                    });
+                    stage = stage.when_some(reflection, |stage, reflection| {
+                        stage.child(
+                            div()
+                                .absolute()
+                                .left(px(placement.x - placement.width * 0.08))
+                                .top(px(placement.y + placement.height))
+                                .w(px(placement.width * 1.16))
+                                .h(px(placement.height * 0.32))
+                                .opacity(placement.opacity * (1. - placement.shade))
+                                .child(exhibition::reflection_image(reflection)),
+                        )
+                    });
+                }
             }
         }
         for (index, game, _, placement) in placements {
-            stage = stage.child(self.gallery_cover(game, index, placement, cx));
+            stage = stage.child(self.gallery_cover(game, index, placement, frame.is_some(), cx));
         }
         let title = game.title().to_string();
         let launch_id = game.id.clone();
@@ -228,6 +289,7 @@ impl LauncherView {
         game: &Game,
         index: usize,
         placement: Placement,
+        gpu_rendered: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = game.id.clone();
@@ -243,11 +305,13 @@ impl LauncherView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(
-                    Icon::new(IconName::GalleryVerticalEnd)
-                        .size(px(32.))
-                        .text_color(cx.theme().muted_foreground),
-                )
+                .when(!gpu_rendered, |button| {
+                    button.child(
+                        Icon::new(IconName::GalleryVerticalEnd)
+                            .size(px(32.))
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                })
                 .into_any_element(),
         };
         let cover = with_accessible_label(
@@ -496,6 +560,28 @@ mod tests {
         window.simulate_click(first_dot, MouseButton::Left);
         window.draw();
         window.read(|view, _| assert_eq!(view.selected.as_ref().unwrap().0, "gallery:0"));
+        // The same launch/selection regression runs with a displayed GPU frame
+        // and invisible native hit targets, not only the loading fallback.
+        window.update(|view, window, cx| {
+            let covers = view
+                .recent_games()
+                .into_iter()
+                .enumerate()
+                .map(|(index, game)| crate::gallery_gpu::scene::Cover {
+                    id: game.id.clone(),
+                    path: None,
+                    offset: exhibition::relative(index, 0., 5),
+                })
+                .collect();
+            let scene = crate::gallery_gpu::scene::Scene::new(
+                view.main_content_width(window),
+                f32::from(window.viewport_size().height),
+                covers,
+            );
+            view.gallery_gpu
+                .update(cx, |gpu, _| gpu.install_test_frame(scene));
+        });
+        window.draw();
         let neighbor = window.update(|_, window, _| {
             let layout = Layout::new(
                 f32::from(window.viewport_size().width),

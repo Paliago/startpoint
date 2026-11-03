@@ -172,10 +172,25 @@ pub(crate) struct Motion {
     from: f32,
     to: f32,
     started: Option<Instant>,
+    paused_at: Option<Instant>,
 }
 
 impl Motion {
+    pub fn set_paused(&mut self, paused: bool, now: Instant) {
+        match (paused, self.paused_at) {
+            (true, None) => self.paused_at = Some(now),
+            (false, Some(since)) => {
+                if let Some(start) = &mut self.started {
+                    *start += now.saturating_duration_since(since);
+                }
+                self.paused_at = None;
+            }
+            _ => {}
+        }
+    }
+
     pub fn update(&mut self, index: usize, count: usize, reduced_motion: bool, now: Instant) {
+        let now = self.paused_at.unwrap_or(now);
         let index = index.min(count.saturating_sub(1));
         if self.count != count || reduced_motion {
             *self = Self {
@@ -184,6 +199,7 @@ impl Motion {
                 from: index as f32,
                 to: index as f32,
                 started: None,
+                paused_at: self.paused_at,
             };
         } else if self.target != index {
             let current = self.position(now);
@@ -200,6 +216,7 @@ impl Motion {
     }
 
     pub fn position(&self, now: Instant) -> f32 {
+        let now = self.paused_at.unwrap_or(now);
         let progress = self.started.map_or(1., |start| {
             (now.saturating_duration_since(start).as_secs_f32() / TRANSITION.as_secs_f32())
                 .clamp(0., 1.)
@@ -209,8 +226,10 @@ impl Motion {
     }
 
     pub fn animating(&self, now: Instant) -> bool {
-        self.started
-            .is_some_and(|start| now.saturating_duration_since(start) < TRANSITION)
+        self.paused_at.is_none()
+            && self
+                .started
+                .is_some_and(|start| now.saturating_duration_since(start) < TRANSITION)
     }
 }
 
@@ -396,6 +415,24 @@ mod tests {
                 .pixels()
                 .all(|pixel| pixel[3] == 0)
         );
+    }
+
+    #[test]
+    fn motion_freezes_and_resumes_without_spending_background_time() {
+        let now = Instant::now();
+        let mut motion = Motion::default();
+        motion.update(0, 5, false, now);
+        motion.update(1, 5, false, now);
+        let halfway = now + TRANSITION / 2;
+        motion.set_paused(true, halfway);
+        let frozen = motion.position(halfway);
+        let later = halfway + Duration::from_secs(600);
+        assert_eq!(motion.position(later), frozen);
+        assert!(!motion.animating(later));
+        motion.set_paused(false, later);
+        assert_eq!(motion.position(later), frozen);
+        assert!(motion.animating(later));
+        assert!((motion.position(later + TRANSITION / 2) - 1.).abs() < 0.001);
     }
 
     #[test]

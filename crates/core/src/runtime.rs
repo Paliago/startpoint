@@ -3394,6 +3394,24 @@ mod tests {
     }
 
     #[test]
+    fn background_pause_defaults_on_and_persists_both_choices() {
+        let (old, _) = restore_appearance_settings(Some(serde_json::json!({
+            "theme": "Custom", "recents_layout": "gallery", "sidebar_width": 320
+        })))
+        .unwrap();
+        assert!(old.pause_in_background);
+        for pause_in_background in [true, false] {
+            let chosen = AppearanceSettings {
+                pause_in_background,
+                ..old.clone()
+            };
+            let (restored, _) =
+                restore_appearance_settings(Some(serde_json::to_value(&chosen).unwrap())).unwrap();
+            assert_eq!(restored, chosen);
+        }
+    }
+
+    #[test]
     fn editorial_recents_defaults_compatibly_and_preserves_carousel_preferences() {
         use startpoint_sdk::RecentsLayout;
         let old: AppearanceSettings = serde_json::from_value(serde_json::json!({
@@ -3577,6 +3595,7 @@ mod tests {
                         dither_artwork_size: 3.,
                         start_screen: StartScreen::Recents,
                         recents_layout: startpoint_sdk::RecentsLayout::Editorial,
+                        pause_in_background: false,
                         dither_recents: true,
                         dither_recents_strength: 0.08,
                         dither_recents_size: 8.,
@@ -3946,6 +3965,7 @@ mod tests {
                 dither_artwork_size: 3.,
                 start_screen: StartScreen::Recents,
                 recents_layout: startpoint_sdk::RecentsLayout::Editorial,
+                pause_in_background: false,
                 dither_recents: true,
                 dither_recents_strength: 0.08,
                 dither_recents_size: 8.,

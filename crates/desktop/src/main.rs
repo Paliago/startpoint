@@ -10,6 +10,7 @@ mod diagnostics;
 mod dithering;
 mod editorial_collection;
 mod gallery;
+mod gallery_gpu;
 mod glass;
 #[cfg(test)]
 mod icon_tests;
@@ -18,6 +19,7 @@ mod interface;
 mod library_layout;
 mod logo_cache;
 mod recents_fade;
+mod render_power;
 mod rounding;
 mod theme;
 mod theme_editor;

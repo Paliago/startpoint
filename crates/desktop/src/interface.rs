@@ -435,7 +435,9 @@ pub struct LauncherView {
     carousel_transition: Option<(Game, Instant)>,
     carousel_image_ready: bool,
     gallery_motion: crate::gallery::Motion,
+    render_power: crate::render_power::State,
     gallery_reflections: Entity<crate::gallery::Reflections>,
+    gallery_gpu: Entity<crate::gallery_gpu::GalleryGpu>,
     gallery_wheel: crate::gallery::Wheel,
     _subscriptions: Vec<Subscription>,
 }
@@ -459,7 +461,10 @@ impl LauncherView {
         let appearance_subscription = cx.observe_window_appearance(window, |view, window, cx| {
             view.apply_appearance(window, cx);
         });
-        let activation_subscription = cx.observe_window_activation(window, |_, _, cx| cx.notify());
+        let activation_subscription = cx.observe_window_activation(window, |view, window, cx| {
+            view.refresh_render_power(window, true, cx);
+            cx.notify();
+        });
         let mut window_memory = crate::window_state::Memory::new(&snapshot.paths.data_directory);
         window_memory.capture(window, cx);
         let bounds_subscription = cx.observe_window_bounds(window, |view, window, cx| {
@@ -713,10 +718,14 @@ impl LauncherView {
             carousel_transition: None,
             carousel_image_ready: false,
             gallery_motion: Default::default(),
+            render_power: Default::default(),
             gallery_reflections: cx.new(|_| Default::default()),
+            gallery_gpu: cx.new(|_| Default::default()),
             gallery_wheel: Default::default(),
             _subscriptions: subscriptions,
         };
+        view._subscriptions
+            .push(cx.observe(&view.gallery_gpu, |_, _, cx| cx.notify()));
         #[cfg(debug_assertions)]
         {
             view.apply_stress_data();
@@ -734,12 +743,16 @@ impl LauncherView {
             loop {
                 cx.background_executor().timer(interval).await;
                 match view.update_in(cx, |view, window, cx| {
+                    view.refresh_render_power(window, false, cx);
+                    if view.render_power.paused() {
+                        return crate::render_power::PROBE_INTERVAL;
+                    }
                     if view.tick_ambient_artwork(cx) {
                         view.design().motion_interval
                     } else if view.advance_carousel(window, cx) {
                         Duration::from_millis(50)
                     } else {
-                        Duration::from_millis(250)
+                        crate::render_power::PROBE_INTERVAL
                     }
                 }) {
                     Ok(next_interval) => interval = next_interval,
@@ -2479,6 +2492,29 @@ impl LauncherView {
         cx.notify();
     }
 
+    fn refresh_render_power(&mut self, window: &Window, force: bool, cx: &mut Context<Self>) {
+        let changed = self
+            .render_power
+            .refresh(window, self.appearance.pause_in_background, force);
+        let paused = self.render_power.paused();
+        self.gallery_motion.set_paused(paused, Instant::now());
+        self.gallery_gpu.update(cx, |gpu, _| {
+            gpu.set_paused(paused || !self.gallery_active())
+        });
+        if changed {
+            self.carousel_tick = None;
+            if paused {
+                self.collection_flow.update(false);
+            }
+            crate::diagnostics::record(if paused {
+                "Visual effects suspended"
+            } else {
+                "Visual effects resumed"
+            });
+            cx.notify();
+        }
+    }
+
     fn set_appearance(
         &mut self,
         settings: AppearanceSettings,
@@ -2529,6 +2565,7 @@ impl LauncherView {
                 });
             }
             self.apply_appearance(window, cx);
+            self.refresh_render_power(window, false, cx);
             cx.notify();
         }
     }
@@ -3679,7 +3716,7 @@ impl LauncherView {
             || self.theme_editor.is_some()
             || self.detail_tab != DetailTab::Overview
             || self.carousel_is_paused(window, cx)
-            || !window.is_window_active()
+            || self.render_power.paused()
             || self.recent_games().len() < 2
         {
             self.carousel_tick = None;
@@ -7288,6 +7325,21 @@ impl LauncherView {
                             .child(div().flex_1().text_sm().child("Interface style"))
                             .child(div().w(px(200.)).child(self.recents_layout_selector(cx))),
                     )
+                    .child(div().mt_4().child(eyebrow("PERFORMANCE")))
+                    .child(
+                        Switch::new("pause-in-background")
+                            .checked(self.appearance.pause_in_background)
+                            .label("Pause visual effects in background")
+                            .disabled(!self.snapshot.ready)
+                            .on_click(cx.listener(|view, enabled, window, cx| {
+                                view.set_appearance(AppearanceSettings {
+                                    pause_in_background: *enabled,
+                                    ..view.appearance.clone()
+                                }, window, cx);
+                            })),
+                    )
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground)
+                        .child("Freezes artwork motion and automatic browsing when unfocused. Minimized windows and other fullscreen apps always pause visual effects on Windows and macOS."))
                     .child(div().mt_4().child(eyebrow("STEAMGRIDDB API KEY")))
                     .child(
                         div()
@@ -7754,6 +7806,7 @@ impl LauncherView {
 
 impl Render for LauncherView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.refresh_render_power(window, false, cx);
         let favourites = self.favourite_count() > 0;
         if favourites != self.favourites_available && self.snapshot.ready {
             let from = self.favourites_progress();
@@ -7765,14 +7818,15 @@ impl Render for LauncherView {
             self.library_list.splice(0..1, 1);
             if started.elapsed() >= Duration::from_millis(220) || appearance::reduced_motion() {
                 self.favourites_transition = None;
-            } else {
+            } else if !self.render_power.paused() {
                 window.request_animation_frame();
             }
         }
         self.prepare_library(window);
         self.prepare_collection(window);
-        self.prepare_gallery(window);
+        self.prepare_gallery(window, cx);
         if self.editorial_active()
+            && !self.render_power.paused()
             && self.collection_motion.animating()
             && !appearance::reduced_motion()
         {
@@ -7827,7 +7881,7 @@ impl Render for LauncherView {
         if let Some((_, started)) = self.sidebar_transition {
             if started.elapsed().as_secs_f32() >= 0.2 || appearance::reduced_motion() {
                 self.sidebar_transition = None;
-            } else {
+            } else if !self.render_power.paused() {
                 window.request_animation_frame();
             }
         }
@@ -7839,7 +7893,7 @@ impl Render for LauncherView {
                 || self.settings_open
             {
                 self.carousel_transition = None;
-            } else {
+            } else if !self.render_power.paused() {
                 window.request_animation_frame();
             }
         }
