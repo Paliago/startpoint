@@ -173,6 +173,10 @@ Use these names when discussing the UI:
 
 ## Check
 
+For opt-in, non-activating macOS inspection and input against the real application,
+see [GPUI automation](docs/automation.md). The integration is excluded from normal
+builds, uses private session state, and denies backend writes by default.
+
 ```sh
 cargo test --locked --workspace
 ```

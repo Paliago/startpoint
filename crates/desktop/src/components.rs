@@ -229,8 +229,11 @@ fn keyboard_focus(button: Button, cx: &App) -> Button {
 }
 
 fn button_base(id: impl Into<ElementId>, radius: Pixels) -> Button {
+    let id = id.into();
+    let author_id = id.to_string();
     Styled::rounded(
         Button::new(id)
+            .accessibility_id(author_id)
             .small()
             .h(px(32.))
             .px(px(12.))
@@ -485,12 +488,22 @@ pub(crate) fn sidebar_label(label: impl Into<SharedString>) -> Div {
         .child(label.into())
 }
 
-pub(crate) trait EditableFieldState: Sized + 'static {
+pub(crate) trait EditableFieldState: Focusable + Sized + 'static {
     fn control(state: &Entity<Self>, disabled: bool, cx: &App) -> AnyElement;
     fn replace(state: &Entity<Self>, value: &str, window: &mut Window, cx: &mut App);
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    fn automation_snapshot(&self) -> gpui_automation::InputSnapshot;
 }
 
 impl EditableFieldState for InputState {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    fn automation_snapshot(&self) -> gpui_automation::InputSnapshot {
+        gpui_automation::InputSnapshot {
+            value: self.value().to_string(),
+            selection: self.selected_range(),
+            enabled: !self.presentation().is_disabled(),
+        }
+    }
     fn control(state: &Entity<Self>, disabled: bool, cx: &App) -> AnyElement {
         input(state, cx)
             .large()
@@ -509,6 +522,14 @@ impl EditableFieldState for InputState {
 }
 
 impl EditableFieldState for TextareaState {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    fn automation_snapshot(&self) -> gpui_automation::InputSnapshot {
+        gpui_automation::InputSnapshot {
+            value: self.value().to_string(),
+            selection: self.selected_range(),
+            enabled: !self.presentation().is_disabled(),
+        }
+    }
     fn control(state: &Entity<Self>, disabled: bool, cx: &App) -> AnyElement {
         style_input(Textarea::new(state).bordered(false), cx)
             .w_auto()
@@ -535,6 +556,16 @@ pub(crate) fn editable_field<S: EditableFieldState>(
     disabled: bool,
     cx: &App,
 ) -> Div {
+    let control = S::control(state, disabled, cx);
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    let control = crate::automation::editor(
+        &format!("field-{}", label.to_lowercase().replace(' ', "-")),
+        label,
+        state,
+        disabled,
+        control,
+        cx,
+    );
     div()
         .w_full()
         .flex()
@@ -547,7 +578,7 @@ pub(crate) fn editable_field<S: EditableFieldState>(
                 .font_weight(FontWeight::MEDIUM)
                 .child(label.to_string()),
         )
-        .child(div().flex().child(S::control(state, disabled, cx)))
+        .child(div().flex().child(control))
 }
 
 pub(crate) fn eyebrow(label: &str) -> Div {

@@ -2417,6 +2417,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-automation"
+version = "0.1.0"
+source = "git+https://github.com/Paliago/gpui-automation?rev=dbe801f5564e383fe4cf0ca2f9882ecec28fc2d6#dbe801f5564e383fe4cf0ca2f9882ecec28fc2d6"
+dependencies = [
+ "async-channel",
+ "cocoa 0.26.0",
+ "gpui",
+ "gpui_platform",
+ "image",
+ "num-traits",
+ "objc",
+ "raw-window-handle",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "gpui-base"
 version = "0.5.2"
 source = "git+https://github.com/zeronsh/gpui-component?rev=701ca97af7983bf85343d2d1d404ab528b18ec96#701ca97af7983bf85343d2d1d404ab528b18ec96"
@@ -6525,6 +6543,7 @@ dependencies = [
  "core-graphics 0.24.0",
  "embed-resource",
  "gpui",
+ "gpui-automation",
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",

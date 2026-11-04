@@ -32,7 +32,7 @@ pub(crate) fn initialize() -> Option<Session> {
     initialize_at(&directory)
 }
 
-fn initialize_at(directory: &Path) -> Option<Session> {
+pub(crate) fn initialize_at(directory: &Path) -> Option<Session> {
     fs::create_dir_all(&directory).ok()?;
     prune_logs(&directory);
     let name = format!(

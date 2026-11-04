@@ -9,6 +9,7 @@ default-run = "startpoint"
 dev-icon = []
 runtime-shaders = ["gpui_platform/runtime_shaders"]
 self-update = ["dep:velopack", "dep:semver"]
+automation = ["dep:gpui-automation", "startpoint-core/automation"]
 
 [dependencies]
 startpoint-sdk.workspace = true
@@ -41,6 +42,7 @@ tempfile = "3.27"
 zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+gpui-automation = { git = "https://github.com/Paliago/gpui-automation", rev = "dbe801f5564e383fe4cf0ca2f9882ecec28fc2d6", optional = true }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSAppearance", "NSWorkspace", "NSRunningApplication", "NSAccessibility", "NSEvent", "NSView", "NSWindow"] }
 core-foundation = "0.10"

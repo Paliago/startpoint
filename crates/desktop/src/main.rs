@@ -3,6 +3,7 @@
 mod adjustment_slider;
 mod appearance;
 mod art_scenes;
+mod automation;
 mod branding;
 mod cinematic;
 mod components;
@@ -85,6 +86,20 @@ fn cinematic_icons_are_embedded_in_the_native_asset_source() {
 }
 
 fn main() {
+    if std::env::args().any(|argument| argument.starts_with("--automation")) {
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        if let Err(error) = automation::run() {
+            eprintln!("Automation startup failed: {error}");
+            std::process::exit(2);
+        }
+        #[cfg(not(all(feature = "automation", target_os = "macos")))]
+        {
+            eprintln!("Automation requires macOS and the optional automation feature");
+            std::process::exit(2);
+        }
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        return;
+    }
     // Handle installer hooks before diagnostics, database initialization or UI.
     // This performs local housekeeping only; online checks start after the window opens.
     #[cfg(feature = "self-update")]
@@ -157,60 +172,7 @@ fn main() {
     gpui_platform::application()
         .with_assets(LauncherAssets)
         .run(move |cx| {
-            if branding::IS_DEV {
-                cx.set_app_identity(branding::APP_ID, branding::NAME);
-            }
-            gpui_component::init(cx);
-            cx.set_global(theme::Catalog::default());
-            appearance::apply(&api.snapshot().settings.appearance, None, cx);
-            cx.bind_keys([
-                KeyBinding::new("cmd-q", interface::Quit, None),
-                KeyBinding::new("ctrl-q", interface::Quit, None),
-                KeyBinding::new("cmd-f", interface::FocusSearch, Some("Startpoint")),
-                KeyBinding::new("ctrl-f", interface::FocusSearch, Some("Startpoint")),
-                KeyBinding::new("cmd-k", interface::OpenCommands, Some("Startpoint")),
-                KeyBinding::new("ctrl-k", interface::OpenCommands, Some("Startpoint")),
-                KeyBinding::new("cmd-p", interface::OpenCommands, Some("Startpoint")),
-                KeyBinding::new("ctrl-p", interface::OpenCommands, Some("Startpoint")),
-                KeyBinding::new("cmd-b", interface::ToggleSidebar, Some("Startpoint")),
-                KeyBinding::new("ctrl-b", interface::ToggleSidebar, Some("Startpoint")),
-                KeyBinding::new("cmd-r", interface::RefreshLibrary, Some("Startpoint")),
-                KeyBinding::new("ctrl-r", interface::RefreshLibrary, Some("Startpoint")),
-                KeyBinding::new("escape", interface::DismissPanel, Some("Startpoint")),
-                KeyBinding::new(
-                    "/",
-                    interface::FocusSearch,
-                    Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
-                ),
-                KeyBinding::new(
-                    "down",
-                    interface::SelectNext,
-                    Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
-                ),
-                KeyBinding::new(
-                    "right",
-                    interface::SelectNext,
-                    Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
-                ),
-                KeyBinding::new(
-                    "left",
-                    interface::SelectPrevious,
-                    Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
-                ),
-                KeyBinding::new(
-                    "up",
-                    interface::SelectPrevious,
-                    Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
-                ),
-                KeyBinding::new(
-                    "enter",
-                    interface::LaunchSelected,
-                    Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
-                ),
-                KeyBinding::new("cmd-,", interface::OpenSettings, Some("Startpoint")),
-                KeyBinding::new("ctrl-,", interface::OpenSettings, Some("Startpoint")),
-            ]);
-            cx.on_action(|_: &interface::Quit, cx| cx.quit());
+            initialize_interface(&api, cx);
             cx.set_menus(vec![
                 Menu {
                     name: "Startpoint".into(),
@@ -283,4 +245,61 @@ fn main() {
             .detach();
             cx.activate(true);
         });
+}
+
+fn initialize_interface(api: &startpoint_sdk::Application, cx: &mut App) {
+    if branding::IS_DEV {
+        cx.set_app_identity(branding::APP_ID, branding::NAME);
+    }
+    gpui_component::init(cx);
+    cx.set_global(theme::Catalog::default());
+    appearance::apply(&api.snapshot().settings.appearance, None, cx);
+    cx.bind_keys([
+        KeyBinding::new("cmd-q", interface::Quit, None),
+        KeyBinding::new("ctrl-q", interface::Quit, None),
+        KeyBinding::new("cmd-f", interface::FocusSearch, Some("Startpoint")),
+        KeyBinding::new("ctrl-f", interface::FocusSearch, Some("Startpoint")),
+        KeyBinding::new("cmd-k", interface::OpenCommands, Some("Startpoint")),
+        KeyBinding::new("ctrl-k", interface::OpenCommands, Some("Startpoint")),
+        KeyBinding::new("cmd-p", interface::OpenCommands, Some("Startpoint")),
+        KeyBinding::new("ctrl-p", interface::OpenCommands, Some("Startpoint")),
+        KeyBinding::new("cmd-b", interface::ToggleSidebar, Some("Startpoint")),
+        KeyBinding::new("ctrl-b", interface::ToggleSidebar, Some("Startpoint")),
+        KeyBinding::new("cmd-r", interface::RefreshLibrary, Some("Startpoint")),
+        KeyBinding::new("ctrl-r", interface::RefreshLibrary, Some("Startpoint")),
+        KeyBinding::new("escape", interface::DismissPanel, Some("Startpoint")),
+        KeyBinding::new(
+            "/",
+            interface::FocusSearch,
+            Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
+        ),
+        KeyBinding::new(
+            "down",
+            interface::SelectNext,
+            Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
+        ),
+        KeyBinding::new(
+            "right",
+            interface::SelectNext,
+            Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
+        ),
+        KeyBinding::new(
+            "left",
+            interface::SelectPrevious,
+            Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
+        ),
+        KeyBinding::new(
+            "up",
+            interface::SelectPrevious,
+            Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
+        ),
+        KeyBinding::new(
+            "enter",
+            interface::LaunchSelected,
+            Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
+        ),
+        KeyBinding::new("cmd-,", interface::OpenSettings, Some("Startpoint")),
+        KeyBinding::new("ctrl-,", interface::OpenSettings, Some("Startpoint")),
+    ]);
+    cx.on_action(|_: &interface::Quit, cx| cx.quit());
 }

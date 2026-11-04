@@ -16,6 +16,8 @@ use crate::{
     theme,
     theme_editor::{Editor, EditorEvent},
 };
+#[cfg(all(feature = "automation", target_os = "macos"))]
+mod automation;
 mod cinematic;
 mod collection;
 mod gallery;
@@ -229,7 +231,7 @@ impl LibraryFilter {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DetailTab {
     Overview,
     Metadata,
@@ -755,7 +757,9 @@ impl LauncherView {
         view.ensure_selection(window, cx);
         view.focus.focus(window, cx);
         view.reload_themes(window, cx);
-        view.submit(Command::RefreshLibrary, cx);
+        if !crate::automation::active(cx) {
+            view.submit(Command::RefreshLibrary, cx);
+        }
         cx.spawn_in(window, async move |view, cx| {
             let mut interval = Duration::from_millis(250);
             loop {
@@ -1502,7 +1506,20 @@ impl LauncherView {
             .into_any_element()
     }
 
+    fn block_native_action(&mut self, operation: &str, cx: &mut Context<Self>) -> bool {
+        if crate::automation::native_allowed(cx, operation) {
+            return false;
+        }
+        self.notice = Some(format!("Automation blocked native action: {operation}"));
+        self.jobs_open = true;
+        cx.notify();
+        true
+    }
+
     fn pick(&mut self, purpose: PickerPurpose, window: &mut Window, cx: &mut Context<Self>) {
+        if self.block_native_action("file dialog", cx) {
+            return;
+        }
         let directory = matches!(
             purpose,
             PickerPurpose::SteamDirectory
@@ -1743,6 +1760,9 @@ impl LauncherView {
     }
 
     fn remove_manual_game(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.block_native_action("native confirmation", cx) {
+            return;
+        }
         let Some(game) = self.selected_game() else {
             return;
         };
@@ -3591,7 +3611,11 @@ impl LauncherView {
                     cx,
                 );
             }
-            LibraryGameAction::Reveal => cx.reveal_path(&game.install_directory),
+            LibraryGameAction::Reveal => {
+                if !self.block_native_action("reveal game directory", cx) {
+                    cx.reveal_path(&game.install_directory);
+                }
+            }
             LibraryGameAction::Edit(tab) => {
                 if self.selected.as_ref() != Some(id) {
                     self.select_game(id.clone(), window, cx);
@@ -4342,12 +4366,14 @@ impl LauncherView {
                             MouseButton::Left,
                             cx.listener(|view, _, _, _| view.window_should_move = false),
                         )
-                        .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, window, _| {
+                        .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, window, cx| {
                             if view.window_should_move
                                 && event.pressed_button == Some(MouseButton::Left)
                             {
                                 view.window_should_move = false;
-                                appearance::start_window_move(window);
+                                if crate::automation::native_allowed(cx, "native window drag") {
+                                    appearance::start_window_move(window);
+                                }
                             }
                         }))
                 },
@@ -5367,6 +5393,8 @@ impl LauncherView {
             .child(glass_panel(
                 div()
                     .id("game-editor-modal")
+                    .role(Role::Group)
+                    .aria_label("Game editor")
                     .track_focus(&self.editor_focus)
                     .tab_group()
                     .w(px(860.).min(window.viewport_size().width - px(64.)))
@@ -5775,11 +5803,22 @@ impl LauncherView {
                         })),
                 )
             })
-            .child(
-                input(&self.artwork_search, cx)
+            .child({
+                let control = input(&self.artwork_search, cx)
                     .large()
-                    .disabled(!configured || saving),
-            )
+                    .disabled(!configured || saving)
+                    .into_any_element();
+                #[cfg(all(feature = "automation", target_os = "macos"))]
+                let control = crate::automation::editor(
+                    "artwork-search",
+                    "Artwork search",
+                    &self.artwork_search,
+                    !configured || saving,
+                    control,
+                    cx,
+                );
+                control
+            })
             .child(
                 div()
                     .flex()
@@ -6013,7 +6052,11 @@ impl LauncherView {
                                     "Open themes directory",
                                     cx,
                                 )
-                                .on_click(move |_, _, cx| cx.reveal_path(&themes)),
+                                .on_click(move |_, _, cx| {
+                                    if crate::automation::native_allowed(cx, "reveal themes") {
+                                        cx.reveal_path(&themes);
+                                    }
+                                }),
                             )
                             .child(
                                 icon_button(
@@ -7327,7 +7370,11 @@ impl LauncherView {
                                 "Open directory",
                                 cx,
                             )
-                            .on_click(move |_, _, cx| cx.reveal_path(&path)),
+                            .on_click(move |_, _, cx| {
+                                if crate::automation::native_allowed(cx, "reveal directory") {
+                                    cx.reveal_path(&path);
+                                }
+                            }),
                         )
                     })
                     .when(index == 0, |actions| {
@@ -7470,19 +7517,17 @@ impl LauncherView {
                                 Link::new("get-api-key")
                                     .text_sm()
                                     .child("Get a key ↗")
-                                    .href("https://www.steamgriddb.com/profile/preferences"),
+                                    .when(!crate::automation::active(cx), |link| link.href("https://www.steamgriddb.com/profile/preferences")),
                             ),
                     )
                     .when(!key_configured || self.credential_editing, |view| {
                         view.child(
-                            div().flex().child(
-                                input(&self.api_key, cx)
-                                    .large()
-                                    .w_auto()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .mask_toggle(),
-                            ),
+                            div().flex().child({
+                                let control = input(&self.api_key, cx).large().w_auto().flex_1().min_w_0().mask_toggle().into_any_element();
+                                #[cfg(all(feature = "automation", target_os = "macos"))]
+                                let control = crate::automation::editor("artwork-api-key", "Artwork API key", &self.api_key, false, control, cx);
+                                control
+                            }),
                         )
                     })
                     .child(
@@ -7636,7 +7681,7 @@ impl LauncherView {
                             button("open-data", cx)
                                 .icon(IconName::Folder)
                                 .label("Open directory")
-                                .on_click(move |_, _, cx| cx.reveal_path(&data_directory)),
+                                .on_click(move |_, _, cx| { if crate::automation::native_allowed(cx, "reveal data directory") { cx.reveal_path(&data_directory); } }),
                         ),
                         cx,
                     ))
@@ -7647,7 +7692,7 @@ impl LauncherView {
                             button("open-cache", cx)
                                 .icon(IconName::Folder)
                                 .label("Open directory")
-                                .on_click(move |_, _, cx| cx.reveal_path(&cache_directory)),
+                                .on_click(move |_, _, cx| { if crate::automation::native_allowed(cx, "reveal cache directory") { cx.reveal_path(&cache_directory); } }),
                         ),
                         cx,
                     ))
@@ -7675,7 +7720,25 @@ impl LauncherView {
     fn command_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let count = self.commands(cx).len();
         let height = f32::from(u16::try_from(count.min(8)).unwrap_or(8)) * 48.;
+        let search = input(&self.command_search, cx)
+            .large()
+            .w_full()
+            .prefix(Icon::new(IconName::Search))
+            .cleanable(true)
+            .into_any_element();
+        #[cfg(all(feature = "automation", target_os = "macos"))]
+        let search = crate::automation::editor(
+            "command-search",
+            "Command search",
+            &self.command_search,
+            false,
+            search,
+            cx,
+        );
         let panel = div()
+            .id("command-panel")
+            .role(Role::Group)
+            .aria_label("Command panel")
             .w(px(560.))
             .max_w(relative(0.9))
             .rounded(Rounding::of(cx).panel)
@@ -7686,13 +7749,7 @@ impl LauncherView {
             .gap_2()
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                input(&self.command_search, cx)
-                    .large()
-                    .w_full()
-                    .prefix(Icon::new(IconName::Search))
-                    .cleanable(true),
-            )
+            .child(search)
             .child(
                 uniform_list(
                     "command-results",
@@ -8067,8 +8124,35 @@ impl Render for LauncherView {
             .flex()
             .flex_col()
             .image_cache(self.thumbnails.clone())
+            .id("launcher-root")
+            .role(Role::Group)
+            .aria_label("Startpoint")
             .key_context("Startpoint")
             .track_focus(&self.focus)
+            .when(crate::automation::active(cx), |root| {
+                root.capture_action(|_: &gpui_component::input::Copy, _, cx| {
+                    if !crate::automation::native_allowed(cx, "clipboard copy") {
+                        cx.stop_propagation();
+                    }
+                })
+                .capture_action(|_: &gpui_component::input::Cut, _, cx| {
+                    if !crate::automation::native_allowed(cx, "clipboard cut") {
+                        cx.stop_propagation();
+                    }
+                })
+                .capture_action(|_: &gpui_component::input::Paste, _, cx| {
+                    if !crate::automation::native_allowed(cx, "clipboard paste") {
+                        cx.stop_propagation();
+                    }
+                })
+                .capture_action(
+                    |_: &gpui_component::input::ShowCharacterPalette, _, cx| {
+                        if !crate::automation::native_allowed(cx, "character palette") {
+                            cx.stop_propagation();
+                        }
+                    },
+                )
+            })
             .on_action(cx.listener(Self::focus_search))
             .on_action(cx.listener(Self::open_commands))
             .on_action(cx.listener(Self::toggle_sidebar))

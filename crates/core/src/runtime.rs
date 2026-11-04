@@ -15,11 +15,20 @@ use std::{
 pub struct LauncherBuilder {
     discovery: Vec<Arc<dyn DiscoveryProvider>>,
     artwork: Vec<Arc<dyn ArtworkProvider>>,
+    #[cfg(feature = "automation")]
+    isolated_credentials: bool,
 }
 
 impl LauncherBuilder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Prevents automation sessions from reading the user's OS credential store.
+    #[cfg(feature = "automation")]
+    pub fn without_system_credentials(mut self) -> Self {
+        self.isolated_credentials = true;
+        self
     }
 
     pub fn discovery_provider(mut self, provider: impl DiscoveryProvider + 'static) -> Self {
@@ -83,6 +92,8 @@ impl LauncherBuilder {
             discovery: self.discovery,
             artwork: self.artwork,
             refreshing: AtomicBool::new(false),
+            #[cfg(feature = "automation")]
+            isolated_credentials: self.isolated_credentials,
         });
         let (interactive, interactive_receiver) = async_channel::bounded(64);
         let (background, background_receiver) = async_channel::bounded(64);
@@ -162,6 +173,8 @@ struct Launcher {
 }
 
 struct Shared {
+    #[cfg(feature = "automation")]
+    isolated_credentials: bool,
     image_client: reqwest::blocking::Client,
     state: Mutex<State>,
     store: Mutex<Option<Store>>,
@@ -265,6 +278,17 @@ impl Drop for Launcher {
 }
 
 impl Shared {
+    fn read_credential(
+        &self,
+        provider: &str,
+        interaction: bool,
+    ) -> Result<Option<String>, ApiError> {
+        #[cfg(feature = "automation")]
+        if self.isolated_credentials {
+            return Ok(None);
+        }
+        platform::read_api_key(provider, interaction)
+    }
     fn snapshot(&self) -> Snapshot {
         self.state
             .lock()
@@ -365,7 +389,7 @@ impl Shared {
             .filter(|provider| provider.requires_credential())
         {
             let id = provider.descriptor().id;
-            let status = match platform::read_api_key(&id, false) {
+            let status = match self.read_credential(&id, false) {
                 Ok(credential) => {
                     let credential = credential.filter(|key| !key.trim().is_empty());
                     let status = if credential.is_some() {
@@ -512,7 +536,7 @@ impl Shared {
         if !credentials.contains_key(provider_id) {
             credentials.insert(
                 provider_id.into(),
-                platform::read_api_key(provider_id, allow_interaction)?,
+                self.read_credential(provider_id, allow_interaction)?,
             );
         }
         let credential = credentials
@@ -612,6 +636,17 @@ impl Shared {
         command: Command,
         context: &JobContext,
     ) -> Result<(), ApiError> {
+        #[cfg(feature = "automation")]
+        if self.isolated_credentials
+            && matches!(
+                &command,
+                Command::SetArtworkCredential { .. } | Command::VerifyArtworkCredential { .. }
+            )
+        {
+            return Err(ApiError::Validation(
+                "OS credential operations are disabled in automation".into(),
+            ));
+        }
         match command {
             Command::RefreshLibrary => self.refresh(context),
             Command::RefreshMetadata => {
@@ -2408,6 +2443,8 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let (sender, events) = async_channel::unbounded();
         let shared = Shared {
+            #[cfg(feature = "automation")]
+            isolated_credentials: false,
             image_client: reqwest::blocking::Client::new(),
             state: Mutex::new(State {
                 games: BTreeMap::from([(game.id.clone(), game.clone())]),
@@ -2529,6 +2566,8 @@ mod tests {
                 .save_cache("steam/catalogue/2138330", &metadata, now())
                 .unwrap();
             let shared = Shared {
+                #[cfg(feature = "automation")]
+                isolated_credentials: false,
                 image_client: reqwest::blocking::Client::new(),
                 state: Mutex::new(State {
                     games: BTreeMap::from([(game.id.clone(), game.clone())]),
@@ -2772,6 +2811,8 @@ mod tests {
                     .unwrap();
             }
             let shared = Shared {
+                #[cfg(feature = "automation")]
+                isolated_credentials: false,
                 image_client: reqwest::blocking::Client::builder()
                     .proxy(reqwest::Proxy::all("http://127.0.0.1:9").unwrap())
                     .build()

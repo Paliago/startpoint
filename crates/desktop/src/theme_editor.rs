@@ -249,6 +249,11 @@ impl Editor {
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !crate::automation::native_allowed(cx, "theme file write") {
+            self.error = Some("Automation policy denies theme file writes".into());
+            cx.notify();
+            return;
+        }
         if self.saving {
             return;
         }
