@@ -34,7 +34,7 @@ pub fn create_application() -> Result<Application, ApiError> {
         .build(application_paths()?)
 }
 
-/// Opens a separate, persistent 15-game example library. Game launches are simulated.
+/// Opens a separate, persistent 45-game example library. Game launches are simulated.
 pub fn create_example_application() -> Result<Application, ApiError> {
     let mut paths = application_paths()?;
     paths.data_directory = paths.data_directory.join("examples");

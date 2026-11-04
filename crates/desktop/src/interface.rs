@@ -296,6 +296,7 @@ enum LauncherCommand {
     HiddenLibrary,
     Settings,
     Refresh,
+    RefreshMetadata,
     AddGame,
     Sidebar,
     Details(DetailTab),
@@ -764,7 +765,8 @@ impl LauncherView {
                     if view.render_power.paused() {
                         return crate::render_power::PROBE_INTERVAL;
                     }
-                    if view.tick_art_scenes(cx) {
+                    if view.tick_art_scenes() {
+                        cx.notify();
                         Duration::from_millis(100)
                     } else if view.tick_ambient_artwork(cx) {
                         view.design().motion_interval
@@ -2037,6 +2039,11 @@ impl LauncherView {
                 LauncherCommand::Refresh,
             ),
             (
+                "Refresh metadata and missing artwork for all games".into(),
+                Icon::default().path("icons/refresh.svg"),
+                LauncherCommand::RefreshMetadata,
+            ),
+            (
                 "Settings".into(),
                 IconName::Settings.into(),
                 LauncherCommand::Settings,
@@ -2176,6 +2183,9 @@ impl LauncherView {
                 }
             }
             LauncherCommand::Refresh => self.refresh(&RefreshLibrary, window, cx),
+            LauncherCommand::RefreshMetadata => {
+                self.submit(Command::RefreshMetadata, cx);
+            }
             LauncherCommand::AddGame => self.pick(PickerPurpose::AddGame, window, cx),
             LauncherCommand::Sidebar => self.toggle_sidebar(&ToggleSidebar, window, cx),
             LauncherCommand::Details(tab) => self.open_details(tab, window, cx),
@@ -2384,6 +2394,8 @@ impl LauncherView {
                 | crate::design::RecentPresentation::InfiniteWall
                 | crate::design::RecentPresentation::FilmReel
                 | crate::design::RecentPresentation::ArtBook
+                | crate::design::RecentPresentation::Diagonal
+                | crate::design::RecentPresentation::Mosaic
         ) && self.selected.is_some()
             && self.appearance.library_details
             && !self.detail_closed
@@ -8681,6 +8693,7 @@ fn game_commands_reject_missing_or_changed_selection_but_global_commands_still_w
         LauncherCommand::Settings,
         LauncherCommand::Screen(StartScreen::Library),
         LauncherCommand::Refresh,
+        LauncherCommand::RefreshMetadata,
         LauncherCommand::AddGame,
     ] {
         assert!(command_applies_to_game(&command, None));

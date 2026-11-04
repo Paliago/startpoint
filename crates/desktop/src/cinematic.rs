@@ -20,6 +20,12 @@ pub(crate) enum ArtworkKey {
     SoftCover(PathBuf),
     Portrait(PathBuf),
     Book(PathBuf),
+    Diagonal {
+        path: PathBuf,
+        width: u16,
+        height: u16,
+        slot: u8,
+    },
 }
 
 pub(crate) fn artwork_key(game: &Game) -> Option<ArtworkKey> {
@@ -139,11 +145,17 @@ impl Asset for ArtworkAsset {
         _: &mut App,
     ) -> impl std::future::Future<Output = Artwork> + Send + 'static {
         async move {
-            let (path, soften, portrait, book) = match key {
-                ArtworkKey::Landscape(path) => (path, false, false, false),
-                ArtworkKey::SoftCover(path) => (path, true, false, false),
-                ArtworkKey::Portrait(path) => (path, false, true, false),
-                ArtworkKey::Book(path) => (path, false, false, true),
+            let (path, soften, portrait, book, diagonal) = match key {
+                ArtworkKey::Landscape(path) => (path, false, false, false, None),
+                ArtworkKey::SoftCover(path) => (path, true, false, false, None),
+                ArtworkKey::Portrait(path) => (path, false, true, false, None),
+                ArtworkKey::Book(path) => (path, false, false, true, None),
+                ArtworkKey::Diagonal {
+                    path,
+                    width,
+                    height,
+                    slot,
+                } => (path, false, false, false, Some((width, height, slot))),
             };
             let Ok(source) = image::open(path) else {
                 return Artwork::default();
@@ -158,7 +170,9 @@ impl Asset for ArtworkAsset {
                 })
                 .sum::<f32>()
                 / (sample.width() * sample.height()).max(1) as f32;
-            let mut pixels = if soften {
+            let mut pixels = if let Some((width, height, slot)) = diagonal {
+                crate::art_scenes::composition::diagonal_pixels(source, width, height, slot)
+            } else if soften {
                 source
                     .resize_to_fill(960, 600, image::imageops::FilterType::Triangle)
                     .blur(24.)
@@ -182,7 +196,9 @@ impl Asset for ArtworkAsset {
                 for channel in &mut pixel.0[..3] {
                     *channel = (f32::from(*channel) * alpha * shade) as u8;
                 }
-                pixel[3] = 255;
+                if diagonal.is_none() {
+                    pixel[3] = 255;
+                }
                 pixel.0.swap(0, 2); // GPUI's native BGRA texture storage.
             }
             Artwork {

@@ -26,6 +26,8 @@ pub(crate) enum RecentPresentation {
     InfiniteWall,
     FilmReel,
     ArtBook,
+    Diagonal,
+    Mosaic,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -182,6 +184,16 @@ pub(crate) const ART_BOOK: Profile = Profile {
     ambient_motion: false,
     ..EDITORIAL
 };
+pub(crate) const DIAGONAL: Profile = Profile {
+    name: "Diagonal",
+    recents: RecentPresentation::Diagonal,
+    ..CINEMATIC
+};
+pub(crate) const MOSAIC: Profile = Profile {
+    name: "Mosaic",
+    recents: RecentPresentation::Mosaic,
+    ..CINEMATIC
+};
 
 impl Profile {
     pub fn editable_palette(&self) -> bool {
@@ -227,6 +239,8 @@ pub(crate) fn resolve(settings: &AppearanceSettings) -> &'static Profile {
         RecentsLayout::InfiniteWall => &INFINITE_WALL,
         RecentsLayout::FilmReel => &FILM_REEL,
         RecentsLayout::ArtBook => &ART_BOOK,
+        RecentsLayout::Diagonal => &DIAGONAL,
+        RecentsLayout::Mosaic => &MOSAIC,
     }
 }
 
@@ -349,6 +363,8 @@ mod tests {
             ),
             (RecentsLayout::FilmReel, RecentPresentation::FilmReel),
             (RecentsLayout::ArtBook, RecentPresentation::ArtBook),
+            (RecentsLayout::Diagonal, RecentPresentation::Diagonal),
+            (RecentsLayout::Mosaic, RecentPresentation::Mosaic),
         ] {
             let settings = AppearanceSettings {
                 recents_layout: layout,

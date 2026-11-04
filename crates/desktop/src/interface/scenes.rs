@@ -1,6 +1,7 @@
 use super::*;
 use crate::art_scenes::{self as scene, Mode, Rect, WallLayout};
 use gpui_component::button::ButtonCustomVariant;
+mod compositions;
 #[cfg(test)]
 mod tests;
 
@@ -10,6 +11,8 @@ impl LauncherView {
             crate::design::RecentPresentation::InfiniteWall => Some(Mode::Wall),
             crate::design::RecentPresentation::FilmReel => Some(Mode::Reel),
             crate::design::RecentPresentation::ArtBook => Some(Mode::Book),
+            crate::design::RecentPresentation::Diagonal => Some(Mode::Diagonal),
+            crate::design::RecentPresentation::Mosaic => Some(Mode::Mosaic),
             _ => None,
         }
     }
@@ -22,9 +25,9 @@ impl LauncherView {
         self.art_scene_active()
             && (self.art_scenes.focus.is_some() || self.art_scenes.overview.target > 0.)
     }
-    pub(super) fn tick_art_scenes(&mut self, cx: &mut Context<Self>) -> bool {
+    pub(super) fn tick_art_scenes(&mut self) -> bool {
         let running = self.art_scene_active()
-            && matches!(self.art_scene_mode(), Some(Mode::Book | Mode::Reel))
+            && self.art_scene_mode() == Some(Mode::Reel)
             && self.snapshot.ready
             && !self.art_scenes.games().is_empty()
             && !self.render_power.paused()
@@ -33,9 +36,6 @@ impl LauncherView {
             && self.art_scenes.overview.target == 0.
             && self.art_scenes.focus.is_none();
         self.art_scenes.drift.update(running);
-        if running {
-            cx.notify();
-        }
         running
     }
     fn scene_key(game: &Game, mode: Mode) -> Option<crate::cinematic::ArtworkKey> {
@@ -44,13 +44,21 @@ impl LauncherView {
             Mode::Book => game
                 .artwork
                 .get(&ArtworkKind::Background)
-                .or_else(|| game.artwork.get(&ArtworkKind::Cover))
                 .map(|a| ArtworkKey::Book(a.image_path.clone())),
             Mode::Wall => game
                 .artwork
                 .get(&ArtworkKind::Cover)
                 .map(|a| ArtworkKey::Portrait(a.image_path.clone())),
-            Mode::Reel => crate::cinematic::artwork_key(game),
+            Mode::Reel | Mode::Diagonal => crate::cinematic::artwork_key(game),
+            Mode::Mosaic => game
+                .artwork
+                .get(&ArtworkKind::Background)
+                .map(|art| ArtworkKey::Landscape(art.image_path.clone()))
+                .or_else(|| {
+                    game.artwork
+                        .get(&ArtworkKind::Cover)
+                        .map(|art| ArtworkKey::Portrait(art.image_path.clone()))
+                }),
         }
     }
     fn scene_art(
@@ -64,12 +72,12 @@ impl LauncherView {
             return Some(Default::default());
         };
         let mut pinned = self.art_scenes.ambient.keys();
-        for game in self
-            .art_scenes
-            .current
-            .iter()
-            .chain(self.art_scenes.previous.iter())
-        {
+        for game in self.art_scenes.current.iter().chain(
+            self.art_scenes
+                .previous
+                .iter()
+                .filter(|_| self.art_scenes.page.active(Instant::now())),
+        ) {
             if let Some(key) = Self::scene_key(game, mode) {
                 pinned.push(key);
             }
@@ -89,6 +97,7 @@ impl LauncherView {
             return;
         }
         let mode = self.art_scene_mode().unwrap();
+        let ambient_running = self.tick_art_scenes();
         let now = Instant::now();
         let reduced = appearance::reduced_motion();
         self.art_scenes.refresh_games(&self.snapshot.games);
@@ -117,7 +126,11 @@ impl LauncherView {
         // Hold the displayed page/reel until a cold destination is decoded.
         // The selection itself remains the real game ID, but do not wipe the
         // previous image into an empty paper/background while waiting on IO.
-        let ready = mode == Mode::Wall || self.scene_art(&game, mode, window, cx).is_some();
+        let ready = match mode {
+            Mode::Wall | Mode::Mosaic => true,
+            Mode::Diagonal => self.diagonal_ready(index, window, cx),
+            _ => self.scene_art(&game, mode, window, cx).is_some(),
+        };
         if ready || self.art_scenes.selected.is_none() {
             self.art_scenes
                 .select(&game, index, count, mode, reduced, now);
@@ -157,7 +170,7 @@ impl LauncherView {
                 now,
             );
         }
-        if matches!(mode, Mode::Reel | Mode::Book) {
+        if mode == Mode::Reel {
             if let Some(art) = self.scene_art(&game, mode, window, cx) {
                 self.art_scenes.ambient.set_duration(Duration::from_millis(
                     if mode == Mode::Book { 650 } else { 800 },
@@ -220,7 +233,7 @@ impl LauncherView {
         {
             self.submit(Command::LaunchGame { game_id }, cx);
         }
-        if self.art_scenes.active(now) {
+        if self.art_scenes.active(now) || ambient_running {
             window.request_animation_frame();
         }
     }
@@ -246,7 +259,10 @@ impl LauncherView {
         }
         let mode = self.art_scene_mode().unwrap();
         let now = Instant::now();
-        if mode == Mode::Wall || mode == Mode::Book {
+        if matches!(
+            mode,
+            Mode::Wall | Mode::Book | Mode::Diagonal | Mode::Mosaic
+        ) {
             // Wall's small Play and Art Book's quiet action launch directly;
             // only Film Reel specifies a launch expansion.
             self.submit(
@@ -303,6 +319,8 @@ impl LauncherView {
             Mode::Wall => self.wall_scene(false, window, cx),
             Mode::Reel => self.reel_scene(window, cx),
             Mode::Book => self.book_scene(window, cx),
+            Mode::Diagonal => self.diagonal_scene(window, cx),
+            Mode::Mosaic => self.mosaic_scene(window, cx),
         };
         if let Some(focus) = &self.art_scenes.focus {
             stage = div()
@@ -519,13 +537,27 @@ impl LauncherView {
             .size_full()
             .relative()
             .overflow_hidden()
-            .bg(rgb(0x100d0c));
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(rgb(0x100b09), 0.),
+                linear_color_stop(hsla(accent.h, accent.s * 0.65, 0.12, 1.), 1.),
+            ));
         let seconds = if appearance::reduced_motion() {
             0.
         } else {
             self.art_scenes.drift.seconds()
         };
-        stage = stage.child(scene::material::reel_marble(seconds, accent));
+        stage = stage.child(
+            div()
+                .absolute()
+                .inset_0()
+                .size_full()
+                .opacity(0.18)
+                .child(scene::material::reel_marble(seconds, accent)),
+        );
+        stage = stage.child(scene::material::reel_illumination(
+            seconds, accent, width, height,
+        ));
         let mut drawn = Vec::with_capacity(5);
         let base = position.round() as i64;
         for delta in -2..=2 {
@@ -569,20 +601,8 @@ impl LauncherView {
                     .child(self.with_library_context_menu(game, figure, cx)),
             );
         }
-        // Controls float over the artwork: no empty header/footer bands.
-        stage = stage.child(
-            div()
-                .absolute()
-                .bottom_0()
-                .w_full()
-                .h(px(height * 0.36))
-                .bg(linear_gradient(
-                    180.,
-                    linear_color_stop(black().alpha(0.), 0.),
-                    linear_color_stop(black().alpha(0.78), 1.),
-                )),
-        );
-        let top = height - 142.;
+        let center = scene::reel_rect(width, height, 0.);
+        let top = (center.y + center.h + height * 0.07).min(height - 104.);
         let (old, new) = scene::text_phase(self.art_scenes.page.value(now));
         for (game, opacity, drift) in [
             (self.art_scenes.previous.as_ref(), old, -4.),
@@ -626,98 +646,70 @@ impl LauncherView {
         let w = full_w * scale;
         let h = full_h * scale;
         let palette = self.book_palette();
-        let paper = window.use_asset::<scene::Paper>(&(), cx);
         let mut page = div()
             .size_full()
             .relative()
             .overflow_hidden()
             .bg(palette.paper);
-        let seconds = if appearance::reduced_motion() {
-            0.
-        } else {
-            self.art_scenes.drift.seconds()
-        };
-        if let Some(previous) = &self.art_scenes.previous
-            && p < 0.999
-        {
-            page = page.child(
-                positioned(Rect {
-                    x: -p * w * 0.12,
-                    y: 0.,
-                    w,
-                    h,
-                })
-                .opacity(1. - p)
-                .child(self.book_figure(previous, w, h, seconds, window, cx)),
-            );
-        }
-        if let Some(game) = &self.art_scenes.current {
-            let x = (1. - p) * w * 0.11;
-            // Reveal a cached, correctly cropped image plus a live vector mask.
-            page = page.child(
-                positioned(Rect {
-                    x: 0.,
-                    y: 0.,
-                    w: w * (0.08 + 0.92 * p),
-                    h,
-                })
-                .overflow_hidden()
-                .child(
-                    positioned(Rect { x, y: 0., w, h })
-                        .child(self.book_figure(game, w, h, seconds, window, cx)),
-                ),
-            );
-        }
-        // One neutral cached grain layer; it never follows the animated seam.
-        if let Some(paper) = paper {
-            page = page.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .size_full()
-                    .opacity(0.035)
-                    .child(img(paper).size_full().object_fit(ObjectFit::Cover)),
-            );
-        }
-        let (old, new) = scene::text_phase(p);
         let ink = palette.ink;
-        for (game, opacity, offset) in [
-            (self.art_scenes.previous.as_ref(), old, -4.),
-            (self.art_scenes.current.as_ref(), new, 5. * (1. - new)),
-        ] {
-            if let Some(game) = game
-                && opacity > 0.001
-            {
+        let [previous_x, current_x] =
+            scene::book_page_positions(w, p, self.art_scenes.book_direction);
+        for (index, (game, x)) in [
+            (
+                self.art_scenes.previous.as_ref().filter(|_| p < 0.999),
+                previous_x,
+            ),
+            (self.art_scenes.current.as_ref(), current_x),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if let Some(game) = game {
                 page = page.child(
-                    positioned(Rect {
-                        x: w * 0.68,
-                        y: h * 0.43 + offset,
-                        w: w * 0.29,
-                        h: 180.,
-                    })
-                    .opacity(opacity)
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap_5()
-                    .text_color(ink)
-                    .child(
-                        div()
-                            .font_family(self.design().display_font)
-                            .italic()
-                            .text_size(px((w * 0.029).clamp(26., 46.)))
-                            .line_height(relative(1.15))
-                            .text_center()
-                            .child(game.title().to_string()),
-                    )
-                    .child(self.scene_play(
-                        game,
-                        Mode::Book,
-                        ink.into(),
-                        opacity < 0.99,
-                        cx,
-                    )),
+                    positioned(Rect { x, y: 0., w, h })
+                        .id(("book-page", index))
+                        .overflow_hidden()
+                        .child(self.book_figure(game, w, h, window, cx))
+                        .child(
+                            positioned(Rect {
+                                x: w * 0.69,
+                                y: h * 0.37,
+                                w: w * 0.28,
+                                h: h * 0.23,
+                            })
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .justify_center()
+                            .gap_5()
+                            .text_color(ink)
+                            .child(
+                                div()
+                                    .font_family(self.design().display_font)
+                                    .italic()
+                                    .text_size(px((w * 0.034).clamp(28., 54.)))
+                                    .line_height(relative(1.15))
+                                    .text_center()
+                                    .child(game.title().to_string()),
+                            )
+                            .child(self.scene_play(game, Mode::Book, ink.into(), p < 0.999, cx))
+                            .when(
+                                !game.artwork.contains_key(&ArtworkKind::Background),
+                                |panel| {
+                                    panel.child(
+                                        button("book-choose-background", cx)
+                                            .label("Choose background…")
+                                            .disabled(p < 0.999)
+                                            .on_click(cx.listener(|view, _, window, cx| {
+                                                view.cancel_artwork();
+                                                view.artwork_kind = ArtworkKind::Background;
+                                                view.reset_artwork_pages();
+                                                view.open_details(DetailTab::Artwork, window, cx);
+                                            })),
+                                    )
+                                },
+                            ),
+                        ),
                 );
             }
         }
@@ -790,7 +782,6 @@ impl LauncherView {
         game: &Game,
         w: f32,
         h: f32,
-        seconds: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -798,13 +789,23 @@ impl LauncherView {
             .scene_art(game, Mode::Book, window, cx)
             .and_then(|a| a.image);
         let paper = self.book_palette().paper;
+        let sheet = window.use_asset::<scene::Paper>(&scene::PaperLayer::Sheet, cx);
+        let edge = window.use_asset::<scene::Paper>(&scene::PaperLayer::Edge, cx);
+        let grain = window.use_asset::<scene::Paper>(&scene::PaperLayer::Grain, cx);
         div()
             .size_full()
             .relative()
             .overflow_hidden()
             .bg(paper)
-            // Center the crop in the artwork's own region (35% of the window),
-            // never behind the title at the center of a full-window image.
+            .when_some(sheet, |figure, sheet| {
+                figure.child(
+                    img(sheet)
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .object_fit(ObjectFit::Fill),
+                )
+            })
             .child(
                 positioned(Rect {
                     x: 0.,
@@ -814,7 +815,24 @@ impl LauncherView {
                 })
                 .child(scene_image(art, game, true, cx)),
             )
-            .child(scene::material::book_tear(seconds, paper))
+            .when_some(edge, |figure, edge| {
+                figure.child(
+                    img(edge)
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .object_fit(ObjectFit::Fill),
+                )
+            })
+            .when_some(grain, |figure, grain| {
+                figure.child(
+                    img(grain)
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .object_fit(ObjectFit::Fill),
+                )
+            })
             .into_any_element()
     }
     fn scene_play(
@@ -859,7 +877,7 @@ impl LauncherView {
                                     .absolute()
                                     .bottom_0()
                                     .left(px(12.))
-                                    .w(px(8. + 40. * underline))
+                                    .w(px(36. + 12. * underline))
                                     .h(px(1.))
                                     .bg(accent),
                             )

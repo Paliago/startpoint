@@ -614,6 +614,15 @@ impl Shared {
     ) -> Result<(), ApiError> {
         match command {
             Command::RefreshLibrary => self.refresh(context),
+            Command::RefreshMetadata => {
+                if self.refreshing.swap(true, Ordering::Relaxed) {
+                    return Err(ApiError::Validation(
+                        "A library refresh is already running".into(),
+                    ));
+                }
+                let _refresh = RefreshGuard(&self.refreshing);
+                self.populate_library(context, true)
+            }
             Command::RefreshSteamShortcuts => self.refresh_steam_shortcuts(context),
             Command::ReadSteamShortcutUrl { game_id, path } => {
                 self.game(&game_id)?;
@@ -1538,10 +1547,8 @@ impl Shared {
         if repaired > 0 {
             self.publish(AppEvent::ArtworkCacheChanged);
         }
+        self.populate_library(context, false)?;
         credential_check?;
-        if artwork_enabled {
-            self.populate_library(context)?;
-        }
         context.checkpoint()?;
         if !warnings.is_empty() {
             context.report(warnings.join("\n"));
@@ -1603,15 +1610,13 @@ impl Shared {
         Ok(())
     }
 
-    fn populate_library(&self, context: &JobContext) -> Result<(), ApiError> {
-        if self.artwork_provider("steamgriddb").is_err() {
-            return Ok(());
-        }
+    fn populate_library(&self, context: &JobContext, force: bool) -> Result<(), ApiError> {
+        let mut artwork_enabled = self.credential("steamgriddb", false).is_ok();
         let mut games: Vec<_> = self
             .snapshot()
             .games
             .iter()
-            .filter(|game| game.available && !game.hidden)
+            .filter(|game| game.available && (force || !game.hidden))
             .cloned()
             .collect();
         games.sort_by_key(|game| std::cmp::Reverse(game.last_launched.unwrap_or(0)));
@@ -1624,8 +1629,25 @@ impl Shared {
                 games.len(),
                 game.title()
             ));
-            match self.populate_game(&game.id, context) {
+            let metadata_result = if force || !artwork_enabled {
+                self.fetch_catalogue_metadata(game, context, force)
+            } else {
+                Ok(())
+            };
+            if matches!(metadata_result, Err(ApiError::Cancelled)) {
+                return metadata_result;
+            }
+            let result = if artwork_enabled {
+                self.populate_game(&game.id, context).and(metadata_result)
+            } else {
+                metadata_result
+            };
+            match result {
                 Ok(()) | Err(ApiError::NoArtwork) => {}
+                Err(error @ ApiError::InvalidCredential(_)) if force => {
+                    artwork_enabled = false;
+                    first_error.get_or_insert(error);
+                }
                 Err(error @ (ApiError::Cancelled | ApiError::InvalidCredential(_))) => {
                     return Err(error);
                 }
@@ -1633,6 +1655,11 @@ impl Shared {
                     first_error.get_or_insert(error);
                 }
             }
+        }
+        if !artwork_enabled && first_error.is_none() {
+            context.report(
+                "Metadata refreshed · unlock SteamGridDB in Settings to fill missing artwork",
+            );
         }
         first_error.map_or(Ok(()), Err)
     }
@@ -1743,14 +1770,24 @@ impl Shared {
         game: &Game,
         context: &JobContext,
     ) -> Result<(), ApiError> {
-        if [
-            &game.catalogue_metadata.title,
-            &game.catalogue_metadata.description,
-            &game.catalogue_metadata.developer,
-            &game.catalogue_metadata.genres,
-        ]
-        .iter()
-        .all(|field| field.is_some())
+        self.fetch_catalogue_metadata(game, context, false)
+    }
+
+    fn fetch_catalogue_metadata(
+        &self,
+        game: &Game,
+        context: &JobContext,
+        force: bool,
+    ) -> Result<(), ApiError> {
+        if !force
+            && [
+                &game.catalogue_metadata.title,
+                &game.catalogue_metadata.description,
+                &game.catalogue_metadata.developer,
+                &game.catalogue_metadata.genres,
+            ]
+            .iter()
+            .all(|field| field.is_some())
         {
             return Ok(());
         }
@@ -1761,7 +1798,11 @@ impl Shared {
         if let CatalogueTarget::Identified { title, .. } = &target
             && let Some(key) = native_catalogue_key(game, title)
         {
-            let cached = self.store(|store| store.cached::<Option<UserMetadata>>(&key, now()))?;
+            let cached = if force {
+                None
+            } else {
+                self.store(|store| store.cached::<Option<UserMetadata>>(&key, now()))?
+            };
             let native = match cached {
                 Some(metadata) => metadata,
                 None => {
@@ -1814,7 +1855,7 @@ impl Shared {
             {
                 context.checkpoint()?;
                 return self.update_game(&game.id, |current| {
-                    merge_catalogue_metadata(current, &target, metadata);
+                    merge_catalogue_metadata(current, &target, metadata, force);
                     Ok(())
                 });
             }
@@ -1825,9 +1866,12 @@ impl Shared {
                 // Cache misses as well as matches to avoid repeating searches for
                 // games with no Steam listing during every library refresh.
                 let key = format!("steam/catalogue-title-v2/{}", title.trim().to_lowercase());
-                let app_id = match self
-                    .store(|store| store.cached::<Option<String>>(&key, now()))?
-                {
+                let cached = if force {
+                    None
+                } else {
+                    self.store(|store| store.cached::<Option<String>>(&key, now()))?
+                };
+                let app_id = match cached {
                     Some(app_id) => app_id,
                     None => {
                         let app_id = steam::app_id_for_title(&self.image_client, title, context)?;
@@ -1842,7 +1886,12 @@ impl Shared {
             }
         };
         let key = format!("steam/catalogue/{app_id}");
-        let metadata: UserMetadata = match self.store(|store| store.cached(&key, now()))? {
+        let cached = if force {
+            None
+        } else {
+            self.store(|store| store.cached(&key, now()))?
+        };
+        let metadata: UserMetadata = match cached {
             Some(metadata) => metadata,
             None => {
                 let metadata = steam::metadata(&self.image_client, &app_id, context)?;
@@ -1862,7 +1911,7 @@ impl Shared {
         }
         context.checkpoint()?;
         self.update_game(&game.id, |current| {
-            merge_catalogue_metadata(current, &target, metadata);
+            merge_catalogue_metadata(current, &target, metadata, force);
             Ok(())
         })
     }
@@ -1902,13 +1951,21 @@ fn catalogue_target(game: &Game) -> Option<CatalogueTarget> {
     }
 }
 
-fn merge_catalogue_metadata(game: &mut Game, target: &CatalogueTarget, metadata: UserMetadata) {
+fn merge_catalogue_metadata(
+    game: &mut Game,
+    target: &CatalogueTarget,
+    mut metadata: UserMetadata,
+    replace: bool,
+) {
     // Refresh and re-identification can run on different workers. Do not publish
     // a result belonging to the previous selection. User overrides stay separate.
     if catalogue_target(game).as_ref() != Some(target) {
         return;
     }
     let current = &mut game.catalogue_metadata;
+    if replace {
+        std::mem::swap(current, &mut metadata);
+    }
     current.title = current.title.take().or(metadata.title);
     current.description = current.description.take().or(metadata.description);
     current.developer = current.developer.take().or(metadata.developer);
@@ -2571,7 +2628,7 @@ mod tests {
             }
         );
         let corrected = game.clone();
-        merge_catalogue_metadata(&mut game, &old_target, old_metadata);
+        merge_catalogue_metadata(&mut game, &old_target, old_metadata, true);
         assert_eq!(
             game, corrected,
             "An old worker result must not restore stale metadata"
@@ -2584,11 +2641,33 @@ mod tests {
                 description: Some("New automatic description".into()),
                 ..UserMetadata::default()
             },
+            false,
         );
         assert_eq!(
             game.effective_metadata().description.as_deref(),
             Some("My description")
         );
+        let target = catalogue_target(&game).unwrap();
+        let previous = game.clone();
+        merge_catalogue_metadata(
+            &mut game,
+            &target,
+            UserMetadata {
+                description: Some("Refreshed automatic description".into()),
+                ..UserMetadata::default()
+            },
+            true,
+        );
+        assert_eq!(
+            game.catalogue_metadata.description.as_deref(),
+            Some("Refreshed automatic description")
+        );
+        assert_eq!(
+            game.catalogue_metadata.title,
+            previous.catalogue_metadata.title
+        );
+        assert_eq!(game.metadata, previous.metadata);
+        assert_eq!(game.artwork, previous.artwork);
     }
 
     #[test]
@@ -3428,6 +3507,8 @@ mod tests {
             RecentsLayout::InfiniteWall,
             RecentsLayout::FilmReel,
             RecentsLayout::ArtBook,
+            RecentsLayout::Diagonal,
+            RecentsLayout::Mosaic,
         ] {
             let chosen = AppearanceSettings {
                 recents_layout,
@@ -3444,6 +3525,8 @@ mod tests {
                     RecentsLayout::InfiniteWall => "infinite_wall",
                     RecentsLayout::FilmReel => "film_reel",
                     RecentsLayout::ArtBook => "art_book",
+                    RecentsLayout::Diagonal => "diagonal",
+                    RecentsLayout::Mosaic => "mosaic",
                 }
             );
             let (restored, migrated) = restore_appearance_settings(Some(document)).unwrap();

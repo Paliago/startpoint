@@ -53,6 +53,8 @@ impl LauncherView {
                 RecentsLayout::InfiniteWall,
                 RecentsLayout::FilmReel,
                 RecentsLayout::ArtBook,
+                RecentsLayout::Diagonal,
+                RecentsLayout::Mosaic,
             ]
             .into_iter()
             .map(|layout| {

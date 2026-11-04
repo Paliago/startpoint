@@ -1,4 +1,5 @@
 //! Pure geometry and pause-aware, monotonic motion for Wall, Reel and Art Book.
+pub(crate) mod composition;
 pub(crate) mod material;
 use startpoint_sdk::{Game, GameId};
 use std::time::{Duration, Instant};
@@ -28,6 +29,8 @@ pub(crate) enum Mode {
     Wall,
     Reel,
     Book,
+    Diagonal,
+    Mosaic,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -125,8 +128,11 @@ pub(crate) struct State {
     pub count: usize,
     pub index: Tween,
     pub page: Tween,
+    pub book_direction: f32,
+    pub composition_pointer: Option<GameId>,
     pub scroll: Tween,
     pub hover: Tween,
+    hover_exit: Tween,
     pub hovered: Option<GameId>,
     pub old_hover: Option<GameId>,
     hover_from: f32,
@@ -191,6 +197,23 @@ impl State {
             return;
         }
         let initial = self.selected.is_none() || self.count != count;
+        let reverse_page = mode == Mode::Book
+            && self
+                .previous
+                .as_ref()
+                .is_some_and(|previous| previous.id == game.id)
+            && self.page.active(now);
+        let page_start = if reverse_page {
+            1. - self.page.value(now)
+        } else {
+            0.
+        };
+        let direction = crate::gallery::relative(index, self.index.target, count).signum();
+        self.book_direction = if reverse_page {
+            -self.book_direction
+        } else {
+            direction
+        };
         self.previous = self.current.take();
         self.current = Some(game.clone());
         self.selected = Some(game.id.clone());
@@ -201,12 +224,20 @@ impl State {
         } else {
             let position = self.index.value(now);
             let delta = crate::gallery::relative(index, position, count);
-            self.index
-                .set(position + delta, Duration::from_millis(500), reduced, now);
-            self.page.snap(0.);
+            if matches!(mode, Mode::Diagonal | Mode::Mosaic) {
+                self.index.snap(index as f32);
+                self.page.snap(1.);
+                return;
+            } else if mode == Mode::Book {
+                self.index.snap(index as f32);
+            } else {
+                self.index
+                    .set(position + delta, Duration::from_millis(500), reduced, now);
+            }
+            self.page.snap(page_start);
             self.page.set(
                 1.,
-                Duration::from_millis(if mode == Mode::Book { 650 } else { 500 }),
+                Duration::from_millis(if mode == Mode::Book { 280 } else { 500 }),
                 reduced,
                 now,
             );
@@ -226,13 +257,23 @@ impl State {
         self.hover_from = new_from;
         self.old_hover_from = old_from;
         self.hover.snap(0.);
-        self.hover.set(1., Duration::from_millis(200), reduced, now);
+        if self.hovered.is_some() {
+            self.hover.set(
+                1.,
+                Duration::from_millis(if reduced { 1 } else { 160 }),
+                false,
+                now + Duration::from_millis(180),
+            );
+        }
+        self.hover_exit.snap(0.);
+        self.hover_exit
+            .set(1., Duration::from_millis(160), reduced, now);
     }
     pub fn emphasis(&self, id: &GameId, now: Instant) -> f32 {
         if self.hovered.as_ref() == Some(id) {
             self.hover_from + (1. - self.hover_from) * self.hover.value(now)
         } else if self.old_hover.as_ref() == Some(id) {
-            self.old_hover_from * (1. - self.hover.value(now))
+            self.old_hover_from * (1. - self.hover_exit.value(now))
         } else {
             0.
         }
@@ -243,6 +284,7 @@ impl State {
             &mut self.page,
             &mut self.scroll,
             &mut self.hover,
+            &mut self.hover_exit,
             &mut self.overview,
             &mut self.underline,
         ] {
@@ -263,6 +305,7 @@ impl State {
             &self.page,
             &self.scroll,
             &self.hover,
+            &self.hover_exit,
             &self.overview,
             &self.underline,
         ]
@@ -358,13 +401,14 @@ impl WallLayout {
 }
 pub(crate) fn reel_rect(width: f32, height: f32, offset: f32) -> Rect {
     let focus = (1. - offset.abs()).clamp(0., 1.);
-    let w = width * 0.84;
+    let w = width * 0.71;
+    let h = (w * 0.43).min(height * 0.56);
     let scale = 0.97 + focus * 0.03;
     Rect {
-        x: width / 2. + offset * (w + 20.) - w * scale / 2.,
-        y: 0.,
+        x: width / 2. + offset * (w + 3.) - w * scale / 2.,
+        y: height * 0.49 - h / 2.,
         w: w * scale,
-        h: height,
+        h,
     }
 }
 pub(crate) fn text_phase(progress: f32) -> (f32, f32) {
@@ -375,7 +419,14 @@ pub(crate) fn text_phase(progress: f32) -> (f32, f32) {
 }
 
 pub(crate) fn wall_shade(emphasis: f32) -> f32 {
-    0.26 - emphasis.clamp(0., 1.) * 0.22
+    emphasis.clamp(0., 1.) * 0.20
+}
+
+pub(crate) fn book_page_positions(width: f32, progress: f32, direction: f32) -> [f32; 2] {
+    [
+        -direction * width * progress,
+        direction * width * (1. - progress),
+    ]
 }
 
 pub(crate) fn hero_mix(expansion: f32, decoded: f32) -> f32 {
@@ -384,19 +435,25 @@ pub(crate) fn hero_mix(expansion: f32, decoded: f32) -> f32 {
 }
 
 pub(crate) struct Paper;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum PaperLayer {
+    Sheet,
+    Edge,
+    Grain,
+}
 impl gpui::Asset for Paper {
-    type Source = ();
+    type Source = PaperLayer;
     type Output = std::sync::Arc<gpui::RenderImage>;
     fn load(
-        _: (),
+        layer: PaperLayer,
         _: &mut gpui::App,
     ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
         async move {
-            let pixels = image::RgbaImage::from_fn(1024, 768, |x, y| {
-                let mut n = x.wrapping_mul(1973) ^ y.wrapping_mul(9277) ^ 0x68bc21eb;
-                n = (n ^ (n >> 16)).wrapping_mul(0x7feb352d);
-                let grain = (n >> 24) as u8;
-                image::Rgba([grain, grain, grain, 255])
+            let pixels = image::RgbaImage::from_fn(1536, 1024, |x, y| {
+                let [r, g, b, a] = material::paper_pixel(x, y, layer);
+                let premultiply =
+                    |channel| u8::try_from(u32::from(channel) * u32::from(a) / 255).unwrap_or(255);
+                image::Rgba([premultiply(b), premultiply(g), premultiply(r), a])
             });
             std::sync::Arc::new(gpui::RenderImage::new([image::Frame::new(pixels)]))
         }
@@ -444,8 +501,9 @@ mod tests {
     fn reel_centers_exactly_and_text_stages_do_not_overlap() {
         let center = reel_rect(1280., 820., 0.);
         assert!((center.x + center.w / 2. - 640.).abs() < 0.01);
-        assert_eq!(center.y, 0.);
-        assert_eq!(center.h, 820.);
+        assert!(center.y > 100.);
+        assert!(center.h < 820. * 0.56);
+        assert!((center.w / center.h - 1. / 0.43).abs() < 0.01);
         assert_eq!(WallLayout::new(1280., 820.).rect(0, 0.).y, 10.);
         for i in 0..100 {
             let (old, new) = text_phase(i as f32 / 99.);
@@ -453,20 +511,27 @@ mod tests {
         }
     }
     #[test]
-    fn wall_dimming_is_constant_at_rest_and_interrupted_hover_never_flashes() {
+    fn wall_shading_waits_for_dwell_and_cancels_when_the_pointer_leaves() {
         let now = Instant::now();
         let a = GameId("a".into());
         let mut state = State::default();
-        assert_eq!(wall_shade(state.emphasis(&a, now)), 0.26);
+        assert_eq!(wall_shade(state.emphasis(&a, now)), 0.);
         state.hover(Some(a.clone()), false, now);
         let mid = now + Duration::from_millis(75);
+        assert_eq!(state.emphasis(&a, mid), 0.);
         let shade = wall_shade(state.emphasis(&a, mid));
         state.hover(None, false, mid);
         assert!((wall_shade(state.emphasis(&a, mid)) - shade).abs() < 0.00001);
         assert_eq!(
             wall_shade(state.emphasis(&a, mid + Duration::from_secs(1))),
-            0.26
+            0.
         );
+        state.hover(Some(a.clone()), false, mid);
+        let settled = mid + Duration::from_millis(500);
+        assert_eq!(state.emphasis(&a, settled), 1.);
+        state.hover(None, false, settled);
+        assert_eq!(state.emphasis(&a, settled), 1.);
+        assert_eq!(state.emphasis(&a, settled + Duration::from_millis(160)), 0.);
         assert!(wall_shade(1.) > 0.);
         assert_eq!(hero_mix(0., 1.), 0.);
         assert_eq!(hero_mix(1., 1.), 1.);

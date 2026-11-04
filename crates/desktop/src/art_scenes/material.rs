@@ -1,4 +1,4 @@
-//! Live, bounded native vector materials. No per-frame image generation/readback.
+//! Cached paper fibers and brush coverage; live native vector marbling for Film Reel.
 use gpui::{prelude::*, *};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -16,7 +16,7 @@ pub(crate) fn chrome(cx: &App) -> Option<BookPalette> {
     cx.try_global::<Chrome>().and_then(|chrome| chrome.0)
 }
 
-pub(crate) fn book_palette(accent: [f32; 3], luminance: f32) -> BookPalette {
+pub(crate) fn book_palette(accent: [f32; 3], _luminance: f32) -> BookPalette {
     let color: Hsla = Rgba {
         r: accent[0],
         g: accent[1],
@@ -24,21 +24,10 @@ pub(crate) fn book_palette(accent: [f32; 3], luminance: f32) -> BookPalette {
         a: 1.,
     }
     .into();
-    let dark = luminance < 0.22;
     let mut palette = BookPalette {
-        paper: hsla(
-            color.h,
-            color.s.clamp(0.12, 0.28),
-            if dark { 0.115 } else { 0.93 },
-            1.,
-        ),
-        ink: hsla(color.h, 0.14, if dark { 0.91 } else { 0.13 }, 1.),
-        accent: hsla(
-            color.h,
-            color.s.clamp(0.25, 0.55),
-            if dark { 0.73 } else { 0.30 },
-            1.,
-        ),
+        paper: rgb(0xf4ead7).into(),
+        ink: rgb(0x31271f).into(),
+        accent: hsla(color.h, color.s.clamp(0.25, 0.55), 0.30, 1.),
     };
     // Yellow/green hues can be much brighter than blue at the same HSL
     // lightness. Keep artwork-derived actions readable for every hue.
@@ -46,66 +35,50 @@ pub(crate) fn book_palette(accent: [f32; 3], luminance: f32) -> BookPalette {
         if crate::theme::contrast(palette.paper, palette.accent) >= 4.5 {
             break;
         }
-        palette.accent.l = (palette.accent.l + if dark { 0.01 } else { -0.01 }).clamp(0., 1.);
+        palette.accent.l = (palette.accent.l - 0.01).clamp(0., 1.);
     }
     palette
 }
 
-/// The seam changes shape locally along its length, not just position. The
-/// image/crop and paper grain remain stationary beneath this feathered mask.
-pub(crate) fn tear_x(y: f32, seconds: f32) -> f32 {
-    let phase = seconds * 0.19;
-    0.615
-        + (y * 9. + phase).sin() * 0.024
-        + (y * 29. - phase * 0.73).sin() * 0.009
-        + (y * 113. + phase * 1.31).sin() * 0.0025
+fn paper_noise(x: u32, y: u32) -> u32 {
+    let mut value = x.wrapping_mul(1973) ^ y.wrapping_mul(9277) ^ 0x68bc21eb;
+    value = (value ^ (value >> 16)).wrapping_mul(0x7feb352d);
+    (value ^ (value >> 15)) & 255
 }
 
-fn tear_path(bounds: Bounds<Pixels>, seconds: f32, offset: f32) -> Path<Pixels> {
-    let mut path = PathBuilder::fill();
-    for i in 0..=80 {
-        let y = i as f32 / 80.;
-        let p = point(
-            bounds.left() + bounds.size.width * (tear_x(y, seconds) + offset),
-            bounds.top() + bounds.size.height * y,
-        );
-        if i == 0 {
-            path.move_to(p);
-        } else {
-            path.line_to(p);
+fn paper_field(x: u32, y: u32, scale: u32) -> i64 {
+    let sample = |dx, dy| i64::from(paper_noise(x / scale + dx, y / scale + dy));
+    let fx = i64::from(x % scale);
+    let fy = i64::from(y % scale);
+    let scale = i64::from(scale);
+    let top = sample(0, 0) * (scale - fx) + sample(1, 0) * fx;
+    let bottom = sample(0, 1) * (scale - fx) + sample(1, 1) * fx;
+    (top * (scale - fy) + bottom * fy) / (scale * scale) - 128
+}
+
+pub(crate) fn paper_pixel(x: u32, y: u32, layer: super::PaperLayer) -> [u8; 4] {
+    let grain = i64::from(paper_noise(x, y)) - 128;
+    let fiber = if paper_noise(x / 2, y / 9) > 246 {
+        -7
+    } else {
+        0
+    };
+    let variation = grain / 16 + paper_field(x, y, 96) / 28 + fiber;
+    let channel = |base: i64| u8::try_from((base + variation).clamp(0, 255)).unwrap_or(0);
+    let alpha = match layer {
+        super::PaperLayer::Sheet => 255,
+        super::PaperLayer::Grain => u8::try_from(paper_noise(x, y) % 17).unwrap_or(0),
+        super::PaperLayer::Edge => {
+            let edge = 936 + paper_field(0, y, 192) / 3 + paper_field(0, y, 43) / 9;
+            let distance = i64::from(x) - edge + paper_field(x, y, 8) / 5 + grain / 10;
+            u8::try_from(((distance + 32) * 255 / 64).clamp(0, 255)).unwrap_or(0)
         }
-    }
-    path.line_to(bounds.bottom_right());
-    path.line_to(bounds.top_right());
-    path.close();
-    path.build().expect("monotonic torn edge")
-}
-
-pub(crate) fn book_tear(seconds: f32, paper: Hsla) -> impl IntoElement {
-    canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            let mut previous = 0.;
-            // Incremental coverage reproduces a smoothstep feather instead of
-            // stacking the same semi-transparent silhouette into a hard band.
-            for i in 1..=20 {
-                let t = i as f32 / 20.;
-                let coverage = t * t * (3. - 2. * t);
-                let alpha = (coverage - previous) / (1. - previous).max(0.00001);
-                window.paint_path(
-                    tear_path(bounds, seconds, (t - 0.5) * 0.075),
-                    paper.alpha(alpha),
-                );
-                previous = coverage;
-            }
-        },
-    )
-    .absolute()
-    .inset_0()
+    };
+    [channel(244), channel(234), channel(215), alpha]
 }
 
 fn marble_point(radius: f32, angle: f32, seconds: f32) -> (f32, f32) {
-    let phase = seconds * 0.045;
+    let phase = seconds * 0.16;
     let warp = 1.
         + 0.17 * (angle * 3. + phase + radius * 3.).sin()
         + 0.075 * (angle * 5. - phase * 0.7 + radius * 7.).cos();
@@ -165,29 +138,93 @@ pub(crate) fn reel_marble(seconds: f32, accent: Hsla) -> impl IntoElement {
     .inset_0()
 }
 
+fn reel_lights(seconds: f32) -> [[f32; 3]; 2] {
+    [
+        [
+            0.52 + 0.045 * (seconds * 0.13).sin(),
+            0.25 + 0.025 * (seconds * 0.11).cos(),
+            0.90 + 0.10 * (seconds * 0.19).sin(),
+        ],
+        [
+            0.48 + 0.055 * (seconds * 0.09 + 1.4).sin(),
+            0.76 + 0.025 * (seconds * 0.12).sin(),
+            0.90 + 0.10 * (seconds * 0.16 + 2.).sin(),
+        ],
+    ]
+}
+
+pub(crate) fn reel_illumination(seconds: f32, accent: Hsla, width: f32, height: f32) -> Div {
+    let mut light = div().absolute().inset_0().size_full();
+    for ([x, y, intensity], strength) in reel_lights(seconds).into_iter().zip([0.35, 0.25]) {
+        light = light.child(
+            div()
+                .absolute()
+                .left(px(width * (x - 0.23)))
+                .top(px(height * (y - 0.055)))
+                .w(px(width * 0.46))
+                .h(px(height * 0.11))
+                .rounded_full()
+                .shadow(vec![BoxShadow {
+                    color: accent.alpha(strength * intensity),
+                    offset: point(px(0.), px(0.)),
+                    blur_radius: px(height * 0.15),
+                    spread_radius: px(height * 0.025),
+                    inset: false,
+                }]),
+        );
+    }
+    light
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[::core::prelude::v1::test]
-    fn living_materials_tessellate_are_continuous_and_stay_in_the_art_region() {
+    fn reel_light_spill_drifts_and_breathes_without_abrupt_changes() {
+        assert_ne!(reel_lights(0.), reel_lights(10.));
+        for seconds in [0., 1., 10., 60., 600.] {
+            for (before, after) in reel_lights(seconds)
+                .into_iter()
+                .zip(reel_lights(seconds + 0.001))
+            {
+                assert!((0.42..0.58).contains(&before[0]));
+                assert!((0.20..0.80).contains(&before[1]));
+                assert!((0.79..1.01).contains(&before[2]));
+                for (before, after) in before.into_iter().zip(after) {
+                    assert!((before - after).abs() < 0.0001);
+                }
+            }
+        }
+    }
+    #[::core::prelude::v1::test]
+    fn marble_contours_tessellate_and_move_continuously() {
         let bounds = Bounds::new(point(px(0.), px(0.)), size(px(1296.), px(828.)));
         for seconds in [0., 1., 8., 60., 600.] {
-            for i in 0..=100 {
-                let y = i as f32 / 100.;
-                let x = tear_x(y, seconds);
-                assert!((0.57..0.66).contains(&x));
-                assert!((x - tear_x(y, seconds + 0.001)).abs() < 0.0001);
-            }
-            let _ = tear_path(bounds, seconds, 0.);
             for i in 0..32 {
                 let _ = marble_path(bounds, 0.025 + i as f32 * 0.047, seconds);
             }
         }
-        assert_ne!(tear_x(0.3, 0.), tear_x(0.3, 10.));
         assert_ne!(marble_point(0.5, 1., 0.), marble_point(0.5, 1., 10.));
+        let before = marble_point(0.5, 1., 10.);
+        let after = marble_point(0.5, 1., 10.001);
+        assert!((before.0 - after.0).abs() < 0.001);
+        assert!((before.1 - after.1).abs() < 0.001);
     }
     #[::core::prelude::v1::test]
-    fn image_palettes_change_hue_and_lightness_without_losing_text_contrast() {
+    fn paper_is_warm_textured_repeatable_and_only_covers_the_artwork_at_its_edge() {
+        use super::super::PaperLayer;
+        for y in 0..1024 {
+            assert_eq!(paper_pixel(0, y, PaperLayer::Edge)[3], 0);
+            assert_eq!(paper_pixel(1100, y, PaperLayer::Edge)[3], 255);
+        }
+        let first = paper_pixel(100, 100, PaperLayer::Sheet);
+        assert_eq!(first, paper_pixel(100, 100, PaperLayer::Sheet));
+        assert!(first[0] > first[1] && first[1] > first[2]);
+        assert!((101..200).any(|x| paper_pixel(x, 100, PaperLayer::Sheet) != first));
+        assert!((870..1000).any(|x| (1..255).contains(&paper_pixel(x, 500, PaperLayer::Edge)[3])));
+    }
+    #[::core::prelude::v1::test]
+    fn paper_stays_warm_and_readable_over_bright_and_dark_artwork() {
         for color in [[0.9, 0.3, 0.2], [0.2, 0.6, 0.9], [0.7, 0.8, 0.3]] {
             for luminance in [0.08, 0.35, 0.75] {
                 let p = book_palette(color, luminance);

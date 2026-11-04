@@ -7,9 +7,6 @@ use gpui::{prelude::*, *};
 use renderer::{FRAME_GUTTER, FrameOutput, Renderer};
 use scene::Scene;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
-
-const MIN_FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 60);
 
 struct Request {
     scene: Scene,
@@ -122,7 +119,6 @@ impl GalleryGpu {
             .spawn(move || {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let mut renderer: Option<Renderer> = None;
-                    let mut next_frame = Instant::now();
                     loop {
                         let request = {
                             let (state, wake) = &*worker_mailbox;
@@ -134,14 +130,7 @@ impl GalleryGpu {
                                     }
                                 }
                                 if !state.paused && state.pending.is_some() {
-                                    let now = Instant::now();
-                                    if now >= next_frame {
-                                        break;
-                                    }
-                                    state = wake
-                                        .wait_timeout(state, next_frame - now)
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .0;
+                                    break;
                                 } else {
                                     state = wake.wait(state).unwrap_or_else(|e| e.into_inner());
                                 }
@@ -173,7 +162,6 @@ impl GalleryGpu {
                                 }
                             }
                         }
-                        next_frame = Instant::now() + MIN_FRAME_INTERVAL;
                         let result = renderer
                             .as_mut()
                             .unwrap()
@@ -266,8 +254,7 @@ impl GalleryGpu {
 
 #[cfg(test)]
 mod power_tests {
-    use super::{MIN_FRAME_INTERVAL, Mailbox, Scene};
-    use std::time::Duration;
+    use super::{Mailbox, Scene};
     fn scene() -> Scene {
         Scene::new(1280., 820., vec![])
     }
@@ -293,7 +280,6 @@ mod power_tests {
             mailbox.enqueue(Scene::new(width as f32, 820., vec![]));
         }
         assert_eq!(mailbox.pending.as_ref().unwrap().scene.logical_width, 1999.);
-        assert!(MIN_FRAME_INTERVAL >= Duration::from_millis(16));
     }
 }
 

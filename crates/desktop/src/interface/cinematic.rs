@@ -22,20 +22,33 @@ impl LauncherView {
         };
         let count = games.len();
         let key = cinema::artwork_key(games[index]);
+        let neighbors: Vec<_> = [(index + 1) % count, (index + count - 1) % count]
+            .into_iter()
+            .filter(|neighbor| *neighbor != index)
+            .filter_map(|neighbor| cinema::artwork_key(games[neighbor]))
+            .collect();
         let now = Instant::now();
         let reduced = appearance::reduced_motion();
         self.cinematic_motion.update(index, count, reduced, now);
-        let pinned = self.cinematic_scene.keys();
+        let mut pinned = self.cinematic_scene.keys();
+        if let Some(key) = &key {
+            pinned.push(key.clone());
+        }
         let artwork = match &key {
-            Some(key) => self
-                .cinematic_artwork
-                .update(cx, |cache, cx| cache.load(key, &pinned, window, cx)),
+            Some(key) => self.cinematic_artwork.update(cx, |cache, cx| {
+                cache.set_capacity(6);
+                cache.load(key, &pinned, window, cx)
+            }),
             None => Some(cinema::Artwork::default()),
         };
         // Keep the previous scenery until the destination has decoded. Loading
         // completion notifies GPUI; no frame loop or blank flash while waiting.
         if let Some(artwork) = artwork {
             self.cinematic_scene.update(key, artwork, reduced, now);
+            for key in neighbors {
+                self.cinematic_artwork
+                    .update(cx, |cache, cx| cache.load(&key, &pinned, window, cx));
+            }
         }
         if self.cinematic_scene.animating(now) || self.cinematic_motion.animating(now) {
             window.request_animation_frame();

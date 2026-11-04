@@ -113,7 +113,12 @@ fn main() {
     };
     if std::env::args().any(|argument| argument == "--diagnostics") {
         let events = api.subscribe();
-        match api.submit(startpoint_sdk::Command::RefreshLibrary) {
+        let command = if std::env::args().any(|argument| argument == "--refresh-metadata") {
+            startpoint_sdk::Command::RefreshMetadata
+        } else {
+            startpoint_sdk::Command::RefreshLibrary
+        };
+        match api.submit(command) {
             Ok(id) => {
                 while let Ok(event) = events.recv_blocking() {
                     if let startpoint_sdk::AppEvent::JobChanged(job) = event

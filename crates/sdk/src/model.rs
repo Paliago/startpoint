@@ -313,6 +313,8 @@ pub enum RecentsLayout {
     InfiniteWall,
     FilmReel,
     ArtBook,
+    Diagonal,
+    Mosaic,
 }
 
 impl RecentsLayout {
@@ -325,6 +327,8 @@ impl RecentsLayout {
             Self::InfiniteWall => "Infinite Wall",
             Self::FilmReel => "Film Reel",
             Self::ArtBook => "Art Book",
+            Self::Diagonal => "Diagonal",
+            Self::Mosaic => "Mosaic",
         }
     }
 }
@@ -547,6 +551,7 @@ pub struct Snapshot {
 #[derive(Clone)]
 pub enum Command {
     RefreshLibrary,
+    RefreshMetadata,
     RefreshSteamShortcuts,
     ReadSteamShortcutUrl {
         game_id: GameId,
@@ -656,6 +661,7 @@ impl Command {
         matches!(
             self,
             Self::RefreshLibrary
+                | Self::RefreshMetadata
                 | Self::RefreshSteamShortcuts
                 | Self::ReadSteamShortcutUrl { .. }
                 | Self::SetSteamLaunch { .. }
@@ -672,6 +678,7 @@ impl Command {
     pub fn label(&self) -> &'static str {
         match self {
             Self::RefreshLibrary => "Refreshing installed games",
+            Self::RefreshMetadata => "Refreshing metadata and missing artwork",
             Self::RefreshSteamShortcuts => "Reading Steam shortcuts",
             Self::ReadSteamShortcutUrl { .. } => "Reading Steam desktop shortcut",
             Self::AddManualGame { .. } => "Adding game",

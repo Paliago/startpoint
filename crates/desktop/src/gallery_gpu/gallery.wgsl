@@ -50,8 +50,8 @@ fn reflection_sample(hit:ReflectionHit,lod:f32) -> vec4f {
     let poster=scene.posters[hit.index];
     // Coherence fades with height above the contact, as well as path length.
     // The concrete catches light, not an intact second cover in the foreground.
-    let attenuation=exp(-hit.distance*0.18-max(1.0-hit.uv.y,0.0)*poster.shape.y*0.85);
-    return vec4f(art_color(poster,hit.uv,lod+min(hit.distance*0.35,2.0))*attenuation,hit.coverage*poster.shape.w);
+    let attenuation=exp(-hit.distance*0.15-max(1.0-hit.uv.y,0.0)*poster.shape.y*0.65);
+    return vec4f(art_color(poster,hit.uv,lod+min(hit.distance*0.25,1.5))*attenuation,hit.coverage*poster.shape.w);
 }
 
 fn trace_art(origin: vec3f, direction: vec3f, lod: f32) -> vec3f {
@@ -100,8 +100,8 @@ fn floor_color(point: vec3f, incoming: vec3f) -> vec3f {
     // A fixed, temporally stable roughness cone: no frame-to-frame sparkling.
     let cone=array<vec2f,4>(vec2f(-0.58,-0.24),vec2f(0.24,-0.58),vec2f(0.58,0.24),vec2f(-0.24,0.58));
     for (var sample_index=0u; sample_index<4u; sample_index++) {
-        let ray=normalize(outgoing+(axis_x*cone[sample_index].x+axis_y*cone[sample_index].y)*roughness*0.15);
-        reflected += trace_art(point+normal*0.003,ray,2.5+roughness*5.2);
+        let ray=normalize(outgoing+(axis_x*cone[sample_index].x+axis_y*cone[sample_index].y)*roughness*0.10);
+        reflected += trace_art(point+normal*0.003,ray,1.5+roughness*3.2);
     }
     reflected/=4.0;
     let fresnel=0.055+0.945*pow(1.0-clamp(dot(-incoming,normal),0.0,1.0),5.0);
@@ -121,7 +121,7 @@ fn floor_color(point: vec3f, incoming: vec3f) -> vec3f {
         contact=max(contact,exp(-abs(along)*13.0)*(1.0-smoothstep(poster.shape.x,poster.shape.x+0.25,abs(across)))*poster.shape.w);
     }
     base=(base+illumination*grain)*(1.0-contact*0.72);
-    let reflection_strength=fresnel*mix(0.20,1.18,polish)*exp(-max(distance-8.0,0.0)*0.025)*grain;
+    let reflection_strength=fresnel*mix(0.40,1.55,polish)*exp(-max(distance-8.0,0.0)*0.025)*grain;
     let result=base+reflected*reflection_strength;
     let atmosphere=exp(-max(distance-16.0,0.0)*0.055);
     return mix(environment(incoming),result,atmosphere);

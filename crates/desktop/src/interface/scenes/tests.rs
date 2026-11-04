@@ -1,6 +1,36 @@
 use super::*;
 use startpoint_sdk::{ApiError, ApplicationApi, ApplicationPaths, SettingsSnapshot};
 use std::sync::Mutex;
+
+#[::core::prelude::v1::test]
+fn book_pages_follow_browsing_direction_and_reverse_without_jumping() {
+    let now = Instant::now();
+    let mut state = scene::State::default();
+    let mut first = sample_library_game();
+    first.id = GameId("first".into());
+    let mut second = first.clone();
+    second.id = GameId("second".into());
+    state.select(&first, 0, 5, Mode::Book, false, now);
+    state.select(&second, 1, 5, Mode::Book, false, now);
+    assert_eq!(state.book_direction, 1.);
+    let mid = now + Duration::from_millis(140);
+    let before = scene::book_page_positions(1280., state.page.value(mid), state.book_direction);
+    state.select(&first, 0, 5, Mode::Book, false, mid);
+    let after = scene::book_page_positions(1280., state.page.value(mid), state.book_direction);
+    assert!((before[0] - after[1]).abs() < 0.001);
+    assert!((before[1] - after[0]).abs() < 0.001);
+    state.select(
+        &second,
+        4,
+        5,
+        Mode::Book,
+        true,
+        now + Duration::from_secs(2),
+    );
+    assert_eq!(state.book_direction, -1.);
+    assert_eq!(state.page.value(now + Duration::from_secs(2)), 1.);
+}
+
 struct Api {
     snapshot: Snapshot,
     launched: Mutex<Vec<GameId>>,
@@ -166,6 +196,7 @@ fn three_scenes_keep_identity_reversible_previews_and_single_launch_dispatch() {
     window.update(|view, _, _| {
         view.art_scenes
             .hover(Some(GameId("scene:0".into())), true, Instant::now());
+        view.art_scenes.hover.snap(1.);
     });
     window.draw();
     window.simulate_click(
@@ -258,4 +289,63 @@ fn three_scenes_keep_identity_reversible_previews_and_single_launch_dispatch() {
         2,
         "overview selects a page without launching"
     );
+    for layout in [RecentsLayout::Diagonal, RecentsLayout::Mosaic] {
+        window.update(|view, window, cx| {
+            view.set_appearance(
+                AppearanceSettings {
+                    recents_layout: layout,
+                    ..view.appearance.clone()
+                },
+                window,
+                cx,
+            )
+        });
+        window.draw();
+        let (position, expected) = window.update(|view, window, _| {
+            let width = view.main_content_width(window);
+            let height = f32::from(window.viewport_size().height);
+            let games = view.recent_games();
+            let current = games
+                .iter()
+                .position(|game| view.selected.as_ref() == Some(&game.id))
+                .unwrap();
+            if layout == RecentsLayout::Diagonal {
+                (
+                    point(px(width * 0.1), px(height * 0.55)),
+                    games[(current + games.len() - 1) % games.len()].id.clone(),
+                )
+            } else {
+                (
+                    point(px(width * 0.8), px(height * 0.15)),
+                    games[(current + 1) % games.len()].id.clone(),
+                )
+            }
+        });
+        let launches = api.launched.lock().unwrap().len();
+        window.simulate_click(position, MouseButton::Left);
+        window.draw();
+        window.read(|view, _| assert_eq!(view.selected.as_ref(), Some(&expected)));
+        assert_eq!(api.launched.lock().unwrap().len(), launches);
+        window.simulate_event(MouseDownEvent {
+            position,
+            button: MouseButton::Left,
+            modifiers: Default::default(),
+            click_count: 2,
+            first_mouse: false,
+        });
+        window.simulate_event(MouseUpEvent {
+            position,
+            button: MouseButton::Left,
+            modifiers: Default::default(),
+            click_count: 2,
+        });
+        window.draw();
+        let launched = api.launched.lock().unwrap();
+        assert_eq!(launched.len(), launches + 1);
+        assert_eq!(
+            launched.last(),
+            Some(&expected),
+            "rearranging artwork must not change the double-click target"
+        );
+    }
 }
