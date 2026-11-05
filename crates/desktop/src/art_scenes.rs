@@ -130,6 +130,7 @@ pub(crate) struct State {
     pub page: Tween,
     pub book_direction: f32,
     pub composition_pointer: Option<GameId>,
+    pub mosaic_ready_pages: Vec<usize>,
     pub scroll: Tween,
     pub hover: Tween,
     hover_exits: BTreeMap<GameId, Tween>,

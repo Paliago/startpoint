@@ -96,7 +96,7 @@ impl LauncherView {
             pinned.push(key);
         }
         self.scene_artwork.update(cx, |cache, cx| {
-            cache.set_capacity(6);
+            cache.set_capacity(if mode == Mode::Mosaic { 24 } else { 6 });
             cache.load(&key, &pinned, window, cx)
         })
     }
@@ -135,11 +135,19 @@ impl LauncherView {
         // The selection itself remains the real game ID, but do not wipe the
         // previous image into an empty paper/background while waiting on IO.
         let ready = match mode {
-            Mode::Wall | Mode::Mosaic => true,
+            Mode::Wall => true,
+            Mode::Mosaic => {
+                let (ready, pages) = self.prepare_mosaic_assets(index, window, cx);
+                self.art_scenes.mosaic_ready_pages = pages;
+                if !ready {
+                    window.request_animation_frame();
+                }
+                ready
+            }
             Mode::Diagonal => self.diagonal_ready(index, window, cx),
             _ => self.scene_art(&game, mode, window, cx).is_some(),
         };
-        if ready || self.art_scenes.selected.is_none() {
+        if ready || (mode != Mode::Mosaic && self.art_scenes.selected.is_none()) {
             self.art_scenes
                 .select(&game, index, count, mode, reduced, now);
         }

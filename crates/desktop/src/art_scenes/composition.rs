@@ -131,6 +131,26 @@ pub(crate) fn mosaic_rects(width: f32, height: f32, count: usize) -> Vec<Rect> {
         .collect()
 }
 
+pub(crate) fn mosaic_working_pages(requested: usize, displayed: usize, count: usize) -> Vec<usize> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let pages = count.div_ceil(6);
+    let requested = (requested / 6).min(pages - 1);
+    let mut working = Vec::new();
+    for page in [
+        requested,
+        (displayed / 6).min(pages - 1),
+        (requested + 1) % pages,
+        (requested + pages - 1) % pages,
+    ] {
+        if !working.contains(&page) {
+            working.push(page);
+        }
+    }
+    working
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +211,16 @@ mod tests {
             if count > 0 {
                 let area: f32 = rects.iter().map(|rect| rect.w * rect.h).sum();
                 assert!(area > 1586. * 992. * 0.98);
+            }
+        }
+        for count in 1..50 {
+            for requested in 0..count {
+                let pages = mosaic_working_pages(requested, 0, count);
+                assert_eq!(pages[0], requested / 6);
+                assert!(pages.contains(&0));
+                assert!(pages.len() <= 4);
+                assert!(pages.contains(&((requested / 6 + 1) % count.div_ceil(6))));
+                assert!(pages.iter().all(|page| page * 6 < count));
             }
         }
     }

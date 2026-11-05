@@ -118,8 +118,8 @@ impl ArtworkCache {
         self.cleanup_scheduled = false;
         let pinned = std::mem::take(&mut self.pinned);
         let mut changed = false;
-        // At most three composited frames plus the loading destination. All
-        // images are bounded to 1920×1200, independent of source file size/DPI.
+        // Consumers bound and pin their visible/preloaded working sets. Retire
+        // images only at a frame boundary, never while another tile is painting.
         while self.recent.len() > self.capacity.max(4) {
             let Some(index) = self.recent.iter().position(|key| !pinned.contains(key)) else {
                 break;

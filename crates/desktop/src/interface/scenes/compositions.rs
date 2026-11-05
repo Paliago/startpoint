@@ -1,4 +1,5 @@
 use super::*;
+use gpui::ImageCache;
 use scene::composition;
 
 impl LauncherView {
@@ -251,19 +252,81 @@ impl LauncherView {
             .into_any_element()
     }
 
+    pub(super) fn prepare_mosaic_assets(
+        &self,
+        requested: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (bool, Vec<usize>) {
+        let games = self.art_scenes.games();
+        let displayed = self
+            .art_scenes
+            .selected
+            .as_ref()
+            .and_then(|id| self.art_scenes.position(id))
+            .unwrap_or(requested);
+        let pages = composition::mosaic_working_pages(requested, displayed, games.len());
+        let pinned = pages
+            .iter()
+            .flat_map(|page| page * 6..((page + 1) * 6).min(games.len()))
+            .filter_map(|index| Self::scene_key(&games[index], Mode::Mosaic))
+            .collect::<Vec<_>>();
+        let mut ready_pages = Vec::new();
+        for page in pages {
+            let mut ready = true;
+            for index in page * 6..((page + 1) * 6).min(games.len()) {
+                let game = &games[index];
+                if let Some(key) = Self::scene_key(game, Mode::Mosaic) {
+                    ready &= self.scene_artwork.update(cx, |cache, cx| {
+                        cache.set_capacity(24);
+                        cache.load(&key, &pinned, window, cx).is_some()
+                    });
+                }
+                if game.artwork.contains_key(&ArtworkKind::Background)
+                    && let Some(asset) = game.artwork.get(&ArtworkKind::Logo)
+                {
+                    match self.logos.update(cx, |cache, cx| cache.load(asset, cx)) {
+                        crate::logo_cache::State::Pending => ready = false,
+                        crate::logo_cache::State::Ready(logo) => {
+                            ready &= self.thumbnails.update(cx, |cache, cx| {
+                                cache.load(&Resource::from(logo.path), window, cx).is_some()
+                            });
+                        }
+                        crate::logo_cache::State::Failed => {}
+                    }
+                }
+            }
+            if ready {
+                ready_pages.push(page);
+            }
+        }
+        ready_pages.sort_unstable();
+        (ready_pages.contains(&(requested / 6)), ready_pages)
+    }
+
     pub(super) fn mosaic_scene(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let games = self.art_scenes.games();
         let width = self.main_content_width(window);
         let height = f32::from(window.viewport_size().height);
-        let selected = self
+        let Some(displayed) = self
+            .art_scenes
             .selected
             .as_ref()
             .and_then(|id| self.art_scenes.position(id))
-            .unwrap_or(0);
-        let page_start = selected / 6 * 6;
+        else {
+            return div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(Spinner::new())
+                .into_any_element();
+        };
+        let page_start = displayed / 6 * 6;
         let page_count = games.len().div_ceil(6);
         let page_size = (games.len() - page_start).min(6);
         let mut stage = div()
+            .image_cache(self.thumbnails.clone())
             .id("mosaic-composition")
             .size_full()
             .relative()
@@ -316,8 +379,14 @@ impl LauncherView {
                             .flex()
                             .items_center()
                             .gap_5()
-                            .child(self.composition_heading(game, logo_width, logo_height, cx))
-                            .when(index == selected, |caption| {
+                            .child(self.composition_heading(
+                                game,
+                                logo_width,
+                                logo_height,
+                                window,
+                                cx,
+                            ))
+                            .when(index == displayed, |caption| {
                                 caption.child(self.composition_play(game, false, cx))
                             }),
                     ),
@@ -342,7 +411,7 @@ impl LauncherView {
                         )
                         .child(div().px_3().text_sm().text_color(white()).child(format!(
                             "{} / {}",
-                            selected / 6 + 1,
+                            displayed / 6 + 1,
                             page_count
                         )))
                         .child(
@@ -416,12 +485,19 @@ impl LauncherView {
         game: &Game,
         width: f32,
         height: f32,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if game.artwork.contains_key(&ArtworkKind::Background)
             && let Some(asset) = game.artwork.get(&ArtworkKind::Logo)
             && let crate::logo_cache::State::Ready(logo) =
                 self.logos.update(cx, |cache, cx| cache.load(asset, cx))
+            && self
+                .thumbnails
+                .update(cx, |cache, cx| {
+                    cache.load(&Resource::from(logo.path.clone()), window, cx)
+                })
+                .is_some_and(|image| image.is_ok())
         {
             let scale = (width / logo.width.max(1) as f32).min(height / logo.height.max(1) as f32);
             return img(logo.path)

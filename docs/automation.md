@@ -179,6 +179,21 @@ macOS/VM workflow; do not test them on the working desktop through this driver.
 
 #### Artwork-design revision verification
 
+The next presentation pass removes Book's top/bottom alpha borders and replaces
+block-like brush noise with continuous directional bristle coverage. Mosaic now
+prepares the requested, displayed and adjacent screens (at most four screens / 24
+artworks), with two artwork decodes in flight. It also prepares normalized logos
+and their native image-cache entries. A cold destination does not replace the
+displayed screen until all of its artwork and logo loads have settled; failed
+loads use the existing fallbacks. The initial empty screen uses a loading state.
+
+This pass's private report is
+`/private/var/folders/3g/vsqpcg555g1ftv2w9765vnzh0000gn/T/opencode/rev.WMgoUd/report.json`.
+It verified initial warm pages `[0,1,7]`, an already-ready next screen, and a
+rapid cold jump to screen 4 that retained complete screen 1 until screen 4 was
+ready. The Book capture checks the unbordered top/bottom and revised side brush.
+All inspected windows remained inactive and both sessions exited cleanly.
+
 The follow-up revision removes Editorial's enum and fallback entirely, defaults
 control outlines off, and retains interrupted Wall shade fades. Book banners are
 framed around a bounded detail analysis rather than substituted with portrait
