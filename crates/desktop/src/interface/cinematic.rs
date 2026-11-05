@@ -200,6 +200,7 @@ impl LauncherView {
                     )
                     .child(with_accessible_label(
                         Button::new("cinematic-play")
+                            .group("cinematic-launch")
                             .custom(cinematic_variant(accent, cx))
                             .h(px(30.))
                             .px_0()
@@ -210,6 +211,9 @@ impl LauncherView {
                                     .flex()
                                     .items_center()
                                     .gap_3()
+                                    .group_hover("cinematic-launch", |style| {
+                                        style.text_color(accent.blend(white().alpha(0.4)))
+                                    })
                                     .child(
                                         Icon::default()
                                             .path("icons/cinematic-play.svg")
@@ -357,8 +361,8 @@ impl LauncherView {
 fn cinematic_variant(accent: Hsla, cx: &App) -> ButtonCustomVariant {
     ButtonCustomVariant::new(cx)
         .foreground(accent)
-        .hover(white().alpha(0.07))
-        .active(white().alpha(0.12))
+        .hover(transparent_black())
+        .active(transparent_black())
 }
 
 #[cfg(test)]
