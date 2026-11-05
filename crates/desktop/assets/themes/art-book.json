@@ -1,8 +1,8 @@
 {
-  "name": "Editorial",
+  "name": "Art Book",
   "themes": [
     {
-      "name": "Editorial Paper", "mode": "light", "radius": 12, "radius.lg": 18, "shadow": false,
+      "name": "Art Book Paper", "mode": "light", "radius": 12, "radius.lg": 18, "shadow": false,
       "colors": {
         "background": "#f9efdf", "foreground": "#302c27", "border": "#c8bba7", "input.border": "#ac9c85",
         "muted.background": "#efe4d2", "muted.foreground": "#706453",
@@ -21,6 +21,6 @@
         "title_bar.background": "#00000000", "title_bar.border": "#00000000", "overlay": "#302c272a"
       }
     },
-    { "name": "Editorial Paper Alternate", "mode": "dark" }
+    { "name": "Art Book Paper Alternate", "mode": "dark" }
   ]
 }

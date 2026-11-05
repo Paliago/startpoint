@@ -3532,7 +3532,7 @@ mod tests {
     }
 
     #[test]
-    fn editorial_recents_defaults_compatibly_and_preserves_carousel_preferences() {
+    fn recents_layout_defaults_and_round_trips_without_changing_carousel_preferences() {
         use startpoint_sdk::RecentsLayout;
         let old: AppearanceSettings = serde_json::from_value(serde_json::json!({
             "theme": "Custom", "mode": "dark", "recents_activity": true,
@@ -3541,7 +3541,6 @@ mod tests {
         .unwrap();
         assert_eq!(old.recents_layout, RecentsLayout::Carousel);
         for recents_layout in [
-            RecentsLayout::Editorial,
             RecentsLayout::Carousel,
             RecentsLayout::Gallery,
             RecentsLayout::Cinematic,
@@ -3559,7 +3558,6 @@ mod tests {
             assert_eq!(
                 document["recents_layout"],
                 match recents_layout {
-                    RecentsLayout::Editorial => "editorial",
                     RecentsLayout::Carousel => "carousel",
                     RecentsLayout::Gallery => "gallery",
                     RecentsLayout::Cinematic => "cinematic",
@@ -3726,7 +3724,7 @@ mod tests {
                         dither_artwork_strength: 0.35,
                         dither_artwork_size: 3.,
                         start_screen: StartScreen::Recents,
-                        recents_layout: startpoint_sdk::RecentsLayout::Editorial,
+                        recents_layout: startpoint_sdk::RecentsLayout::ArtBook,
                         pause_in_background: false,
                         dither_recents: true,
                         dither_recents_strength: 0.08,
@@ -4096,7 +4094,7 @@ mod tests {
                 dither_artwork_strength: 0.35,
                 dither_artwork_size: 3.,
                 start_screen: StartScreen::Recents,
-                recents_layout: startpoint_sdk::RecentsLayout::Editorial,
+                recents_layout: startpoint_sdk::RecentsLayout::ArtBook,
                 pause_in_background: false,
                 dither_recents: true,
                 dither_recents_strength: 0.08,

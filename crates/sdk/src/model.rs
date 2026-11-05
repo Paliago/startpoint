@@ -307,8 +307,6 @@ impl LibraryLayout {
 pub enum RecentsLayout {
     #[default]
     Carousel,
-    /// Retained only to read older preferences; the interface falls back to Classic.
-    Editorial,
     Gallery,
     Cinematic,
     InfiniteWall,
@@ -322,7 +320,6 @@ impl RecentsLayout {
     pub fn label(self) -> &'static str {
         match self {
             Self::Carousel => "Carousel",
-            Self::Editorial => "Editorial Recents",
             Self::Gallery => "Gallery",
             Self::Cinematic => "Cinematic",
             Self::InfiniteWall => "Infinite Wall",

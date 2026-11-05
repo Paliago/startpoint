@@ -19,10 +19,7 @@ impl LauncherView {
         let owner = cx.weak_entity();
         choice_dropdown(
             "recents-layout",
-            match self.appearance.recents_layout {
-                RecentsLayout::Editorial => RecentsLayout::Carousel,
-                layout => layout,
-            },
+            self.appearance.recents_layout,
             [
                 RecentsLayout::Carousel,
                 RecentsLayout::Gallery,

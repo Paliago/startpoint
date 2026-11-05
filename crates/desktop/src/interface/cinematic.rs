@@ -601,7 +601,6 @@ mod tests {
         window.update(|view, window, cx| {
             for recents_layout in [
                 RecentsLayout::Carousel,
-                RecentsLayout::Editorial,
                 RecentsLayout::Gallery,
                 RecentsLayout::Cinematic,
             ] {

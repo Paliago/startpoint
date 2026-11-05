@@ -67,12 +67,12 @@ const NATIVE_FONT: &str = if cfg!(target_os = "windows") {
 } else {
     "Avenir Next"
 };
-const EDITORIAL_BODY: &str = if cfg!(target_os = "windows") {
+const ARTWORK_BODY: &str = if cfg!(target_os = "windows") {
     "Segoe UI"
 } else {
     "Avenir Next"
 };
-const EDITORIAL_DISPLAY: &str = if cfg!(target_os = "windows") {
+const ARTWORK_DISPLAY: &str = if cfg!(target_os = "windows") {
     "Georgia"
 } else {
     "Baskerville"
@@ -105,11 +105,11 @@ pub(crate) const BOOK_PAPER: Profile = Profile {
     recents: RecentPresentation::ArtBook,
     recent_count: usize::MAX,
     palette: PaletteSource::Builtin {
-        source: include_str!("../assets/themes/editorial.json"),
+        source: include_str!("../assets/themes/art-book.json"),
         mode: ThemeMode::Light,
     },
-    body_font: EDITORIAL_BODY,
-    display_font: EDITORIAL_DISPLAY,
+    body_font: ARTWORK_BODY,
+    display_font: ARTWORK_DISPLAY,
     native_translucency: false,
     sidebar_pages: &[
         StartScreen::Recents,
@@ -136,8 +136,8 @@ pub(crate) const GALLERY: Profile = Profile {
         source: include_str!("../assets/themes/gallery.json"),
         mode: ThemeMode::Dark,
     },
-    body_font: EDITORIAL_BODY,
-    display_font: EDITORIAL_DISPLAY,
+    body_font: ARTWORK_BODY,
+    display_font: ARTWORK_DISPLAY,
     native_translucency: false,
     sidebar_pages: &[],
     sidebar_in_settings: false,
@@ -213,7 +213,6 @@ impl Profile {
 pub(crate) fn resolve(settings: &AppearanceSettings) -> &'static Profile {
     match settings.recents_layout {
         RecentsLayout::Carousel => &CLASSIC,
-        RecentsLayout::Editorial => &CLASSIC,
         RecentsLayout::Gallery => &GALLERY,
         RecentsLayout::Cinematic => &CINEMATIC,
         RecentsLayout::InfiniteWall => &INFINITE_WALL,
@@ -244,7 +243,7 @@ mod tests {
     #[test]
     fn profile_resolution_is_page_independent_and_does_not_mutate_preferences() {
         let settings = AppearanceSettings {
-            recents_layout: RecentsLayout::Editorial,
+            recents_layout: RecentsLayout::Carousel,
             theme: "Custom".into(),
             sidebar_visible: true,
             ..Default::default()

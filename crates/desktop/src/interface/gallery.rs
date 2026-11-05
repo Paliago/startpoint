@@ -688,7 +688,6 @@ mod tests {
             assert!(view.selected.is_none());
             view.switch_screen(StartScreen::Recents, window, cx);
             for recents_layout in [
-                RecentsLayout::Editorial,
                 RecentsLayout::Carousel,
                 RecentsLayout::Gallery,
             ] {

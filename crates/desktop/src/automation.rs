@@ -149,9 +149,6 @@ mod runtime {
                     let value = arguments.next().ok_or("Missing layout name")?;
                     let chosen = serde_json::from_value(Value::String(value))
                         .map_err(|error| format!("Invalid automation layout: {error}"))?;
-                    if chosen == RecentsLayout::Editorial {
-                        return Err("Editorial has been removed; use carousel".into());
-                    }
                     layout = Some(chosen);
                 }
                 "--automation-render-background" => render_background = true,
