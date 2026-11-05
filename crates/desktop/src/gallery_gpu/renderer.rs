@@ -8,7 +8,7 @@ use gpui::RenderImage;
 use image::{Frame, RgbaImage};
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-const LAYERS: u32 = 8;
+const LAYERS: u32 = 16;
 const ART_WIDTH: u32 = 512;
 const ART_HEIGHT: u32 = 768;
 const MIPS: u32 = 10;
@@ -290,7 +290,7 @@ impl Renderer {
                     })
                     .min_by_key(|(_, layer)| layer.as_ref().unwrap().touched)
                     .map(|(slot, _)| slot)
-                    .expect("eight layers hold at most seven visible works")
+                    .expect("texture layers hold the bounded visible and prefetched working set")
             });
         let artwork = match &key {
             ArtKey::File(path) => image::open(path).ok(),
@@ -363,6 +363,28 @@ impl Renderer {
 
     pub fn release_targets(&mut self) {
         self.targets = None;
+    }
+
+    pub fn prefetch(&mut self, scene: &Scene, allowed: &impl Fn() -> bool) {
+        let key = |cover: &super::scene::Cover| {
+            cover
+                .path
+                .clone()
+                .map(ArtKey::File)
+                .unwrap_or_else(|| ArtKey::Placeholder(cover.id.0.clone()))
+        };
+        let pinned = scene
+            .covers
+            .iter()
+            .chain(&scene.prefetch)
+            .map(key)
+            .collect::<Vec<_>>();
+        for cover in &scene.prefetch {
+            if !allowed() {
+                break;
+            }
+            self.layer(key(cover), &pinned);
+        }
     }
 
     pub fn render_if_current(

@@ -23,6 +23,7 @@ pub struct Scene {
     pub logical_height: f32,
     pub camera: Camera,
     pub covers: Vec<Cover>,
+    pub prefetch: Vec<Cover>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -72,6 +73,7 @@ impl Scene {
                 shift,
             },
             covers: covers.into_iter().take(MAX_COVERS).collect(),
+            prefetch: Vec::new(),
         }
     }
 

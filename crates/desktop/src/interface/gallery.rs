@@ -1,5 +1,6 @@
 use super::*;
 use crate::gallery::{self as exhibition, Layout, Placement};
+use gpui::ImageCache;
 use gpui_component::button::ButtonCustomVariant;
 
 impl LauncherView {
@@ -27,13 +28,13 @@ impl LauncherView {
         }
         if self.snapshot.ready && count > 0 {
             let position = self.gallery_motion.position(now);
-            let covers = self
+            let nearby = self
                 .displayed_games()
                 .into_iter()
                 .enumerate()
                 .filter_map(|(index, game)| {
                     let offset = exhibition::relative(index, position, count);
-                    (offset.abs() < 3.).then(|| crate::gallery_gpu::scene::Cover {
+                    (offset.abs() < 6.).then(|| crate::gallery_gpu::scene::Cover {
                         id: game.id.clone(),
                         path: game
                             .artwork
@@ -42,12 +43,27 @@ impl LauncherView {
                         offset,
                     })
                 })
-                .collect();
-            let scene = crate::gallery_gpu::scene::Scene::new(
+                .collect::<Vec<_>>();
+            self.full_resolution_images.update(cx, |cache, cx| {
+                for cover in &nearby {
+                    if let Some(path) = &cover.path {
+                        let _ = cache.load(&Resource::from(path.clone()), window, cx);
+                    }
+                }
+            });
+            let mut scene = crate::gallery_gpu::scene::Scene::new(
                 self.main_content_width(window),
                 f32::from(window.viewport_size().height),
-                covers,
+                nearby
+                    .iter()
+                    .filter(|cover| cover.offset.abs() < 3.)
+                    .cloned()
+                    .collect(),
             );
+            scene.prefetch = nearby
+                .into_iter()
+                .filter(|cover| cover.offset.abs() >= 3.)
+                .collect();
             self.gallery_gpu
                 .update(cx, |gpu, cx| gpu.request(scene, window, cx));
         }
@@ -146,6 +162,11 @@ impl LauncherView {
             stage = stage.child(self.gallery_cover(game, index, placement, frame.is_some(), cx));
         }
         let title = game.title().to_string();
+        let action = if game.last_launched.is_some() {
+            "Continue"
+        } else {
+            "Play"
+        };
         let launch_id = game.id.clone();
         stage
             .child(
@@ -179,25 +200,10 @@ impl LauncherView {
                     .flex()
                     .justify_center()
                     .child(with_accessible_label(
-                        Button::new("gallery-play")
-                            .custom(
-                                ButtonCustomVariant::new(cx)
-                                    .foreground(cx.theme().foreground)
-                                    .hover(cx.theme().foreground.alpha(0.07))
-                                    .active(cx.theme().foreground.alpha(0.12)),
-                            )
-                            .w(px(112.))
-                            .h(px(34.))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(cx.theme().foreground.alpha(0.65))
-                            .child(
-                                div()
-                                    .font_family(self.design().display_font)
-                                    .text_size(px(18.))
-                                    .font_weight(FontWeight::NORMAL)
-                                    .child("Play"),
-                            )
+                        button("gallery-play", cx)
+                            .primary()
+                            .icon(IconName::Play)
+                            .label(action)
                             .disabled(
                                 !(game.available || game.has_launch_override())
                                     || self.collection_overlay_open(),
@@ -212,7 +218,7 @@ impl LauncherView {
                                     );
                                 }
                             })),
-                        format!("Play {}", game.title()),
+                        format!("{action} {}", game.title()),
                     )),
             )
             .when(

@@ -165,7 +165,7 @@ impl GalleryGpu {
                         let result = renderer
                             .as_mut()
                             .unwrap()
-                            .render_if_current(request.scene, &allowed);
+                            .render_if_current(request.scene.clone(), &allowed);
                         let failed = result.is_err();
                         let frame = match result {
                             Ok(Some(frame)) => Some(Ok(frame)),
@@ -184,6 +184,13 @@ impl GalleryGpu {
                         }
                         if failed {
                             break;
+                        }
+                        if let Some(renderer) = &mut renderer {
+                            renderer.prefetch(&request.scene, &|| {
+                                let state =
+                                    worker_mailbox.0.lock().unwrap_or_else(|e| e.into_inner());
+                                state.current(request.generation) && state.pending.is_none()
+                            });
                         }
                     }
                 }));
