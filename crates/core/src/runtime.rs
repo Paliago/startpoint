@@ -3552,8 +3552,6 @@ mod tests {
             RecentsLayout::Cinematic,
             RecentsLayout::InfiniteWall,
             RecentsLayout::FilmReel,
-            RecentsLayout::ArtBook,
-            RecentsLayout::Diagonal,
             RecentsLayout::Mosaic,
         ] {
             let chosen = AppearanceSettings {
@@ -3569,8 +3567,6 @@ mod tests {
                     RecentsLayout::Cinematic => "cinematic",
                     RecentsLayout::InfiniteWall => "infinite_wall",
                     RecentsLayout::FilmReel => "film_reel",
-                    RecentsLayout::ArtBook => "art_book",
-                    RecentsLayout::Diagonal => "diagonal",
                     RecentsLayout::Mosaic => "mosaic",
                 }
             );
@@ -3730,7 +3726,7 @@ mod tests {
                         dither_artwork_strength: 0.35,
                         dither_artwork_size: 3.,
                         start_screen: StartScreen::Recents,
-                        recents_layout: startpoint_sdk::RecentsLayout::ArtBook,
+                        recents_layout: startpoint_sdk::RecentsLayout::Gallery,
                         pause_in_background: false,
                         dither_recents: true,
                         dither_recents_strength: 0.08,
@@ -4100,7 +4096,7 @@ mod tests {
                 dither_artwork_strength: 0.35,
                 dither_artwork_size: 3.,
                 start_screen: StartScreen::Recents,
-                recents_layout: startpoint_sdk::RecentsLayout::ArtBook,
+                recents_layout: startpoint_sdk::RecentsLayout::Gallery,
                 pause_in_background: false,
                 dither_recents: true,
                 dither_recents_strength: 0.08,

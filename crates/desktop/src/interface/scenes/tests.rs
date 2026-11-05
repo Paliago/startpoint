@@ -2,36 +2,6 @@ use super::*;
 use startpoint_sdk::{ApiError, ApplicationApi, ApplicationPaths, SettingsSnapshot};
 use std::sync::Mutex;
 
-#[::core::prelude::v1::test]
-fn book_pages_follow_browsing_direction_and_reverse_without_jumping() {
-    let now = Instant::now();
-    let mut state = scene::State::default();
-    let mut first = sample_library_game();
-    first.id = GameId("first".into());
-    let mut second = first.clone();
-    second.id = GameId("second".into());
-    state.select(&first, 0, 5, Mode::Book, false, now);
-    state.select(&second, 1, 5, Mode::Book, false, now);
-    assert_eq!(state.book_direction, 1.);
-    let mid = now + Duration::from_millis(140);
-    let before = scene::book_tear_front(1280., state.page.value(mid), state.book_direction);
-    state.select(&first, 0, 5, Mode::Book, false, mid);
-    let after = scene::book_tear_front(1280., state.page.value(mid), state.book_direction);
-    assert!((before - after).abs() < 0.001);
-    assert_eq!(scene::book_tear_front(800., 0., 1.), 800.);
-    assert_eq!(scene::book_tear_front(800., 1., 1.), 0.);
-    state.select(
-        &second,
-        4,
-        5,
-        Mode::Book,
-        true,
-        now + Duration::from_secs(2),
-    );
-    assert_eq!(state.book_direction, -1.);
-    assert_eq!(state.page.value(now + Duration::from_secs(2)), 1.);
-}
-
 struct Api {
     snapshot: Snapshot,
     launched: Mutex<Vec<GameId>>,
@@ -243,54 +213,8 @@ fn three_scenes_keep_identity_reversible_previews_and_single_launch_dispatch() {
         2,
         "Escape cancels a pending launch"
     );
-    window.update(|view, window, cx| {
-        view.set_appearance(
-            AppearanceSettings {
-                recents_layout: RecentsLayout::ArtBook,
-                ..view.appearance.clone()
-            },
-            window,
-            cx,
-        )
-    });
-    window.draw();
-    window.update(|view, _, _| view.art_scenes.overview.snap(1.));
-    window.draw();
-    let third = window.update(|view, window, _| {
-        WallLayout::new(
-            view.main_content_width(window),
-            f32::from(window.viewport_size().height),
-        )
-        .rect(2, 0.)
-    });
-    window.simulate_click(
-        point(px(third.x + third.w / 2.), px(third.y + third.h / 2.)),
-        MouseButton::Left,
-    );
-    window.draw();
-    window.read(|view, _| {
-        assert_eq!(view.selected.as_ref().unwrap().0, "scene:2");
-        assert_eq!(view.art_scenes.overview.target, 0.);
-        assert_eq!(view.design().shell, crate::design::Shell::ToolbarIslands);
-    });
-    window.read(|_, cx| assert!(scene::material::chrome(cx).is_some()));
-    window.update(|view, window, cx| view.open_settings(&OpenSettings, window, cx));
-    window.draw();
-    window.read(|_, cx| {
-        assert!(
-            scene::material::chrome(cx).is_none(),
-            "artwork palette must not leak into Settings"
-        )
-    });
-    window.update(|view, window, cx| view.dismiss(&DismissPanel, window, cx));
-    window.draw();
-    window.read(|_, cx| assert!(scene::material::chrome(cx).is_some()));
-    assert_eq!(
-        api.launched.lock().unwrap().len(),
-        2,
-        "overview selects a page without launching"
-    );
-    for layout in [RecentsLayout::Diagonal, RecentsLayout::Mosaic] {
+    {
+        let layout = RecentsLayout::Mosaic;
         window.update(|view, window, cx| {
             view.set_appearance(
                 AppearanceSettings {
@@ -310,17 +234,10 @@ fn three_scenes_keep_identity_reversible_previews_and_single_launch_dispatch() {
                 .iter()
                 .position(|game| view.selected.as_ref() == Some(&game.id))
                 .unwrap();
-            if layout == RecentsLayout::Diagonal {
-                (
-                    point(px(width * 0.1), px(height * 0.55)),
-                    games[(current + games.len() - 1) % games.len()].id.clone(),
-                )
-            } else {
-                (
-                    point(px(width * 0.8), px(height * 0.15)),
-                    games[current / 6 * 6 + 1].id.clone(),
-                )
-            }
+            (
+                point(px(width * 0.8), px(height * 0.15)),
+                games[current / 6 * 6 + 1].id.clone(),
+            )
         });
         let launches = api.launched.lock().unwrap().len();
         window.simulate_click(position, MouseButton::Left);

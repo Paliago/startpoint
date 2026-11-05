@@ -1,6 +1,5 @@
-//! Pure geometry and pause-aware, monotonic motion for Wall, Reel and Art Book.
+//! Pure geometry and pause-aware motion for artwork scenes.
 pub(crate) mod composition;
-pub(crate) mod material;
 use startpoint_sdk::{Game, GameId};
 use std::time::{Duration, Instant};
 use std::{collections::BTreeMap, sync::Arc};
@@ -28,8 +27,6 @@ impl std::ops::Index<usize> for Games<'_> {
 pub(crate) enum Mode {
     Wall,
     Reel,
-    Book,
-    Diagonal,
     Mosaic,
 }
 
@@ -128,7 +125,6 @@ pub(crate) struct State {
     pub count: usize,
     pub index: Tween,
     pub page: Tween,
-    pub book_direction: f32,
     pub composition_pointer: Option<GameId>,
     pub mosaic_ready_pages: Vec<usize>,
     pub scroll: Tween,
@@ -137,8 +133,6 @@ pub(crate) struct State {
     shade: Tween,
     pub hovered: Option<GameId>,
     hover_from: f32,
-    pub overview: Tween,
-    pub underline: Tween,
     pub focus: Option<Focus>,
     pub ambient: crate::cinematic::Scene,
     pub drift: crate::artwork_motion::FlowClock,
@@ -197,23 +191,6 @@ impl State {
             return;
         }
         let initial = self.selected.is_none() || self.count != count;
-        let reverse_page = mode == Mode::Book
-            && self
-                .previous
-                .as_ref()
-                .is_some_and(|previous| previous.id == game.id)
-            && self.page.active(now);
-        let page_start = if reverse_page {
-            1. - self.page.value(now)
-        } else {
-            0.
-        };
-        let direction = crate::gallery::relative(index, self.index.target, count).signum();
-        self.book_direction = if reverse_page {
-            -self.book_direction
-        } else {
-            direction
-        };
         self.previous = self.current.take();
         self.current = Some(game.clone());
         self.selected = Some(game.id.clone());
@@ -228,23 +205,12 @@ impl State {
                 self.index.snap(index as f32);
                 self.page.snap(1.);
                 return;
-            } else if matches!(mode, Mode::Book | Mode::Diagonal) {
-                self.index.snap(index as f32);
             } else {
                 self.index
                     .set(position + delta, Duration::from_millis(500), reduced, now);
             }
-            self.page.snap(page_start);
-            self.page.set(
-                1.,
-                Duration::from_millis(if matches!(mode, Mode::Book | Mode::Diagonal) {
-                    280
-                } else {
-                    500
-                }),
-                reduced,
-                now,
-            );
+            self.page.snap(0.);
+            self.page.set(1., Duration::from_millis(500), reduced, now);
         }
     }
     pub fn hover(&mut self, id: Option<GameId>, reduced: bool, now: Instant) {
@@ -296,8 +262,6 @@ impl State {
             &mut self.scroll,
             &mut self.hover,
             &mut self.shade,
-            &mut self.overview,
-            &mut self.underline,
         ] {
             tween.pause(paused, now);
         }
@@ -320,8 +284,6 @@ impl State {
             &self.scroll,
             &self.hover,
             &self.shade,
-            &self.overview,
-            &self.underline,
         ]
         .iter()
         .any(|t| t.active(now))
@@ -362,11 +324,6 @@ impl State {
             focus
                 .amount
                 .set(0., Duration::from_millis(420), reduced, now);
-            return true;
-        }
-        if self.overview.target > 0. {
-            self.overview
-                .set(0., Duration::from_millis(400), reduced, now);
             return true;
         }
         false
@@ -437,43 +394,9 @@ pub(crate) fn wall_shade(emphasis: f32) -> f32 {
     emphasis.clamp(0., 1.) * 0.20
 }
 
-pub(crate) fn book_tear_front(width: f32, progress: f32, direction: f32) -> f32 {
-    width
-        * if direction >= 0. {
-            1. - progress
-        } else {
-            progress
-        }
-}
-
 pub(crate) fn hero_mix(expansion: f32, decoded: f32) -> f32 {
     let t = ((expansion - 0.12) / 0.70).clamp(0., 1.);
     t * t * (3. - 2. * t) * decoded
-}
-
-pub(crate) struct Paper;
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum PaperLayer {
-    Sheet,
-    Grain,
-}
-impl gpui::Asset for Paper {
-    type Source = PaperLayer;
-    type Output = std::sync::Arc<gpui::RenderImage>;
-    fn load(
-        layer: PaperLayer,
-        _: &mut gpui::App,
-    ) -> impl std::future::Future<Output = Self::Output> + Send + 'static {
-        async move {
-            let pixels = image::RgbaImage::from_fn(1536, 1024, |x, y| {
-                let [r, g, b, a] = material::paper_pixel(x, y, layer);
-                let premultiply =
-                    |channel| u8::try_from(u32::from(channel) * u32::from(a) / 255).unwrap_or(255);
-                image::Rgba([premultiply(b), premultiply(g), premultiply(r), a])
-            });
-            std::sync::Arc::new(gpui::RenderImage::new([image::Frame::new(pixels)]))
-        }
-    }
 }
 
 #[cfg(test)]

@@ -26,8 +26,6 @@ impl LauncherView {
                 RecentsLayout::Cinematic,
                 RecentsLayout::InfiniteWall,
                 RecentsLayout::FilmReel,
-                RecentsLayout::ArtBook,
-                RecentsLayout::Diagonal,
                 RecentsLayout::Mosaic,
             ]
             .into_iter()

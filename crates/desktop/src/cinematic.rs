@@ -19,16 +19,6 @@ pub(crate) enum ArtworkKey {
     Landscape(PathBuf),
     SoftCover(PathBuf),
     Portrait(PathBuf),
-    Book {
-        background: Option<PathBuf>,
-        cover: Option<PathBuf>,
-    },
-    Diagonal {
-        path: PathBuf,
-        width: u16,
-        height: u16,
-        slot: u8,
-    },
 }
 
 pub(crate) fn artwork_key(game: &Game) -> Option<ArtworkKey> {
@@ -46,14 +36,12 @@ pub(crate) fn artwork_key(game: &Game) -> Option<ArtworkKey> {
 pub(crate) struct Artwork {
     pub image: Option<Arc<RenderImage>>,
     pub accent: [f32; 3],
-    pub luminance: f32,
 }
 impl Default for Artwork {
     fn default() -> Self {
         Self {
             image: None,
             accent: NEUTRAL_ACCENT,
-            luminance: 0.5,
         }
     }
 }
@@ -148,42 +136,17 @@ impl Asset for ArtworkAsset {
         _: &mut App,
     ) -> impl std::future::Future<Output = Artwork> + Send + 'static {
         async move {
-            let (path, soften, portrait, book, diagonal) = match key {
-                ArtworkKey::Landscape(path) => (path, false, false, false, None),
-                ArtworkKey::SoftCover(path) => (path, true, false, false, None),
-                ArtworkKey::Portrait(path) => (path, false, true, false, None),
-                ArtworkKey::Book { background, cover } => {
-                    let path = background
-                        .filter(|path| image::image_dimensions(path).is_ok())
-                        .or(cover);
-                    let Some(path) = path else {
-                        return Artwork::default();
-                    };
-                    (path, false, false, true, None)
-                }
-                ArtworkKey::Diagonal {
-                    path,
-                    width,
-                    height,
-                    slot,
-                } => (path, false, false, false, Some((width, height, slot))),
+            let (path, soften, portrait) = match key {
+                ArtworkKey::Landscape(path) => (path, false, false),
+                ArtworkKey::SoftCover(path) => (path, true, false),
+                ArtworkKey::Portrait(path) => (path, false, true),
             };
             let Ok(source) = image::open(path) else {
                 return Artwork::default();
             };
             let sample = source.thumbnail(48, 32).to_rgba8();
             let accent = artwork_accent(&sample);
-            let luminance = sample
-                .pixels()
-                .map(|p| {
-                    (0.2126 * f32::from(p[0]) + 0.7152 * f32::from(p[1]) + 0.0722 * f32::from(p[2]))
-                        / 255.
-                })
-                .sum::<f32>()
-                / (sample.width() * sample.height()).max(1) as f32;
-            let mut pixels = if let Some((width, height, slot)) = diagonal {
-                crate::art_scenes::composition::diagonal_pixels(source, width, height, slot)
-            } else if soften {
+            let mut pixels = if soften {
                 source
                     .resize_to_fill(960, 600, image::imageops::FilterType::Triangle)
                     .blur(24.)
@@ -192,89 +155,26 @@ impl Asset for ArtworkAsset {
                 source
                     .resize(1024, 1536, image::imageops::FilterType::Triangle)
                     .to_rgba8()
-            } else if book {
-                book_pixels(source)
             } else {
                 source
                     .resize(1920, 1200, image::imageops::FilterType::Triangle)
                     .to_rgba8()
             };
-            let (width, height) = pixels.dimensions();
-            for (x, y, pixel) in pixels.enumerate_pixels_mut() {
-                if book {
-                    let coverage = crate::art_scenes::material::brush_coverage(x, y, width, height);
-                    pixel[3] = (u16::from(pixel[3]) * u16::from(coverage) / 255) as u8;
-                }
+            for pixel in pixels.pixels_mut() {
                 let alpha = f32::from(pixel[3]) / 255.;
                 let shade = if soften { 0.48 } else { 1. };
                 for channel in &mut pixel.0[..3] {
                     *channel = (f32::from(*channel) * alpha * shade) as u8;
                 }
-                if diagonal.is_none() && !book {
-                    pixel[3] = 255;
-                }
+                pixel[3] = 255;
                 pixel.0.swap(0, 2); // GPUI's native BGRA texture storage.
             }
             Artwork {
                 image: Some(Arc::new(RenderImage::new([Frame::new(pixels)]))),
                 accent,
-                luminance,
             }
         }
     }
-}
-
-fn book_pixels(source: image::DynamicImage) -> RgbaImage {
-    let source = if source.width() as f64 / f64::from(source.height().max(1)) > 1.8 {
-        let left = book_focal_start(&source);
-        let width = ((source.height() as f32 * 0.94).round() as u32).clamp(1, source.width());
-        source.crop_imm(left.min(source.width() - width), 0, width, source.height())
-    } else {
-        source
-    };
-    source
-        .resize(1440, 1536, image::imageops::FilterType::Triangle)
-        .to_rgba8()
-}
-
-fn book_focal_start(source: &image::DynamicImage) -> u32 {
-    let sample = source.thumbnail(384, 192).blur(0.8).to_rgb8();
-    let width = sample.width();
-    let height = sample.height();
-    if width < 3 || height < 3 {
-        return 0;
-    }
-    let window = ((height as f32 * 0.94).round() as u32).clamp(1, width);
-    let mut columns = vec![0.; width as usize];
-    for x in 1..width - 1 {
-        for y in 1..height - 1 {
-            let left = sample.get_pixel(x - 1, y);
-            let right = sample.get_pixel(x + 1, y);
-            let top = sample.get_pixel(x, y - 1);
-            let bottom = sample.get_pixel(x, y + 1);
-            let detail: f32 = (0..3)
-                .map(|channel| {
-                    f32::from(left[channel].abs_diff(right[channel]))
-                        + f32::from(top[channel].abs_diff(bottom[channel]))
-                })
-                .sum();
-            columns[x as usize] += detail * (0.45 + 0.55 * y as f32 / height as f32);
-        }
-    }
-    let mut energy: f32 = columns[..window as usize].iter().sum();
-    let mut maximum = energy;
-    let mut start = 0;
-    for x in 1..=width - window {
-        energy += columns[(x + window - 1) as usize] - columns[(x - 1) as usize];
-        if energy > maximum {
-            maximum = energy;
-            start = x;
-        }
-    }
-    if maximum < 1. {
-        start = (width - window) / 2;
-    }
-    (u64::from(start) * u64::from(source.width()) / u64::from(width)) as u32
 }
 
 fn artwork_accent(pixels: &RgbaImage) -> [f32; 3] {
@@ -339,14 +239,6 @@ pub(crate) struct Scene {
     duration: Option<Duration>,
 }
 impl Scene {
-    pub fn luminance(&self, now: Instant) -> f32 {
-        let layers = self.layers(now);
-        if layers.is_empty() {
-            0.5
-        } else {
-            layers.iter().map(|l| l.artwork.luminance * l.weight).sum()
-        }
-    }
     pub fn set_duration(&mut self, duration: Duration) {
         self.duration = Some(duration);
     }
@@ -510,25 +402,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn book_framing_tracks_off_center_detail_instead_of_empty_banner_space() {
-        for center in [110, 1030] {
-            let source = image::DynamicImage::ImageRgba8(RgbaImage::from_fn(1200, 400, |x, y| {
-                let detail = x.abs_diff(center) < 55 && (80..320).contains(&y);
-                let value = if detail && ((x / 8 + y / 8) % 2 == 0) {
-                    230
-                } else {
-                    20
-                };
-                image::Rgba([value, value, value, 255])
-            }));
-            let start = book_focal_start(&source);
-            let end = start + 376;
-            assert!(start < center - 50 && end > center + 50);
-            let pixels = book_pixels(source);
-            assert!((pixels.width() as f32 / pixels.height() as f32 - 0.94).abs() < 0.01);
-        }
-    }
-    #[test]
     fn filmstrip_fits_and_reserves_title_space_at_desktop_sizes() {
         for (w, h) in [(960., 620.), (1280., 820.), (1920., 1080.), (2560., 1440.)] {
             let layout = Layout::new(w, h);
@@ -559,7 +432,6 @@ mod tests {
         Artwork {
             image: None,
             accent: color,
-            luminance: 0.5,
         }
     }
     fn key(name: &str) -> Option<ArtworkKey> {

@@ -258,7 +258,6 @@ pub(crate) fn toolbar_surface<T: Styled + IntoElement>(
     material: crate::design::ToolbarMaterial,
     cx: &App,
 ) -> Frosted {
-    let palette = crate::art_scenes::material::chrome(cx);
     Frosted {
         radius: material.radius,
         blur_radius: material.blur_radius,
@@ -266,10 +265,8 @@ pub(crate) fn toolbar_surface<T: Styled + IntoElement>(
         child: panel
             .rounded(px(material.radius))
             .border_0()
-            .bg(palette
-                .map_or(cx.theme().muted, |p| p.paper)
-                .alpha(material.opacity))
-            .text_color(palette.map_or(cx.theme().foreground, |p| p.ink))
+            .bg(cx.theme().muted.alpha(material.opacity))
+            .text_color(cx.theme().foreground)
             .shadow_none()
             .into_any_element(),
     }
@@ -359,14 +356,14 @@ mod tests {
     use super::*;
 
     #[::core::prelude::v1::test]
-    fn art_book_toolbar_islands_blur_without_enabling_paper_panel_or_desktop_blur() {
+    fn gallery_toolbar_islands_blur_without_enabling_panel_or_desktop_blur() {
         let mut app = TestApp::new();
         app.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(crate::theme::Catalog::default());
             crate::appearance::apply(
                 &startpoint_sdk::AppearanceSettings {
-                    recents_layout: startpoint_sdk::RecentsLayout::ArtBook,
+                    recents_layout: startpoint_sdk::RecentsLayout::Gallery,
                     window_translucency: false,
                     backdrop_blur: false,
                     ..Default::default()

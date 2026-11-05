@@ -26,7 +26,7 @@ shared runtime dependency. Do not update only one GPUI package and split types.
 ## Build and launch
 
 For isolated design inspection, add `--automation-layout` with one of `carousel`,
-`gallery`, `cinematic`, `infinite_wall`, `film_reel`, `art_book`, `diagonal`, or
+`gallery`, `cinematic`, `infinite_wall`, `film_reel`, or
 `mosaic`. This overrides only the session's observed appearance, not SQLite
 preferences. Add `--automation-render-background` explicitly to exercise motion
 without activating the window. It overrides only background pausing in this

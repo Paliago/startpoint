@@ -311,8 +311,6 @@ pub enum RecentsLayout {
     Cinematic,
     InfiniteWall,
     FilmReel,
-    ArtBook,
-    Diagonal,
     Mosaic,
 }
 
@@ -324,8 +322,6 @@ impl RecentsLayout {
             Self::Cinematic => "Cinematic",
             Self::InfiniteWall => "Infinite Wall",
             Self::FilmReel => "Film Reel",
-            Self::ArtBook => "Art Book",
-            Self::Diagonal => "Diagonal",
             Self::Mosaic => "Mosaic",
         }
     }

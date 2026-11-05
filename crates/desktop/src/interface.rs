@@ -97,9 +97,8 @@ impl RenderOnce for LauncherTitleBar {
 #[cfg(target_os = "windows")]
 fn windows_window_controls(window: &Window, cx: &App) -> impl IntoElement {
     let maximized = window.is_maximized();
-    let palette = crate::art_scenes::material::chrome(cx);
-    let foreground = palette.map_or(cx.theme().foreground, |p| p.ink);
-    let hover = palette.map_or(cx.theme().tokens.button_hover.color, |p| p.ink.alpha(0.09));
+    let foreground = cx.theme().foreground;
+    let hover = cx.theme().tokens.button_hover.color;
     let active = cx.theme().tokens.button_active.color;
     div()
         .id("windows-window-controls")
@@ -1800,8 +1799,7 @@ impl LauncherView {
     ) {
         let modifiers = event.keystroke.modifiers;
         if self.art_scene_active()
-            && (self.art_scene_mode() == Some(crate::art_scenes::Mode::Wall)
-                || self.art_scenes.overview.target > 0.)
+            && self.art_scene_mode() == Some(crate::art_scenes::Mode::Wall)
             && self.art_scenes.focus.is_none()
             && !self.collection_overlay_open()
             && modifiers.number_of_modifiers() == 0
@@ -2358,9 +2356,7 @@ impl LauncherView {
             current.saturating_sub(1)
         };
         let id = games[index].id.clone();
-        if self.art_scene_mode() == Some(crate::art_scenes::Mode::Wall)
-            || self.art_scenes.overview.target > 0.
-        {
+        if self.art_scene_mode() == Some(crate::art_scenes::Mode::Wall) {
             self.art_scenes.hover(
                 Some(id.clone()),
                 appearance::reduced_motion(),
@@ -2402,8 +2398,6 @@ impl LauncherView {
                 | crate::design::RecentPresentation::Cinematic
                 | crate::design::RecentPresentation::InfiniteWall
                 | crate::design::RecentPresentation::FilmReel
-                | crate::design::RecentPresentation::ArtBook
-                | crate::design::RecentPresentation::Diagonal
                 | crate::design::RecentPresentation::Mosaic
         ) && self.selected.is_some()
             && self.appearance.library_details
@@ -7990,11 +7984,6 @@ impl Render for LauncherView {
         self.prepare_gallery(window, cx);
         self.prepare_cinematic(window, cx);
         self.prepare_art_scenes(window, cx);
-        cx.set_global(crate::art_scenes::material::Chrome(
-            (self.art_scene_active()
-                && self.art_scene_mode() == Some(crate::art_scenes::Mode::Book))
-            .then(|| self.book_palette()),
-        ));
         let slider_values = [
             (
                 self.appearance.translucency_amount,

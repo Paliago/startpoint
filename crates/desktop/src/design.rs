@@ -24,8 +24,6 @@ pub(crate) enum RecentPresentation {
     Cinematic,
     InfiniteWall,
     FilmReel,
-    ArtBook,
-    Diagonal,
     Mosaic,
 }
 
@@ -98,33 +96,6 @@ pub(crate) const CLASSIC: Profile = Profile {
     header_height: crate::window_chrome::HEADER_HEIGHT,
 };
 
-pub(crate) const BOOK_PAPER: Profile = Profile {
-    name: "Art Book",
-    shell: Shell::ToolbarIslands,
-    material: Material::Paper,
-    recents: RecentPresentation::ArtBook,
-    recent_count: usize::MAX,
-    palette: PaletteSource::Builtin {
-        source: include_str!("../assets/themes/art-book.json"),
-        mode: ThemeMode::Light,
-    },
-    body_font: ARTWORK_BODY,
-    display_font: ARTWORK_DISPLAY,
-    native_translucency: false,
-    sidebar_pages: &[
-        StartScreen::Recents,
-        StartScreen::Library,
-        StartScreen::Activity,
-    ],
-    sidebar_in_settings: false,
-    toolbar_material: Some(ToolbarMaterial {
-        opacity: 0.82,
-        blur_radius: 12.,
-        radius: 12.,
-    }),
-    header_height: crate::window_chrome::HEADER_HEIGHT,
-};
-
 pub(crate) const GALLERY: Profile = Profile {
     name: "Gallery",
     shell: Shell::ToolbarIslands,
@@ -167,18 +138,6 @@ pub(crate) const FILM_REEL: Profile = Profile {
     recents: RecentPresentation::FilmReel,
     ..CINEMATIC
 };
-pub(crate) const ART_BOOK: Profile = Profile {
-    name: "Art Book",
-    recents: RecentPresentation::ArtBook,
-    recent_count: usize::MAX,
-    sidebar_pages: &[],
-    ..BOOK_PAPER
-};
-pub(crate) const DIAGONAL: Profile = Profile {
-    name: "Diagonal",
-    recents: RecentPresentation::Diagonal,
-    ..CINEMATIC
-};
 pub(crate) const MOSAIC: Profile = Profile {
     name: "Mosaic",
     recents: RecentPresentation::Mosaic,
@@ -217,8 +176,6 @@ pub(crate) fn resolve(settings: &AppearanceSettings) -> &'static Profile {
         RecentsLayout::Cinematic => &CINEMATIC,
         RecentsLayout::InfiniteWall => &INFINITE_WALL,
         RecentsLayout::FilmReel => &FILM_REEL,
-        RecentsLayout::ArtBook => &ART_BOOK,
-        RecentsLayout::Diagonal => &DIAGONAL,
         RecentsLayout::Mosaic => &MOSAIC,
     }
 }
@@ -259,18 +216,6 @@ mod tests {
     }
 
     #[test]
-    fn book_paper_uses_classic_island_geometry_without_changing_its_palette() {
-        assert_eq!(BOOK_PAPER.shell, CLASSIC.shell);
-        let header = BOOK_PAPER.toolbar_material.unwrap();
-        assert!(header.opacity > 0. && header.opacity < 1.);
-        assert!(header.blur_radius > 0.);
-        assert_eq!(header.radius, 12.);
-        assert_eq!(BOOK_PAPER.material, Material::Paper);
-        assert!(!BOOK_PAPER.native_translucency);
-        assert!(!ART_BOOK.sidebar_allowed(StartScreen::Recents, false));
-    }
-
-    #[test]
     fn gallery_is_an_opaque_dark_exhibition_without_sidebars_or_automatic_advancement() {
         let saved = AppearanceSettings {
             recents_layout: RecentsLayout::Gallery,
@@ -285,7 +230,7 @@ mod tests {
         assert_eq!(profile.header_height, CLASSIC.header_height);
         assert_eq!(
             profile.toolbar_material.unwrap().radius,
-            ART_BOOK.toolbar_material.unwrap().radius
+            CINEMATIC.toolbar_material.unwrap().radius
         );
         assert_eq!(profile.recents, RecentPresentation::Gallery);
         assert_eq!(profile.recent_count, 5);
@@ -329,8 +274,6 @@ mod tests {
                 RecentPresentation::InfiniteWall,
             ),
             (RecentsLayout::FilmReel, RecentPresentation::FilmReel),
-            (RecentsLayout::ArtBook, RecentPresentation::ArtBook),
-            (RecentsLayout::Diagonal, RecentPresentation::Diagonal),
             (RecentsLayout::Mosaic, RecentPresentation::Mosaic),
         ] {
             let settings = AppearanceSettings {
