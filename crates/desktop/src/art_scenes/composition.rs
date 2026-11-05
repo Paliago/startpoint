@@ -16,6 +16,34 @@ pub(crate) fn diagonal_slot(x: f32, y: f32) -> usize {
     }
 }
 
+pub(crate) fn diagonal_bounds(slot: usize, emphasis: f32) -> Rect {
+    let scale = 1. + emphasis * 0.20;
+    let pivot = [0.17, 0.50, 0.83][slot];
+    Rect {
+        x: pivot * (1. - scale),
+        y: 0.5 * (1. - scale),
+        w: scale,
+        h: scale,
+    }
+}
+
+pub(crate) fn diagonal_hit(x: f32, y: f32, emphasis: [f32; 3]) -> usize {
+    let mut order = [0, 1, 2];
+    order.sort_by(|a, b| emphasis[*b].total_cmp(&emphasis[*a]));
+    for slot in order {
+        let rect = diagonal_bounds(slot, emphasis[slot]);
+        let local_x = (x - rect.x) / rect.w;
+        let local_y = (y - rect.y) / rect.h;
+        if (0. ..=1.).contains(&local_x)
+            && (0. ..=1.).contains(&local_y)
+            && diagonal_slot(local_x, local_y) == slot
+        {
+            return slot;
+        }
+    }
+    diagonal_slot(x, y)
+}
+
 pub(crate) fn diagonal_pixels(
     source: DynamicImage,
     width: u16,
@@ -129,6 +157,17 @@ mod tests {
         assert_eq!(diagonal_slot(0.3, 0.), 0);
         assert_eq!(diagonal_slot(0.3, 1.), 1);
         assert_eq!(diagonal_slot(0.8, 1.), 2);
+        assert_eq!(diagonal_hit(0.5, 0.5, [0.; 3]), 1);
+        for slot in 0..3 {
+            let resting = diagonal_bounds(slot, 0.);
+            let expanded = diagonal_bounds(slot, 1.);
+            assert!(expanded.w > resting.w && expanded.h > resting.h);
+            assert!(expanded.x <= resting.x && expanded.y <= resting.y);
+        }
+        let mut expansion = [0.; 3];
+        expansion[0] = 1.;
+        assert_eq!(diagonal_slot(0.245, 0.5), 1);
+        assert_eq!(diagonal_hit(0.245, 0.5, expansion), 0);
     }
 
     #[test]

@@ -52,8 +52,14 @@ impl LauncherView {
         {
             pinned.extend(self.diagonal_keys(current, width, height));
         }
+        if let Some(previous) = &self.art_scenes.previous
+            && self.art_scenes.page.active(Instant::now())
+            && let Some(index) = self.art_scenes.position(&previous.id)
+        {
+            pinned.extend(self.diagonal_keys(index, width, height));
+        }
         self.scene_artwork.update(cx, |cache, cx| {
-            cache.set_capacity(6);
+            cache.set_capacity(9);
             keys.iter()
                 .map(|key| cache.load(key, &pinned, window, cx))
                 .collect()
@@ -92,6 +98,9 @@ impl LauncherView {
             (index + 1) % games.len(),
         ];
         let artworks = self.diagonal_artwork(index, window, cx);
+        let now = Instant::now();
+        let progress = self.art_scenes.page.value(now);
+        let emphasis = indices.map(|index| self.art_scenes.emphasis(&games[index].id, now));
         let mut stage = div()
             .id("diagonal-composition")
             .size_full()
@@ -103,17 +112,42 @@ impl LauncherView {
                 "Diagonal library. Selected: {}. Use Left and Right to browse.",
                 games[index].title()
             ));
-        for (index, art) in indices.iter().zip(artworks) {
+        if progress < 0.999
+            && let Some(previous) = &self.art_scenes.previous
+            && let Some(previous) = self.art_scenes.position(&previous.id)
+        {
+            for art in self.diagonal_artwork(previous, window, cx) {
+                if let Some(image) = art.and_then(|art| art.image) {
+                    stage = stage.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .size_full()
+                            .opacity(1. - progress)
+                            .child(img(image).size_full().object_fit(ObjectFit::Fill)),
+                    );
+                }
+            }
+        }
+        let mut slices = indices.iter().zip(artworks).enumerate().collect::<Vec<_>>();
+        slices.sort_by(|a, b| emphasis[a.0].total_cmp(&emphasis[b.0]));
+        for (slot, (index, art)) in slices {
             if let Some(image) = art.and_then(|art| art.image) {
+                let rect = composition::diagonal_bounds(slot, emphasis[slot]);
+                let arrival = ((progress * 1.2 - slot as f32 * 0.10) / 0.95).clamp(0., 1.);
+                let travel = (1. - arrival) * self.art_scenes.book_direction;
                 stage = stage.child(
-                    div()
-                        .id(("diagonal-artwork", *index))
-                        .absolute()
-                        .inset_0()
-                        .size_full()
-                        .role(Role::Image)
-                        .aria_label(games[*index].title().to_string())
-                        .child(img(image).size_full().object_fit(ObjectFit::Fill)),
+                    positioned(Rect {
+                        x: (rect.x + travel * 0.10) * width,
+                        y: (rect.y - travel * 0.14) * height,
+                        w: rect.w * width,
+                        h: rect.h * height,
+                    })
+                    .id(("diagonal-artwork", *index))
+                    .opacity(arrival)
+                    .role(Role::Image)
+                    .aria_label(games[*index].title().to_string())
+                    .child(img(image).size_full().object_fit(ObjectFit::Fill)),
                 );
             }
         }
@@ -159,25 +193,58 @@ impl LauncherView {
             );
         let ids = indices.map(|index| games[index].id.clone());
         let menu_games = indices.map(|index| games[index].clone());
+        let hover_ids = ids.clone();
         let owner = cx.weak_entity();
         stage
             .cursor_pointer()
+            .on_mouse_move(cx.listener(move |view, event: &MouseMoveEvent, _, cx| {
+                if view.collection_overlay_open() || view.art_scenes.page.active(Instant::now()) {
+                    return;
+                }
+                let slot = composition::diagonal_hit(
+                    f32::from(event.position.x) / width,
+                    f32::from(event.position.y) / height,
+                    emphasis,
+                );
+                let id = hover_ids[slot].clone();
+                if view.art_scenes.hovered.as_ref() != Some(&id) {
+                    let now = Instant::now();
+                    view.art_scenes
+                        .hover(Some(id), appearance::reduced_motion(), now);
+                    view.art_scenes.hover.set(
+                        1.,
+                        Duration::from_millis(160),
+                        appearance::reduced_motion(),
+                        now,
+                    );
+                    cx.notify();
+                }
+            }))
+            .on_hover(cx.listener(|view, hovered: &bool, _, cx| {
+                if !*hovered {
+                    view.art_scenes
+                        .hover(None, appearance::reduced_motion(), Instant::now());
+                    cx.notify();
+                }
+            }))
             .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
                 if view.collection_overlay_open() {
                     return;
                 }
                 let position = event.position();
-                let slot = composition::diagonal_slot(
+                let slot = composition::diagonal_hit(
                     f32::from(position.x) / width,
                     f32::from(position.y) / height,
+                    emphasis,
                 );
                 view.activate_composition(&ids[slot], event.click_count() == 2, window, cx);
             }))
             .context_menu(move |menu, window, cx| {
                 let position = window.mouse_position();
-                let slot = composition::diagonal_slot(
+                let slot = composition::diagonal_hit(
                     f32::from(position.x) / width,
                     f32::from(position.y) / height,
+                    emphasis,
                 );
                 library_game_menu(menu, &menu_games[slot], owner.clone(), cx)
             })

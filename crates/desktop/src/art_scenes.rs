@@ -224,11 +224,11 @@ impl State {
         } else {
             let position = self.index.value(now);
             let delta = crate::gallery::relative(index, position, count);
-            if matches!(mode, Mode::Diagonal | Mode::Mosaic) {
+            if mode == Mode::Mosaic {
                 self.index.snap(index as f32);
                 self.page.snap(1.);
                 return;
-            } else if mode == Mode::Book {
+            } else if matches!(mode, Mode::Book | Mode::Diagonal) {
                 self.index.snap(index as f32);
             } else {
                 self.index
@@ -237,7 +237,11 @@ impl State {
             self.page.snap(page_start);
             self.page.set(
                 1.,
-                Duration::from_millis(if mode == Mode::Book { 280 } else { 500 }),
+                Duration::from_millis(if matches!(mode, Mode::Book | Mode::Diagonal) {
+                    280
+                } else {
+                    500
+                }),
                 reduced,
                 now,
             );
