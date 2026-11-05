@@ -41,10 +41,18 @@ impl LauncherView {
     fn scene_key(game: &Game, mode: Mode) -> Option<crate::cinematic::ArtworkKey> {
         use crate::cinematic::ArtworkKey;
         match mode {
-            Mode::Book => game
-                .artwork
-                .get(&ArtworkKind::Background)
-                .map(|a| ArtworkKey::Book(a.image_path.clone())),
+            Mode::Book => {
+                let background = game
+                    .artwork
+                    .get(&ArtworkKind::Background)
+                    .map(|a| a.image_path.clone());
+                let cover = game
+                    .artwork
+                    .get(&ArtworkKind::Cover)
+                    .map(|a| a.image_path.clone());
+                (background.is_some() || cover.is_some())
+                    .then_some(ArtworkKey::Book { background, cover })
+            }
             Mode::Wall => game
                 .artwork
                 .get(&ArtworkKind::Cover)

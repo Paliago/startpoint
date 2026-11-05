@@ -82,7 +82,7 @@ fn tear_edge(y: f32, seconds: f32) -> f32 {
 fn fitted_artwork(bounds: Bounds<Pixels>, image: &RenderImage) -> Bounds<Pixels> {
     let source = image.size(0);
     let scale = (f32::from(bounds.size.width) / source.width.0 as f32)
-        .max(f32::from(bounds.size.height) / source.height.0 as f32);
+        .min(f32::from(bounds.size.height) / source.height.0 as f32);
     let width = source.width.0 as f32 * scale;
     let height = source.height.0 as f32 * scale;
     Bounds::new(
@@ -107,11 +107,18 @@ pub(crate) fn book_artwork(
         move |bounds, _, window, _| {
             let width = f32::from(bounds.size.width);
             let height = f32::from(bounds.size.height);
-            let artwork = Bounds::new(bounds.origin, size(px(width * 0.65), bounds.size.height));
+            let artwork = Bounds::new(
+                point(
+                    bounds.left() + px(width * 0.02),
+                    bounds.top() + px(height * 0.03),
+                ),
+                size(px(width * 0.59), px(height * 0.94)),
+            );
             if let Some(image) = &current {
+                let fitted = fitted_artwork(artwork, image);
                 let _ = window.paint_image_fitted(
-                    artwork,
-                    fitted_artwork(artwork, image),
+                    fitted,
+                    fitted,
                     Corners::all(px(0.)),
                     image.clone(),
                     0,
@@ -135,14 +142,23 @@ pub(crate) fn book_artwork(
                             point(bounds.left() + px(x), bounds.top() + px(y * height)),
                             size(px(remaining), px(height / 160. + 0.5)),
                         );
-                        let _ = window.paint_image_fitted(
-                            strip,
-                            fitted,
-                            Corners::all(px(0.)),
-                            image.clone(),
-                            0,
-                            false,
-                        );
+                        window.paint_quad(fill(strip, paper));
+                        let left = strip.left().max(fitted.left());
+                        let top = strip.top().max(fitted.top());
+                        let right = strip.right().min(fitted.right());
+                        let bottom = strip.bottom().min(fitted.bottom());
+                        if right > left && bottom > top {
+                            let visible =
+                                Bounds::new(point(left, top), size(right - left, bottom - top));
+                            let _ = window.paint_image_fitted(
+                                visible,
+                                fitted,
+                                Corners::all(px(0.)),
+                                image.clone(),
+                                0,
+                                false,
+                            );
+                        }
                     }
                     if progress > 0.001 && progress < 0.999 {
                         let curl = (std::f32::consts::PI * progress).sin();
@@ -201,6 +217,16 @@ mod tests {
             let y = y as f32 / 100.;
             assert!(tear_edge(y, 8.).abs() < 0.025);
             assert!((tear_edge(y, 8.) - tear_edge(y, 8.001)).abs() < 0.0001);
+        }
+        let area = Bounds::new(point(px(20.), px(30.)), size(px(590.), px(940.)));
+        for (width, height) in [(96, 31), (20, 30), (30, 20)] {
+            let image = RenderImage::new([image::Frame::new(image::RgbaImage::new(width, height))]);
+            let fitted = fitted_artwork(area, &image);
+            assert!(fitted.left() >= area.left() && fitted.right() <= area.right());
+            assert!(fitted.top() >= area.top() && fitted.bottom() <= area.bottom());
+            let ratio = f32::from(fitted.size.width) / f32::from(fitted.size.height);
+            assert!((ratio - width as f32 / height as f32).abs() < 0.0001);
+            assert!((f32::from(fitted.left() + fitted.size.width / 2.) - 315.).abs() < 0.0001);
         }
     }
     #[::core::prelude::v1::test]

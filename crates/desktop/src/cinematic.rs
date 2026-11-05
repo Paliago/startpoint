@@ -19,7 +19,10 @@ pub(crate) enum ArtworkKey {
     Landscape(PathBuf),
     SoftCover(PathBuf),
     Portrait(PathBuf),
-    Book(PathBuf),
+    Book {
+        background: Option<PathBuf>,
+        cover: Option<PathBuf>,
+    },
     Diagonal {
         path: PathBuf,
         width: u16,
@@ -149,7 +152,22 @@ impl Asset for ArtworkAsset {
                 ArtworkKey::Landscape(path) => (path, false, false, false, None),
                 ArtworkKey::SoftCover(path) => (path, true, false, false, None),
                 ArtworkKey::Portrait(path) => (path, false, true, false, None),
-                ArtworkKey::Book(path) => (path, false, false, true, None),
+                ArtworkKey::Book { background, cover } => {
+                    let suitable_background = background.as_ref().is_some_and(|path| {
+                        image::image_dimensions(path).is_ok_and(|(width, height)| {
+                            f64::from(width) / f64::from(height.max(1)) <= 1.8
+                        })
+                    });
+                    let path = if suitable_background {
+                        background.or(cover)
+                    } else {
+                        cover.or(background)
+                    };
+                    let Some(path) = path else {
+                        return Artwork::default();
+                    };
+                    (path, false, false, true, None)
+                }
                 ArtworkKey::Diagonal {
                     path,
                     width,
