@@ -10,6 +10,9 @@ impl LauncherView {
     }
 
     pub(super) fn prepare_cinematic(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.cinematic_active() || self.collection_overlay_open() {
+            self.cinematic_launch_hovered = false;
+        }
         if !self.cinematic_active() || self.render_power.paused() || !self.snapshot.ready {
             return;
         }
@@ -200,8 +203,20 @@ impl LauncherView {
                     )
                     .child(with_accessible_label(
                         Button::new("cinematic-play")
-                            .group("cinematic-launch")
-                            .custom(cinematic_variant(accent, cx))
+                            .custom(cinematic_variant(
+                                if self.cinematic_launch_hovered {
+                                    accent.blend(white().alpha(0.4))
+                                } else {
+                                    accent
+                                },
+                                cx,
+                            ))
+                            .on_hover(cx.listener(|view, hovered: &bool, _, cx| {
+                                if view.cinematic_launch_hovered != *hovered {
+                                    view.cinematic_launch_hovered = *hovered;
+                                    cx.notify();
+                                }
+                            }))
                             .h(px(30.))
                             .px_0()
                             .border_0()
@@ -211,9 +226,6 @@ impl LauncherView {
                                     .flex()
                                     .items_center()
                                     .gap_3()
-                                    .group_hover("cinematic-launch", |style| {
-                                        style.text_color(accent.blend(white().alpha(0.4)))
-                                    })
                                     .child(
                                         Icon::default()
                                             .path("icons/cinematic-play.svg")
@@ -518,6 +530,12 @@ mod tests {
                 px(layout.title_top + layout.title_size * 1.25 + 27.),
             )
         });
+        window.simulate_mouse_move(play);
+        window.draw();
+        window.read(|view, _| assert!(view.cinematic_launch_hovered));
+        window.simulate_mouse_move(point(px(700.), px(100.)));
+        window.draw();
+        window.read(|view, _| assert!(!view.cinematic_launch_hovered));
         window.simulate_click(play, MouseButton::Left);
         assert_eq!(api.launched.lock().unwrap().last().unwrap().0, "cinema:1");
         window.simulate_keystroke("right");

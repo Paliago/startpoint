@@ -17,6 +17,14 @@ impl LauncherView {
             "gameCount": snapshot.games.len(), "jobs": snapshot.jobs.iter().map(crate::automation::job_status).collect::<Vec<_>>(),
             "paths": {"data": snapshot.paths.data_directory, "cache": snapshot.paths.cache_directory},
             "renderPaused": self.render_power.paused(), "sidebarWidth": self.appearance.sidebar_width,
+            "cinematicLaunchHovered": self.cinematic_launch_hovered,
+            "scene": {
+                "presentedGame": self.art_scenes.selected,
+                "progress": self.art_scenes.page.value(Instant::now()),
+                "hoveredGame": self.art_scenes.hovered,
+                "hoverAmount": self.art_scenes.hovered.as_ref().map_or(0., |id| self.art_scenes.emphasis(id, Instant::now())),
+                "gpuReady": self.gallery_gpu.read(cx).frame().is_some()
+            },
             "appearance": self.appearance,
             "draft": {
                 "title": self.title.read(cx).value().to_string(),

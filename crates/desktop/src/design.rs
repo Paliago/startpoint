@@ -55,7 +55,6 @@ pub(crate) struct Profile {
     pub palette: PaletteSource,
     pub body_font: &'static str,
     pub display_font: &'static str,
-    pub ambient_motion: bool,
     pub native_translucency: bool,
     pub sidebar_pages: &'static [StartScreen],
     pub sidebar_in_settings: bool,
@@ -88,7 +87,6 @@ pub(crate) const CLASSIC: Profile = Profile {
     palette: PaletteSource::Authored,
     body_font: NATIVE_FONT,
     display_font: NATIVE_FONT,
-    ambient_motion: false,
     native_translucency: true,
     sidebar_pages: &[
         StartScreen::Recents,
@@ -112,7 +110,6 @@ pub(crate) const BOOK_PAPER: Profile = Profile {
     },
     body_font: EDITORIAL_BODY,
     display_font: EDITORIAL_DISPLAY,
-    ambient_motion: true,
     native_translucency: false,
     sidebar_pages: &[
         StartScreen::Recents,
@@ -141,7 +138,6 @@ pub(crate) const GALLERY: Profile = Profile {
     },
     body_font: EDITORIAL_BODY,
     display_font: EDITORIAL_DISPLAY,
-    ambient_motion: false,
     native_translucency: false,
     sidebar_pages: &[],
     sidebar_in_settings: false,
@@ -176,7 +172,6 @@ pub(crate) const ART_BOOK: Profile = Profile {
     recents: RecentPresentation::ArtBook,
     recent_count: usize::MAX,
     sidebar_pages: &[],
-    ambient_motion: false,
     ..BOOK_PAPER
 };
 pub(crate) const DIAGONAL: Profile = Profile {
@@ -210,16 +205,6 @@ impl Profile {
 
     pub fn sidebar_allowed(&self, screen: StartScreen, settings_open: bool) -> bool {
         self.sidebar_pages.contains(&screen) && (!settings_open || self.sidebar_in_settings)
-    }
-
-    pub fn ambient_enabled(
-        &self,
-        recents_visible: bool,
-        ready: bool,
-        game_count: usize,
-        reduced_motion: bool,
-    ) -> bool {
-        self.ambient_motion && recents_visible && ready && game_count > 0 && !reduced_motion
     }
 }
 
@@ -269,19 +254,9 @@ mod tests {
         assert_eq!(profile.shell, Shell::ToolbarIslands);
         assert_eq!(profile.material, Material::SmokedGlass);
         assert_eq!(profile.recent_count, 5);
-        assert!(!profile.ambient_motion && profile.native_translucency);
+        assert!(profile.native_translucency);
         assert_eq!(settings, saved);
         assert_eq!(resolve(&AppearanceSettings::default()).recent_count, 5);
-    }
-
-    #[test]
-    fn ambient_motion_has_no_hover_or_focus_dependency() {
-        assert!(BOOK_PAPER.ambient_enabled(true, true, 6, false));
-        assert!(!BOOK_PAPER.ambient_enabled(true, true, 6, true));
-        assert!(!BOOK_PAPER.ambient_enabled(false, true, 6, false));
-        assert!(!BOOK_PAPER.ambient_enabled(true, false, 6, false));
-        assert!(!BOOK_PAPER.ambient_enabled(true, true, 0, false));
-        assert!(!CLASSIC.ambient_enabled(true, true, 5, false));
     }
 
     #[test]
@@ -315,7 +290,7 @@ mod tests {
         );
         assert_eq!(profile.recents, RecentPresentation::Gallery);
         assert_eq!(profile.recent_count, 5);
-        assert!(!profile.native_translucency && !profile.ambient_motion);
+        assert!(!profile.native_translucency);
         for screen in [
             StartScreen::Recents,
             StartScreen::Library,
@@ -341,7 +316,7 @@ mod tests {
         assert_eq!(profile.name, "Cinematic");
         assert_eq!(profile.recent_count, usize::MAX);
         assert_eq!(profile.recents, RecentPresentation::Cinematic);
-        assert!(!profile.ambient_motion && !profile.native_translucency);
+        assert!(!profile.native_translucency);
         assert!(!profile.sidebar_allowed(StartScreen::Recents, false));
         assert!(profile.fixed_palette().unwrap().1.is_dark());
         assert_eq!(saved, before);
@@ -370,7 +345,7 @@ mod tests {
             assert_eq!(profile.recents, kind);
             assert_eq!(profile.recent_count, usize::MAX);
             assert!(!profile.sidebar_allowed(StartScreen::Recents, false));
-            assert!(!profile.ambient_motion);
+            assert!(!profile.native_translucency);
         }
     }
 }

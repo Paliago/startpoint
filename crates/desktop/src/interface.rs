@@ -444,6 +444,7 @@ pub struct LauncherView {
     cinematic_scene: crate::cinematic::Scene,
     cinematic_artwork: Entity<crate::cinematic::ArtworkCache>,
     cinematic_motion: crate::gallery::Motion,
+    cinematic_launch_hovered: bool,
     art_scenes: crate::art_scenes::State,
     scene_artwork: Entity<crate::cinematic::ArtworkCache>,
     _subscriptions: Vec<Subscription>,
@@ -728,6 +729,7 @@ impl LauncherView {
             cinematic_scene: Default::default(),
             cinematic_artwork: cx.new(|_| Default::default()),
             cinematic_motion: Default::default(),
+            cinematic_launch_hovered: false,
             art_scenes: Default::default(),
             scene_artwork: cx.new(|_| Default::default()),
             _subscriptions: subscriptions,
@@ -2609,9 +2611,12 @@ impl LauncherView {
     }
 
     fn refresh_render_power(&mut self, window: &Window, force: bool, cx: &mut Context<Self>) {
-        let changed = self
-            .render_power
-            .refresh(window, self.appearance.pause_in_background, force);
+        let changed = self.render_power.refresh(
+            window,
+            self.appearance.pause_in_background,
+            force,
+            crate::automation::render_offscreen(cx),
+        );
         let paused = self.render_power.paused();
         self.gallery_motion.set_paused(paused, Instant::now());
         self.cinematic_motion.set_paused(paused, Instant::now());
@@ -4383,7 +4388,7 @@ impl LauncherView {
         sidebar: f32,
         inset: f32,
         clearance: f32,
-        window: &Window,
+        _window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         div()

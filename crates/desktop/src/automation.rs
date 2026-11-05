@@ -20,6 +20,16 @@ pub(crate) fn native_allowed(cx: &App, operation: &str) -> bool {
     true
 }
 
+pub(crate) fn render_offscreen(cx: &App) -> bool {
+    #[cfg(all(feature = "automation", target_os = "macos"))]
+    return cx.try_global::<runtime::Mode>().is_some_and(|mode| mode.1);
+    #[cfg(not(all(feature = "automation", target_os = "macos")))]
+    {
+        let _ = cx;
+        false
+    }
+}
+
 #[cfg(all(feature = "automation", target_os = "macos"))]
 pub(crate) use runtime::{editor, job_status, run};
 
@@ -32,7 +42,7 @@ mod runtime {
     use serde_json::{Value, json};
     use startpoint_sdk::{
         ApiError, AppEvent, Application, ApplicationApi, ApplicationPaths, Command, JobId,
-        JobStatus, Snapshot,
+        JobStatus, RecentsLayout, Snapshot,
     };
     use std::{
         collections::VecDeque,
@@ -70,16 +80,25 @@ mod runtime {
             })
         }
     }
-    pub(crate) struct Mode(pub Arc<Policy>);
+    pub(crate) struct Mode(pub Arc<Policy>, pub bool);
     impl Global for Mode {}
 
     struct RestrictedApplication {
         inner: Application,
         policy: Arc<Policy>,
+        layout: Option<RecentsLayout>,
+        render_background: bool,
     }
     impl ApplicationApi for RestrictedApplication {
         fn snapshot(&self) -> Snapshot {
-            self.inner.snapshot()
+            let mut snapshot = self.inner.snapshot();
+            if let Some(layout) = self.layout {
+                snapshot.settings.appearance.recents_layout = layout;
+            }
+            if self.render_background {
+                snapshot.settings.appearance.pause_in_background = false;
+            }
+            snapshot
         }
         fn subscribe(&self) -> async_channel::Receiver<AppEvent> {
             self.inner.subscribe()
@@ -110,6 +129,8 @@ mod runtime {
         let mut socket = None;
         let mut library = None;
         let mut metadata = false;
+        let mut layout = None;
+        let mut render_background = false;
         let mut arguments = std::env::args().skip(1);
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
@@ -124,6 +145,16 @@ mod runtime {
                     ))
                 }
                 "--automation-allow-metadata" => metadata = true,
+                "--automation-layout" => {
+                    let value = arguments.next().ok_or("Missing layout name")?;
+                    let chosen = serde_json::from_value(Value::String(value))
+                        .map_err(|error| format!("Invalid automation layout: {error}"))?;
+                    if chosen == RecentsLayout::Editorial {
+                        return Err("Editorial has been removed; use carousel".into());
+                    }
+                    layout = Some(chosen);
+                }
+                "--automation-render-background" => render_background = true,
                 _ => return Err(format!("Unsupported automation argument: {argument}")),
             }
         }
@@ -187,6 +218,8 @@ mod runtime {
         let api: Application = Arc::new(RestrictedApplication {
             inner,
             policy: policy.clone(),
+            layout,
+            render_background,
         });
         let startup_error = Arc::new(Mutex::new(None));
         let window_error = startup_error.clone();
@@ -194,7 +227,7 @@ mod runtime {
             .with_assets(crate::LauncherAssets)
             .run(move |cx| {
                 gpui_automation::prepare_application();
-                cx.set_global(Mode(policy.clone()));
+                cx.set_global(Mode(policy.clone(), render_background));
                 crate::initialize_interface(&api, cx);
                 let mut options = gpui_automation::window_options();
                 options.window_min_size = Some(size(px(960.), px(620.)));

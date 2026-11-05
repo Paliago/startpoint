@@ -32,7 +32,13 @@ impl State {
         self.paused
     }
 
-    pub fn refresh(&mut self, window: &Window, pause_in_background: bool, force: bool) -> bool {
+    pub fn refresh(
+        &mut self,
+        window: &Window,
+        pause_in_background: bool,
+        force: bool,
+        render_offscreen: bool,
+    ) -> bool {
         let now = Instant::now();
         if force
             || self
@@ -40,6 +46,9 @@ impl State {
                 .is_none_or(|last| now.duration_since(last) >= PROBE_INTERVAL)
         {
             self.environment = native_environment(window);
+            if render_offscreen {
+                self.environment.minimized = false;
+            }
             self.probed = Some(now);
         }
         let paused = should_pause(

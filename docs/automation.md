@@ -25,6 +25,17 @@ shared runtime dependency. Do not update only one GPUI package and split types.
 
 ## Build and launch
 
+For isolated design inspection, add `--automation-layout` with one of `carousel`,
+`gallery`, `cinematic`, `infinite_wall`, `film_reel`, `art_book`, `diagonal`, or
+`mosaic`. This overrides only the session's observed appearance, not SQLite
+preferences. Editorial is no longer selectable; old normal preferences resolve
+to Classic. Add `--automation-render-background` explicitly to exercise motion
+without activating the window. It overrides only background pausing in this
+private session and permits its deliberately hidden offscreen surface to render.
+Other-app fullscreen protection and reduced-motion settings still apply; normal
+windows retain their minimized protection. Neither option permits backend settings
+writes or native actions.
+
 ```sh
 cargo build --locked --features automation,runtime-shaders
 
@@ -167,11 +178,40 @@ macOS/VM workflow; do not test them on the working desktop through this driver.
 
 ### Checks and retained evidence
 
+#### Artwork-design revision verification
+
+After removing Editorial and replacing the old Reel vector material, the full
+workspace suites pass **154 tests normally** and **155 with automation**, with
+zero failures and three existing ignored checks in each. The removed tests were
+specific to the deleted Editorial renderer and the replaced vector material.
+The existing native GPU check additionally exercises liquid frames at different
+times, opacity and real readback. Its liquid render/readback measured 2.23 ms
+median and 2.50 ms p95 in the recorded run; this excludes GPUI upload and display.
+
+Private real-view captures and reports are retained under
+`/private/var/folders/3g/vsqpcg555g1ftv2w9765vnzh0000gn/T/opencode/ui.bsKiGG/`:
+`verification-report.json`, `launch-report.json`, and `reel-report.json`.
+Observed checks include fixed Mosaic labels/bounds across repeated selection and
+screen changes, settled Book navigation, living torn-edge movement, expanded
+Diagonal hover, surrounding Wall darkening, eight Gallery library selections,
+and a launch reaching the default-deny policy without backend dispatch.
+Pixel comparisons confirmed Cinematic foreground hover with an unchanged empty
+button background. Every inspected window remained inactive. Original normal and
+example database hashes were unchanged, and completed sessions quit through their
+own sockets.
+
+A seven-process parallel capture attempt lost the Gallery and Reel endpoints
+without a retained application panic; the cause was not established. Subsequent
+individual GPU runs completed and exited cleanly. Concurrent multi-process GPU
+stability and end-to-end foreground frame pacing are not qualified by this pass.
+
+#### Earlier dependency-adoption checks
+
 Normal and automation builds/checks passed. The normal build rejected an
 automation launch with exit code 2 without creating a socket. Its normal
 dependency tree does not contain `gpui-automation`.
 
-Both unfiltered workspace suites are green with the adopted fix:
+At dependency adoption, both unfiltered workspace suites passed with the fix:
 **162 passed** without automation and **163 passed** with automation, each with
 zero failures and three existing GPU/live-service tests ignored. Neither Gallery
 nor Cinematic requires exclusion. No standalone test files were added.
