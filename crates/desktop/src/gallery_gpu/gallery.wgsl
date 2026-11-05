@@ -3,6 +3,7 @@
 struct Poster { center: vec4f, shape: vec4f, tint: vec4f, basis: vec4f };
 struct Scene {
     viewport: vec4f, eye: vec4f, forward: vec4f, up: vec4f, optics: vec4f,
+    liquid: vec4f,
     posters: array<Poster, 7>,
 };
 @group(0) @binding(0) var<uniform> scene: Scene;
@@ -127,7 +128,29 @@ fn floor_color(point: vec3f, incoming: vec3f) -> vec3f {
     return mix(environment(incoming),result,atmosphere);
 }
 
+fn liquid_color(uv: vec2f) -> vec3f {
+    let time = scene.liquid.x * 0.14;
+    var p = (uv - 0.5) * vec2f(scene.viewport.z, 1.0) * 3.0;
+    let angle = atan2(p.y, p.x) + 1.6 * exp(-length(p) * 0.7) + time * 0.25;
+    p = vec2f(cos(angle), sin(angle)) * length(p);
+    for (var i = 0; i < 5; i++) {
+        let phase = f32(i) * 1.7;
+        p += 0.40 * vec2f(sin(p.y * 1.8 + time + phase), cos(p.x * 1.6 - time * 0.8 + phase));
+    }
+    let flow = sin(p.x * 3.2 + cos(p.y * 2.4)) + sin(p.y * 3.0 - p.x * 1.3);
+    let band = smoothstep(-0.7, 0.8, flow);
+    let vein = smoothstep(0.48, 0.55, sin(flow * 5.0 + p.x)) * 0.12;
+    let tint = pow(max(scene.liquid.yzw, vec3f(0.15)), vec3f(1.4));
+    let dark = tint * 0.10 + vec3f(0.006, 0.018, 0.014);
+    let light = tint * 0.35 + vec3f(0.015, 0.055, 0.04);
+    let vignette = 1.0 - 0.22 * length(uv - 0.5);
+    return mix(dark, light, band + vein) * vignette;
+}
+
 @fragment fn fs(@builtin(position) pixel: vec4f) -> @location(0) vec4f {
+    if scene.liquid.x >= 0.0 {
+        return vec4f(liquid_color(pixel.xy / scene.viewport.xy), 1.0);
+    }
     let screen=vec2f(pixel.x/scene.viewport.x*2.0-1.0,1.0-pixel.y/scene.viewport.y*2.0);
     let direction=normalize(scene.forward.xyz+vec3f(1,0,0)*screen.x*scene.optics.x*scene.viewport.z+scene.up.xyz*(screen.y-scene.optics.y)*scene.optics.x);
     var color=environment(direction);

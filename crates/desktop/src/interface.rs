@@ -763,7 +763,7 @@ impl LauncherView {
                     }
                     if view.tick_art_scenes() {
                         cx.notify();
-                        Duration::from_millis(100)
+                        Duration::from_millis(33)
                     } else if view.advance_carousel(window, cx) {
                         Duration::from_millis(50)
                     } else {
@@ -2620,7 +2620,12 @@ impl LauncherView {
         self.cinematic_scene
             .set_paused(paused || !self.cinematic_active(), Instant::now());
         self.gallery_gpu.update(cx, |gpu, _| {
-            gpu.set_paused(paused || !self.gallery_active())
+            gpu.set_paused(
+                paused
+                    || !(self.gallery_active()
+                        || (self.art_scene_active()
+                            && self.art_scene_mode() == Some(crate::art_scenes::Mode::Reel))),
+            )
         });
         if changed {
             self.carousel_tick = None;

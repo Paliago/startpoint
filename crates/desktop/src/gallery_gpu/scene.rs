@@ -24,6 +24,7 @@ pub struct Scene {
     pub camera: Camera,
     pub covers: Vec<Cover>,
     pub prefetch: Vec<Cover>,
+    pub liquid: Option<[f32; 4]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -74,7 +75,22 @@ impl Scene {
             },
             covers: covers.into_iter().take(MAX_COVERS).collect(),
             prefetch: Vec::new(),
+            liquid: None,
         }
+    }
+
+    pub fn reel(width: f32, height: f32, seconds: f32, accent: [f32; 3]) -> Self {
+        let mut scene = Self::new(width, height, Vec::new());
+        let scale = (640. / width.max(1.)).min(400. / height.max(1.)).min(1.);
+        scene.width = (width * scale).round().max(1.) as u32;
+        scene.height = (height * scale).round().max(1.) as u32;
+        scene.liquid = Some([
+            (seconds * 30.).floor() / 30.,
+            accent[0],
+            accent[1],
+            accent[2],
+        ]);
+        scene
     }
 
     pub fn poster(&self, cover: &Cover) -> Poster {

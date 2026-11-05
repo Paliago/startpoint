@@ -97,7 +97,7 @@ impl LauncherView {
             return;
         }
         let mode = self.art_scene_mode().unwrap();
-        let ambient_running = self.tick_art_scenes();
+        self.tick_art_scenes();
         let now = Instant::now();
         let reduced = appearance::reduced_motion();
         self.art_scenes.refresh_games(&self.snapshot.games);
@@ -179,6 +179,18 @@ impl LauncherView {
                     .ambient
                     .update(Self::scene_key(&game, mode), art, reduced, now);
             }
+            let scene = crate::gallery_gpu::scene::Scene::reel(
+                viewport[0],
+                viewport[1],
+                if reduced {
+                    0.
+                } else {
+                    self.art_scenes.drift.seconds()
+                },
+                self.art_scenes.ambient.accent(now),
+            );
+            self.gallery_gpu
+                .update(cx, |gpu, cx| gpu.request(scene, window, cx));
         }
         if mode == Mode::Wall
             && let Some(game) = self.art_scenes.focus.as_ref().map(|f| f.game.clone())
@@ -233,7 +245,7 @@ impl LauncherView {
         {
             self.submit(Command::LaunchGame { game_id }, cx);
         }
-        if self.art_scenes.active(now) || ambient_running {
+        if self.art_scenes.active(now) {
             window.request_animation_frame();
         }
     }
@@ -542,22 +554,14 @@ impl LauncherView {
                 linear_color_stop(rgb(0x100b09), 0.),
                 linear_color_stop(hsla(accent.h, accent.s * 0.65, 0.12, 1.), 1.),
             ));
-        let seconds = if appearance::reduced_motion() {
-            0.
-        } else {
-            self.art_scenes.drift.seconds()
-        };
-        stage = stage.child(
-            div()
-                .absolute()
-                .inset_0()
-                .size_full()
-                .opacity(0.18)
-                .child(scene::material::reel_marble(seconds, accent)),
-        );
-        stage = stage.child(scene::material::reel_illumination(
-            seconds, accent, width, height,
-        ));
+        if let Some(frame) = self
+            .gallery_gpu
+            .read(cx)
+            .frame()
+            .filter(|frame| frame.scene.liquid.is_some())
+        {
+            stage = stage.child(crate::gallery_gpu::frame_image(frame));
+        }
         let mut drawn = Vec::with_capacity(5);
         let base = position.round() as i64;
         for delta in -2..=2 {

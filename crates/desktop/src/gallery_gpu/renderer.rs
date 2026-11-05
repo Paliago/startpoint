@@ -51,6 +51,7 @@ struct Uniforms {
     forward: [f32; 4],
     up: [f32; 4],
     optics: [f32; 4],
+    liquid: [f32; 4],
     posters: [PosterUniform; MAX_COVERS],
 }
 
@@ -433,6 +434,7 @@ impl Renderer {
             0.,
         ];
         data.optics = [scene.camera.tangent, scene.camera.shift, 0.25, 0.];
+        data.liquid = scene.liquid.unwrap_or([-1., 0., 0., 0.]);
         for (index, cover) in scene.covers.iter().enumerate() {
             if !allowed() {
                 return Ok(None);
@@ -689,6 +691,51 @@ mod tests {
         renderer
             .render(steady_scene)
             .expect("resume recreates released targets");
+        let liquid = renderer
+            .render(Scene::reel(1280., 820., 0., [0.2, 0.75, 0.5]))
+            .unwrap();
+        let later = renderer
+            .render(Scene::reel(1280., 820., 8., [0.2, 0.75, 0.5]))
+            .unwrap();
+        assert_ne!(liquid.image.as_bytes(0), later.image.as_bytes(0));
+        assert!(
+            later
+                .image
+                .as_bytes(0)
+                .unwrap()
+                .chunks_exact(4)
+                .all(|pixel| pixel[3] == 255)
+        );
+        let mut liquid_timings = Vec::new();
+        for i in 0..30 {
+            let started = std::time::Instant::now();
+            renderer
+                .render(Scene::reel(
+                    1280.,
+                    820.,
+                    8. + i as f32 / 30.,
+                    [0.2, 0.75, 0.5],
+                ))
+                .unwrap();
+            liquid_timings.push(started.elapsed().as_secs_f64() * 1000.);
+        }
+        liquid_timings.sort_by(f64::total_cmp);
+        eprintln!(
+            "Film Reel liquid including readback/CPU copy: median {:.2} ms, p95 {:.2} ms",
+            liquid_timings[15], liquid_timings[28]
+        );
+        if let Ok(path) = std::env::var("STARTPOINT_LIQUID_CAPTURE") {
+            let mut pixels = RgbaImage::from_raw(
+                later.scene.width + FRAME_GUTTER * 2,
+                later.scene.height + FRAME_GUTTER * 2,
+                later.image.as_bytes(0).unwrap().to_vec(),
+            )
+            .unwrap();
+            for pixel in pixels.pixels_mut() {
+                pixel.0.swap(0, 2);
+            }
+            pixels.save(path).unwrap();
+        }
         if let Ok(path) = std::env::var("STARTPOINT_GPU_CAPTURE") {
             let mut pixels = RgbaImage::from_raw(
                 frame.scene.width + FRAME_GUTTER * 2,

@@ -1,5 +1,5 @@
-//! Cached paper fibers and brush coverage; live native vector marbling for Film Reel.
-use gpui::{prelude::*, *};
+//! Cached paper fibers and brush coverage for Art Book.
+use gpui::*;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct BookPalette {
@@ -77,139 +77,9 @@ pub(crate) fn paper_pixel(x: u32, y: u32, layer: super::PaperLayer) -> [u8; 4] {
     [channel(244), channel(234), channel(215), alpha]
 }
 
-fn marble_point(radius: f32, angle: f32, seconds: f32) -> (f32, f32) {
-    let phase = seconds * 0.16;
-    let warp = 1.
-        + 0.17 * (angle * 3. + phase + radius * 3.).sin()
-        + 0.075 * (angle * 5. - phase * 0.7 + radius * 7.).cos();
-    let twist = angle + (1.4 - radius).powi(2) * 2.3 + phase * 0.23;
-    (
-        0.5 + twist.cos() * radius * warp,
-        0.5 + twist.sin() * radius * warp,
-    )
-}
-
-fn marble_path(bounds: Bounds<Pixels>, radius: f32, seconds: f32) -> Path<Pixels> {
-    let mut path = PathBuilder::fill();
-    for i in 0..=96 {
-        let angle = i as f32 / 96. * std::f32::consts::TAU;
-        let (x, y) = marble_point(radius, angle, seconds);
-        let p = point(
-            bounds.left() + bounds.size.width * x,
-            bounds.top() + bounds.size.height * y,
-        );
-        if i == 0 {
-            path.move_to(p);
-        } else {
-            path.line_to(p);
-        }
-    }
-    path.close();
-    path.build().expect("radial marble contour")
-}
-
-/// Balatro-inspired liquid contour bands, deliberately slow and subdued.
-/// Thirty-two small native paths use native GPU color painting;
-/// there is no new rendering worker or image upload every atmospheric tick.
-pub(crate) fn reel_marble(seconds: f32, accent: Hsla) -> impl IntoElement {
-    canvas(
-        |_, _, _| (),
-        move |bounds, _, window, _| {
-            for i in (0..32).rev() {
-                let r = 0.025 + i as f32 * 0.047;
-                let hue = if i % 5 < 3 {
-                    accent.h
-                } else {
-                    (accent.h + 0.48) % 1.
-                };
-                let color = hsla(
-                    hue,
-                    0.34 + (i % 3) as f32 * 0.10,
-                    0.10 + (i % 5) as f32 * 0.035,
-                    1.,
-                );
-                // Solid fills avoid backend-specific per-triangle gradient
-                // seams. Depth comes from the nested liquid contours.
-                window.paint_path(marble_path(bounds, r, seconds), color);
-            }
-        },
-    )
-    .absolute()
-    .inset_0()
-}
-
-fn reel_lights(seconds: f32) -> [[f32; 3]; 2] {
-    [
-        [
-            0.52 + 0.045 * (seconds * 0.13).sin(),
-            0.25 + 0.025 * (seconds * 0.11).cos(),
-            0.90 + 0.10 * (seconds * 0.19).sin(),
-        ],
-        [
-            0.48 + 0.055 * (seconds * 0.09 + 1.4).sin(),
-            0.76 + 0.025 * (seconds * 0.12).sin(),
-            0.90 + 0.10 * (seconds * 0.16 + 2.).sin(),
-        ],
-    ]
-}
-
-pub(crate) fn reel_illumination(seconds: f32, accent: Hsla, width: f32, height: f32) -> Div {
-    let mut light = div().absolute().inset_0().size_full();
-    for ([x, y, intensity], strength) in reel_lights(seconds).into_iter().zip([0.35, 0.25]) {
-        light = light.child(
-            div()
-                .absolute()
-                .left(px(width * (x - 0.23)))
-                .top(px(height * (y - 0.055)))
-                .w(px(width * 0.46))
-                .h(px(height * 0.11))
-                .rounded_full()
-                .shadow(vec![BoxShadow {
-                    color: accent.alpha(strength * intensity),
-                    offset: point(px(0.), px(0.)),
-                    blur_radius: px(height * 0.15),
-                    spread_radius: px(height * 0.025),
-                    inset: false,
-                }]),
-        );
-    }
-    light
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[::core::prelude::v1::test]
-    fn reel_light_spill_drifts_and_breathes_without_abrupt_changes() {
-        assert_ne!(reel_lights(0.), reel_lights(10.));
-        for seconds in [0., 1., 10., 60., 600.] {
-            for (before, after) in reel_lights(seconds)
-                .into_iter()
-                .zip(reel_lights(seconds + 0.001))
-            {
-                assert!((0.42..0.58).contains(&before[0]));
-                assert!((0.20..0.80).contains(&before[1]));
-                assert!((0.79..1.01).contains(&before[2]));
-                for (before, after) in before.into_iter().zip(after) {
-                    assert!((before - after).abs() < 0.0001);
-                }
-            }
-        }
-    }
-    #[::core::prelude::v1::test]
-    fn marble_contours_tessellate_and_move_continuously() {
-        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(1296.), px(828.)));
-        for seconds in [0., 1., 8., 60., 600.] {
-            for i in 0..32 {
-                let _ = marble_path(bounds, 0.025 + i as f32 * 0.047, seconds);
-            }
-        }
-        assert_ne!(marble_point(0.5, 1., 0.), marble_point(0.5, 1., 10.));
-        let before = marble_point(0.5, 1., 10.);
-        let after = marble_point(0.5, 1., 10.001);
-        assert!((before.0 - after.0).abs() < 0.001);
-        assert!((before.1 - after.1).abs() < 0.001);
-    }
     #[::core::prelude::v1::test]
     fn paper_is_warm_textured_repeatable_and_only_covers_the_artwork_at_its_edge() {
         use super::super::PaperLayer;
