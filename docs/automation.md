@@ -173,6 +173,40 @@ window handle. Excluding those two, the automation-enabled workspace suite passe
 161 tests (including an inline write-policy regression check), with three
 existing GPU/live-service tests ignored. No standalone test files were added.
 
+#### Prepared upstream fix — not applied to the configured dependency
+
+[`patches/gpui-test-window-native-handles.patch`](../patches/gpui-test-window-native-handles.patch)
+contains the minimal fix against GPUI revision
+`361ff20b919fdfb80199ee6d9aed725300cb7d54`. It replaces the two `unimplemented!`
+native-handle methods on `TestWindow` with `Err(HandleError::Unavailable)`.
+`gpui-base` already handles that error and skips the unsupported native autofill
+bridge. Input editing, focus, search and the application test assertions remain
+unchanged. A dependency's `cfg(test)` is not enabled merely because its host is
+being tested, which is why the macOS bridge is reached by these downstream tests.
+
+The patch was validated using a private GPUI source copy and an archived host
+snapshot at `18fe0c4`. Temporary Cargo command-line patches resolved all 19 GPUI
+packages to that same copy. The **unfiltered** automation-enabled workspace suite
+then passed **163 tests, 0 failures, 3 existing ignored tests**, including both
+previously failing Gallery/Cinematic cases.
+
+Validation copies are retained under:
+
+```text
+/private/var/folders/3g/vsqpcg555g1ftv2w9765vnzh0000gn/T/opencode/gpui-fix.EhE4o0/
+  gpui/          # original GPUI source plus the two-line patch
+  application/   # isolated host snapshot and its temporary lockfile
+```
+
+Per review scope, the patch has **not** been pushed, applied to a shared checkout,
+or enabled in this application's manifests/lockfile. The configured unfiltered
+suite therefore still has the two dependency failures until a reviewed upstream
+fix is adopted. All GPUI packages must continue to resolve together when that
+happens; do not patch only one package or add a read-only-input workaround.
+
+To check the artifact against a fresh disposable checkout of the stated GPUI
+revision, use `git apply --check /absolute/path/to/startpoint/patches/gpui-test-window-native-handles.patch`.
+
 ```sh
 cargo fmt -p startpoint -p startpoint-core -p startpoint-sdk -- --check
 cargo check --locked --features runtime-shaders

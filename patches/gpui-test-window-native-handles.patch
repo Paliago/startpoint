@@ -1,0 +1,21 @@
+diff --git a/crates/gpui/src/platform/test/window.rs b/crates/gpui/src/platform/test/window.rs
+--- a/crates/gpui/src/platform/test/window.rs
++++ b/crates/gpui/src/platform/test/window.rs
+@@ -47,7 +47,7 @@ impl HasWindowHandle for TestWindow {
+     fn window_handle(
+         &self,
+     ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+-        unimplemented!("Test Windows are not backed by a real platform window")
++        Err(raw_window_handle::HandleError::Unavailable)
+     }
+ }
+ 
+@@ -55,7 +55,7 @@ impl HasDisplayHandle for TestWindow {
+     fn display_handle(
+         &self,
+     ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+-        unimplemented!("Test Windows are not backed by a real platform window")
++        Err(raw_window_handle::HandleError::Unavailable)
+     }
+ }
+ 
