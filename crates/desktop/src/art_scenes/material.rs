@@ -95,15 +95,9 @@ pub(crate) fn brush_coverage(x: u32, y: u32, width: u32, height: u32) -> u8 {
     let x = x * 1024 / width.max(1);
     let y = y * 1024 / height.max(1);
     let vertical = brush_reach(y);
-    let horizontal = brush_reach(x);
     let left = 8. + (vertical + 1.5) * 10.;
     let right = 1016. - (vertical + 1.5) * 38.;
-    let top = 8. + (horizontal + 1.5) * 10.;
-    let bottom = 1016. - (horizontal + 1.5) * 10.;
-    let distance = (x as f32 - left)
-        .min(right - x as f32)
-        .min(y as f32 - top)
-        .min(bottom - y as f32);
+    let distance = (x as f32 - left).min(right - x as f32);
     let coverage = ((distance + 8.) / 24.).clamp(0., 1.);
     let bristles = (paper_noise(x / 2, y / 18) as f32 / 255. - 0.5) * 0.75;
     let tooth = paper_noise(x, y) as f32 / 255. * 0.18;
@@ -255,6 +249,8 @@ mod tests {
         assert!(first[0] > first[1] && first[1] > first[2]);
         assert!((101..200).any(|x| paper_pixel(x, 100, PaperLayer::Sheet) != first));
         assert_eq!(brush_coverage(512, 512, 1024, 1024), 255);
+        assert_eq!(brush_coverage(512, 0, 1024, 1024), 255);
+        assert_eq!(brush_coverage(512, 1023, 1024, 1024), 255);
         assert_eq!(brush_coverage(0, 0, 1024, 1024), 0);
         assert!((10..90).any(|x| (1..255).contains(&brush_coverage(x, 400, 1024, 1024))));
         assert_ne!(brush_reach(300), brush_reach(400));
