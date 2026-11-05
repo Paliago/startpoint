@@ -97,7 +97,7 @@ pub(crate) fn brush_coverage(x: u32, y: u32, width: u32, height: u32) -> u8 {
     let vertical = brush_reach(y);
     let horizontal = brush_reach(x);
     let left = 8. + (vertical + 1.5) * 10.;
-    let right = 1016. - (vertical + 1.5) * 18.;
+    let right = 1016. - (vertical + 1.5) * 38.;
     let top = 8. + (horizontal + 1.5) * 10.;
     let bottom = 1016. - (horizontal + 1.5) * 10.;
     let distance = (x as f32 - left)
@@ -141,10 +141,10 @@ pub(crate) fn book_artwork(
             let height = f32::from(bounds.size.height);
             let artwork = Bounds::new(
                 point(
-                    bounds.left() + px(width * 0.02),
-                    bounds.top() + px(height * 0.03),
+                    bounds.left() - px(width * 0.025),
+                    bounds.top() - px(height * 0.05),
                 ),
-                size(px(width * 0.59), px(height * 0.94)),
+                size(px(width * 0.70), px(height * 1.10)),
             );
             if let Some(image) = &current {
                 let fitted = fitted_artwork(artwork, image);
@@ -225,7 +225,7 @@ pub(crate) fn book_artwork(
                         point(
                             fitted.right()
                                 - fitted.size.width
-                                    * (0.025 + (brush_reach((y * 1024.) as u32) + 1.5) * 0.018),
+                                    * (0.025 + (brush_reach((y * 1024.) as u32) + 1.5) * 0.038),
                             fitted.top() + fitted.size.height * y,
                         ),
                         size(

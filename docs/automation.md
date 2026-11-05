@@ -179,6 +179,22 @@ macOS/VM workflow; do not test them on the working desktop through this driver.
 
 #### Artwork-design revision verification
 
+The follow-up revision removes Editorial's enum and fallback entirely, defaults
+control outlines off, and retains interrupted Wall shade fades. Book banners are
+framed around a bounded detail analysis rather than substituted with portrait
+covers or blindly center-cropped; covers are used only when a background is
+unavailable. Cached bristle alpha and warm, low-contrast paper grain replace the
+wavy edge. No stored artwork is modified.
+
+Follow-up captures of Witcher 3, Journey, Outer Wilds and Disco Elysium are indexed
+by `focal-report.json` under
+`/private/var/folders/3g/vsqpcg555g1ftv2w9765vnzh0000gn/T/opencode/art.nh9r9U/`.
+`visual-report.json` in that directory also retains a Wall exit frame between
+fully shaded and fully restored, confirming fade-out rather than a snap. The
+existing tests exercise interrupted hover/re-entry, default/explicit outline
+values and off-center artwork detail. These full suites pass 155 tests normally
+and 156 with automation, with three existing ignored checks per configuration.
+
 After removing Editorial and replacing the old Reel vector material, the full
 workspace suites pass **154 tests normally** and **155 with automation**, with
 zero failures and three existing ignored checks in each. The removed tests were
