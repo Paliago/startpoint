@@ -687,10 +687,7 @@ mod tests {
             view.open_settings(&OpenSettings, window, cx);
             assert!(view.selected.is_none());
             view.switch_screen(StartScreen::Recents, window, cx);
-            for recents_layout in [
-                RecentsLayout::Carousel,
-                RecentsLayout::Gallery,
-            ] {
+            for recents_layout in [RecentsLayout::Carousel, RecentsLayout::Gallery] {
                 view.set_appearance(
                     AppearanceSettings {
                         recents_layout,

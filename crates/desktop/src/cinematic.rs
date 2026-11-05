@@ -208,13 +208,18 @@ impl Asset for ArtworkAsset {
                     .resize(1920, 1200, image::imageops::FilterType::Triangle)
                     .to_rgba8()
             };
-            for pixel in pixels.pixels_mut() {
+            let (width, height) = pixels.dimensions();
+            for (x, y, pixel) in pixels.enumerate_pixels_mut() {
+                if book {
+                    let coverage = crate::art_scenes::material::brush_coverage(x, y, width, height);
+                    pixel[3] = (u16::from(pixel[3]) * u16::from(coverage) / 255) as u8;
+                }
                 let alpha = f32::from(pixel[3]) / 255.;
                 let shade = if soften { 0.48 } else { 1. };
                 for channel in &mut pixel.0[..3] {
                     *channel = (f32::from(*channel) * alpha * shade) as u8;
                 }
-                if diagonal.is_none() {
+                if diagonal.is_none() && !book {
                     pixel[3] = 255;
                 }
                 pixel.0.swap(0, 2); // GPUI's native BGRA texture storage.

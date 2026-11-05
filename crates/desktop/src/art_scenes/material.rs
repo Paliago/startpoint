@@ -26,7 +26,7 @@ pub(crate) fn book_palette(accent: [f32; 3], _luminance: f32) -> BookPalette {
     }
     .into();
     let mut palette = BookPalette {
-        paper: rgb(0xf4ead7).into(),
+        paper: rgb(0xf4e6d4).into(),
         ink: rgb(0x31271f).into(),
         accent: hsla(color.h, color.s.clamp(0.25, 0.55), 0.30, 1.),
     };
@@ -59,24 +59,56 @@ fn paper_field(x: u32, y: u32, scale: u32) -> i64 {
 
 pub(crate) fn paper_pixel(x: u32, y: u32, layer: super::PaperLayer) -> [u8; 4] {
     let grain = i64::from(paper_noise(x, y)) - 128;
-    let fiber = if paper_noise(x / 2, y / 9) > 246 {
-        -7
+    let fiber = if paper_noise(x / 2, y / 3) > 250 {
+        -2
     } else {
         0
     };
-    let variation = grain / 16 + paper_field(x, y, 96) / 28 + fiber;
+    let fleck = if paper_noise(x / 2, y / 2) > 253 {
+        -3
+    } else {
+        0
+    };
+    let variation = grain / 24
+        + paper_field(x, y, 260) / 56
+        + paper_field(x, y, 67) / 64
+        + paper_field(x, y, 9) / 72
+        + fiber
+        + fleck;
     let channel = |base: i64| u8::try_from((base + variation).clamp(0, 255)).unwrap_or(0);
     let alpha = match layer {
         super::PaperLayer::Sheet => 255,
-        super::PaperLayer::Grain => u8::try_from(paper_noise(x, y) % 17).unwrap_or(0),
+        super::PaperLayer::Grain => {
+            u8::try_from((8 + grain.abs() / 16 + variation.abs() / 2).clamp(0, 24)).unwrap_or(0)
+        }
     };
-    [channel(244), channel(234), channel(215), alpha]
+    [channel(244), channel(230), channel(212), alpha]
 }
 
-fn tear_edge(y: f32, seconds: f32) -> f32 {
-    0.012 * (y * 9. + seconds * 0.28).sin()
-        + 0.006 * (y * 23. - seconds * 0.19).sin()
-        + 0.002 * (y * 173.).sin()
+fn brush_reach(y: u32) -> f32 {
+    paper_field(0, y, 83) as f32 / 128.
+        + paper_field(0, y, 17) as f32 / 256.
+        + (paper_noise(0, y / 3) as f32 / 255. - 0.5) * 0.3
+}
+
+pub(crate) fn brush_coverage(x: u32, y: u32, width: u32, height: u32) -> u8 {
+    let x = x * 1024 / width.max(1);
+    let y = y * 1024 / height.max(1);
+    let vertical = brush_reach(y);
+    let horizontal = brush_reach(x);
+    let left = 8. + (vertical + 1.5) * 10.;
+    let right = 1016. - (vertical + 1.5) * 18.;
+    let top = 8. + (horizontal + 1.5) * 10.;
+    let bottom = 1016. - (horizontal + 1.5) * 10.;
+    let distance = (x as f32 - left)
+        .min(right - x as f32)
+        .min(y as f32 - top)
+        .min(bottom - y as f32);
+    let coverage = ((distance + 8.) / 24.).clamp(0., 1.);
+    let bristles = (paper_noise(x / 2, y / 18) as f32 / 255. - 0.5) * 0.75;
+    let tooth = paper_noise(x, y) as f32 / 255. * 0.18;
+    let dry = coverage + (bristles - tooth) * 4. * coverage * (1. - coverage);
+    (dry.clamp(0., 1.) * 255.).round() as u8
 }
 
 fn fitted_artwork(bounds: Bounds<Pixels>, image: &RenderImage) -> Bounds<Pixels> {
@@ -130,7 +162,10 @@ pub(crate) fn book_artwork(
                 for row in 0..160 {
                     let y = row as f32 / 160.;
                     let front = (super::book_tear_front(width * 0.65, progress, direction)
-                        + width * tear_edge(y, seconds) * (std::f32::consts::PI * progress).sin())
+                        + width
+                            * brush_reach((y * 1024.) as u32)
+                            * 0.025
+                            * (std::f32::consts::PI * progress).sin())
                     .clamp(0., width * 0.65);
                     let (x, remaining) = if direction >= 0. {
                         (0., front)
@@ -181,19 +216,26 @@ pub(crate) fn book_artwork(
                     }
                 }
             }
-            let mut edge = PathBuilder::fill();
-            edge.move_to(point(bounds.right(), bounds.top()));
-            for row in 0..=160 {
-                let y = row as f32 / 160.;
-                edge.line_to(point(
-                    bounds.left() + px(width * (0.63 + tear_edge(y, seconds))),
-                    bounds.top() + px(height * y),
-                ));
-            }
-            edge.line_to(point(bounds.right(), bounds.bottom()));
-            edge.close();
-            if let Ok(edge) = edge.build() {
-                window.paint_path(edge, paper);
+            if let Some(image) = &current {
+                let fitted = fitted_artwork(artwork, image);
+                for stroke in 0..64 {
+                    let y = stroke as f32 / 64.;
+                    let seed = paper_noise(stroke, 47) as f32 / 255.;
+                    let fiber = Bounds::new(
+                        point(
+                            fitted.right()
+                                - fitted.size.width
+                                    * (0.025 + (brush_reach((y * 1024.) as u32) + 1.5) * 0.018),
+                            fitted.top() + fitted.size.height * y,
+                        ),
+                        size(
+                            px(1. + seed * 3.),
+                            fitted.size.height * (0.006 + seed * 0.016),
+                        ),
+                    );
+                    let opacity = 0.15 + 0.07 * (seconds * 0.22 + seed * 6.).sin();
+                    window.paint_quad(fill(fiber, paper.alpha(opacity)));
+                }
             }
         },
     )
@@ -212,12 +254,10 @@ mod tests {
         assert_eq!(first, paper_pixel(100, 100, PaperLayer::Sheet));
         assert!(first[0] > first[1] && first[1] > first[2]);
         assert!((101..200).any(|x| paper_pixel(x, 100, PaperLayer::Sheet) != first));
-        assert_ne!(tear_edge(0.4, 0.), tear_edge(0.4, 8.));
-        for y in 0..100 {
-            let y = y as f32 / 100.;
-            assert!(tear_edge(y, 8.).abs() < 0.025);
-            assert!((tear_edge(y, 8.) - tear_edge(y, 8.001)).abs() < 0.0001);
-        }
+        assert_eq!(brush_coverage(512, 512, 1024, 1024), 255);
+        assert_eq!(brush_coverage(0, 0, 1024, 1024), 0);
+        assert!((10..90).any(|x| (1..255).contains(&brush_coverage(x, 400, 1024, 1024))));
+        assert_ne!(brush_reach(300), brush_reach(400));
         let area = Bounds::new(point(px(20.), px(30.)), size(px(590.), px(940.)));
         for (width, height) in [(96, 31), (20, 30), (30, 20)] {
             let image = RenderImage::new([image::Frame::new(image::RgbaImage::new(width, height))]);

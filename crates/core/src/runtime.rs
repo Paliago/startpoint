@@ -3424,7 +3424,8 @@ mod tests {
         for enabled in [false, true] {
             let explicit: AppearanceSettings = serde_json::from_value(serde_json::json!({
                 "controls": { "outlines": enabled }
-            })).unwrap();
+            }))
+            .unwrap();
             assert_eq!(explicit.controls.outlines, enabled);
             let (combined, changed) = restore_appearance_settings(Some(serde_json::json!({
                 "window_translucency": enabled, "theme": "Custom"
