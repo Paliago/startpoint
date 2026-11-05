@@ -3718,6 +3718,7 @@ mod tests {
                 5 => Command::SetAppearance {
                     settings: AppearanceSettings {
                         theme: "Custom".into(),
+                        background_style: startpoint_sdk::BackgroundStyle::Balatro,
                         mode: AppearanceMode::Light,
                         window_translucency: false,
                         backdrop_blur: true,
@@ -4087,6 +4088,7 @@ mod tests {
         assert_eq!(
             reopened.snapshot().settings.appearance,
             AppearanceSettings {
+                background_style: startpoint_sdk::BackgroundStyle::Balatro,
                 theme: "Custom".into(),
                 mode: AppearanceMode::Light,
                 window_translucency: false,

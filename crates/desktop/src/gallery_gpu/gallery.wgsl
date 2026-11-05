@@ -148,12 +148,15 @@ fn liquid_color(uv: vec2f) -> vec3f {
 }
 
 @fragment fn fs(@builtin(position) pixel: vec4f) -> @location(0) vec4f {
-    if scene.liquid.x >= 0.0 {
+    if scene.liquid.x >= 0.0 && scene.viewport.w == 0.0 {
         return vec4f(liquid_color(pixel.xy / scene.viewport.xy), 1.0);
     }
     let screen=vec2f(pixel.x/scene.viewport.x*2.0-1.0,1.0-pixel.y/scene.viewport.y*2.0);
     let direction=normalize(scene.forward.xyz+vec3f(1,0,0)*screen.x*scene.optics.x*scene.viewport.z+scene.up.xyz*(screen.y-scene.optics.y)*scene.optics.x);
     var color=environment(direction);
+    if scene.liquid.x >= 0.0 {
+        color=liquid_color(pixel.xy / scene.viewport.xy);
+    }
     var floor_distance=100000.0;
     if direction.y < -0.0001 {
         floor_distance=-scene.eye.y/direction.y;
@@ -177,7 +180,7 @@ fn liquid_color(uv: vec2f) -> vec3f {
         let lod=max(0.0,log2(768.0/(scene.viewport.y*0.55)));
         return vec4f(art_color(scene.posters[nearest_index],nearest_uv,lod)*vignette,1.0);
     }
-    if floor_distance < 200.0 { color=floor_color(scene.eye.xyz+direction*floor_distance,direction); }
+    if floor_distance < 200.0 && scene.liquid.x < 0.0 { color=floor_color(scene.eye.xyz+direction*floor_distance,direction); }
     if nearest_index < 7u {
         let poster=scene.posters[nearest_index];
         let lod=max(0.0,log2(768.0/(scene.viewport.y*0.55)));

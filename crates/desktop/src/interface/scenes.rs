@@ -382,6 +382,9 @@ impl LauncherView {
             .relative()
             .overflow_hidden()
             .bg(rgb(0x101214));
+        if self.liquid_background_active() {
+            stage = stage.child(self.liquid_background(cx));
+        }
         let mut cards = layout
             .visible(scroll, games.len())
             .map(|i| (i, &games[i], self.art_scenes.emphasis(&games[i].id, now)))

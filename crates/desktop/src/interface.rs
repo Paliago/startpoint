@@ -18,6 +18,7 @@ use crate::{
 };
 #[cfg(all(feature = "automation", target_os = "macos"))]
 mod automation;
+mod background;
 mod cinematic;
 mod collection;
 mod gallery;
@@ -439,6 +440,7 @@ pub struct LauncherView {
     render_power: crate::render_power::State,
     gallery_reflections: Entity<crate::gallery::Reflections>,
     gallery_gpu: Entity<crate::gallery_gpu::GalleryGpu>,
+    background_clock: crate::artwork_motion::FlowClock,
     gallery_wheel: crate::gallery::Wheel,
     cinematic_scene: crate::cinematic::Scene,
     cinematic_artwork: Entity<crate::cinematic::ArtworkCache>,
@@ -724,6 +726,7 @@ impl LauncherView {
             render_power: Default::default(),
             gallery_reflections: cx.new(|_| Default::default()),
             gallery_gpu: cx.new(|_| Default::default()),
+            background_clock: Default::default(),
             gallery_wheel: Default::default(),
             cinematic_scene: Default::default(),
             cinematic_artwork: cx.new(|_| Default::default()),
@@ -762,7 +765,9 @@ impl LauncherView {
                     if view.render_power.paused() {
                         return crate::render_power::PROBE_INTERVAL;
                     }
-                    if view.tick_art_scenes() {
+                    if view.tick_art_scenes()
+                        || (view.liquid_background_active() && !appearance::reduced_motion())
+                    {
                         cx.notify();
                         Duration::from_millis(33)
                     } else if view.advance_carousel(window, cx) {
@@ -2612,6 +2617,8 @@ impl LauncherView {
             crate::automation::render_offscreen(cx),
         );
         let paused = self.render_power.paused();
+        self.background_clock
+            .update(!paused && self.liquid_background_active() && !appearance::reduced_motion());
         self.gallery_motion.set_paused(paused, Instant::now());
         self.cinematic_motion.set_paused(paused, Instant::now());
         self.art_scenes
@@ -2621,7 +2628,8 @@ impl LauncherView {
         self.gallery_gpu.update(cx, |gpu, _| {
             gpu.set_paused(
                 paused
-                    || !(self.gallery_active()
+                    || !(self.liquid_background_active()
+                        || self.gallery_active()
                         || (self.art_scene_active()
                             && self.art_scene_mode() == Some(crate::art_scenes::Mode::Reel))),
             )
@@ -3964,8 +3972,10 @@ impl LauncherView {
             .flex_col()
             .child(div().id("recents-content").size_full().overflow_y_scroll().flex().flex_col()
             .child(div().id("recents-hero").relative().overflow_hidden().w_full().min_h(window.viewport_size().height).flex_shrink_0().flex().flex_col()
-            .when_some(transition, |view, (previous, _)| view.child(self.recents_background(previous, 1. - opacity, window, cx)))
-            .child(self.recents_background(&game, opacity, window, cx))
+            .when(self.liquid_background_active(), |view| view.child(self.liquid_background(cx)))
+            .when(!self.liquid_background_active(), |view| view
+                .when_some(transition, |view, (previous, _)| view.child(self.recents_background(previous, 1. - opacity, window, cx)))
+                .child(self.recents_background(&game, opacity, window, cx)))
             .child(div().flex_1().min_h(px(HEADER_HEIGHT + 12.)))
             .child(
                 div()
@@ -5995,6 +6005,11 @@ impl LauncherView {
             .gap_3()
             .child(eyebrow("INTERFACE STYLE"))
             .child(self.recents_layout_selector(cx))
+            .when(self.background_selectable(), |panel| {
+                panel
+                    .child(eyebrow("BACKGROUND"))
+                    .child(self.background_selector(cx))
+            })
             .when(self.design().editable_palette(), |panel| {
                 panel
                     .child(eyebrow("COLOUR THEME"))
@@ -7983,6 +7998,7 @@ impl Render for LauncherView {
         self.prepare_library(window);
         self.prepare_gallery(window, cx);
         self.prepare_cinematic(window, cx);
+        self.prepare_background(window, cx);
         self.prepare_art_scenes(window, cx);
         let slider_values = [
             (

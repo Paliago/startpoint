@@ -346,9 +346,18 @@ impl LibraryDensity {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundStyle {
+    #[default]
+    Default,
+    Balatro,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppearanceSettings {
+    pub background_style: BackgroundStyle,
     pub theme: String,
     pub mode: AppearanceMode,
     pub window_translucency: bool,
@@ -381,6 +390,7 @@ pub struct AppearanceSettings {
 impl Default for AppearanceSettings {
     fn default() -> Self {
         Self {
+            background_style: BackgroundStyle::Default,
             theme: "Startpoint".into(),
             mode: AppearanceMode::System,
             window_translucency: true,

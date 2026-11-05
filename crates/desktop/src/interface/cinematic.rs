@@ -115,7 +115,15 @@ impl LauncherView {
         // preserves the displayed blend on interrupted transitions without
         // darkening the art or allocating a flattened screenshot each frame.
         let mut accumulated = 0.;
-        for layer in self.cinematic_scene.layers(now) {
+        if self.liquid_background_active() {
+            stage = stage.child(self.liquid_background(cx));
+        }
+        for layer in self
+            .cinematic_scene
+            .layers(now)
+            .into_iter()
+            .filter(|_| !self.liquid_background_active())
+        {
             accumulated += layer.weight;
             let opacity = (layer.weight / accumulated).clamp(0., 1.);
             let background = match layer.artwork.image {

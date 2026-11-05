@@ -64,6 +64,9 @@ impl LauncherView {
                 .into_iter()
                 .filter(|cover| cover.offset.abs() >= 3.)
                 .collect();
+            if self.liquid_background_active() {
+                scene.liquid = Some(self.liquid_parameters());
+            }
             self.gallery_gpu
                 .update(cx, |gpu, cx| gpu.request(scene, window, cx));
         }
