@@ -33,7 +33,8 @@ without activating the window. It overrides only background pausing in this
 private session and permits its deliberately hidden offscreen surface to render.
 Other-app fullscreen protection and reduced-motion settings still apply; normal
 windows retain their minimized protection. Neither option permits backend settings
-writes or native actions.
+writes or native actions. `--automation-background default|balatro` similarly
+overrides only the observed background choice, without changing preferences.
 
 ```sh
 cargo build --locked --features automation,runtime-shaders
@@ -128,6 +129,27 @@ such as `role` and an ancestor structural `within` path. For example, inspect th
 paths are runtime fallbacks, not stable IDs across layout changes.
 
 ## Evaluation results
+
+The November 2026 design cleanup was checked with non-activating native sessions:
+Classic, Gallery, Cinematic and Infinite Wall rendered the Balatro option; Classic,
+Cinematic and Infinite Wall exposed the background dropdown in customization.
+Gallery retained five native cover targets over its liquid GPU scene. All sessions
+denied backend writes and native actions. The Mosaic check confirmed that eight
+continuous scroll events advance one page, a separate gesture advances the next,
+and backward scrolling at the first page does not wrap. Its source library hash
+was unchanged. The retained Mosaic report is
+`/private/var/folders/3g/vsqpcg555g1ftv2w9765vnzh0000gn/T/opencode/mosaic.1vm7b73r/report.json`;
+background captures are under `opencode/views._v20bi87` and `opencode/view.w4dz0cg6`.
+These synthetic checks do not qualify physical trackpad feel.
+
+The explicit native GPU check passed with Gallery liquid at 3.51 ms median /
+6.01 ms p95 and standalone liquid at 1.81 ms median / 3.03 ms p95, including
+readback and CPU copy, excluding GPUI upload/presentation. The normal workspace
+suite passed with `--features runtime-shaders` (150 passed, three ignored), and
+the automation workspace suite passed with `--features automation,runtime-shaders`
+(151 passed, three ignored). The release build with `runtime-shaders,dev-icon`
+passed. Plain `cargo test` requires the unavailable Apple Metal compiler on this
+machine; runtime shader compilation avoids that build-time tool dependency.
 
 The pinned driver was exercised against the real launcher with 45 imported game
 records, not the independent example. Inline assertion scripts were used; no new

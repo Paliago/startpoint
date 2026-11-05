@@ -689,8 +689,41 @@ mod tests {
             "cancel between preparing covers and GPU submission"
         );
         renderer
-            .render(steady_scene)
+            .render(steady_scene.clone())
             .expect("resume recreates released targets");
+        let mut liquid_gallery = steady_scene;
+        liquid_gallery.liquid = Some([0., 0.2, 0.75, 0.5]);
+        let liquid_gallery_frame = renderer.render(liquid_gallery.clone()).unwrap();
+        liquid_gallery.liquid = Some([8., 0.2, 0.75, 0.5]);
+        let later_gallery_frame = renderer.render(liquid_gallery.clone()).unwrap();
+        assert_ne!(
+            liquid_gallery_frame.image.as_bytes(0),
+            later_gallery_frame.image.as_bytes(0)
+        );
+        for ((first_id, first), (later_id, later)) in liquid_gallery_frame
+            .scene
+            .placements()
+            .into_iter()
+            .zip(later_gallery_frame.scene.placements())
+        {
+            assert_eq!(first_id, later_id);
+            assert_eq!(
+                (first.x, first.y, first.width, first.height),
+                (later.x, later.y, later.width, later.height)
+            );
+        }
+        let mut gallery_liquid_timings = Vec::new();
+        for i in 0..30 {
+            liquid_gallery.liquid = Some([8. + i as f32 / 30., 0.2, 0.75, 0.5]);
+            let started = std::time::Instant::now();
+            renderer.render(liquid_gallery.clone()).unwrap();
+            gallery_liquid_timings.push(started.elapsed().as_secs_f64() * 1000.);
+        }
+        gallery_liquid_timings.sort_by(f64::total_cmp);
+        eprintln!(
+            "Gallery liquid including readback/CPU copy: median {:.2} ms, p95 {:.2} ms",
+            gallery_liquid_timings[15], gallery_liquid_timings[28]
+        );
         let liquid = renderer
             .render(Scene::reel(1280., 820., 0., [0.2, 0.75, 0.5]))
             .unwrap();

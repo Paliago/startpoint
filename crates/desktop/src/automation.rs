@@ -87,6 +87,7 @@ mod runtime {
         inner: Application,
         policy: Arc<Policy>,
         layout: Option<RecentsLayout>,
+        background: Option<startpoint_sdk::BackgroundStyle>,
         render_background: bool,
     }
     impl ApplicationApi for RestrictedApplication {
@@ -94,6 +95,9 @@ mod runtime {
             let mut snapshot = self.inner.snapshot();
             if let Some(layout) = self.layout {
                 snapshot.settings.appearance.recents_layout = layout;
+            }
+            if let Some(background) = self.background {
+                snapshot.settings.appearance.background_style = background;
             }
             if self.render_background {
                 snapshot.settings.appearance.pause_in_background = false;
@@ -130,6 +134,7 @@ mod runtime {
         let mut library = None;
         let mut metadata = false;
         let mut layout = None;
+        let mut background = None;
         let mut render_background = false;
         let mut arguments = std::env::args().skip(1);
         while let Some(argument) = arguments.next() {
@@ -152,6 +157,13 @@ mod runtime {
                     layout = Some(chosen);
                 }
                 "--automation-render-background" => render_background = true,
+                "--automation-background" => {
+                    let value = arguments.next().ok_or("Missing background name")?;
+                    background = Some(
+                        serde_json::from_value(Value::String(value))
+                            .map_err(|error| format!("Invalid automation background: {error}"))?,
+                    );
+                }
                 _ => return Err(format!("Unsupported automation argument: {argument}")),
             }
         }
@@ -216,6 +228,7 @@ mod runtime {
             inner,
             policy: policy.clone(),
             layout,
+            background,
             render_background,
         });
         let startup_error = Arc::new(Mutex::new(None));

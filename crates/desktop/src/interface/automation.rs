@@ -24,6 +24,8 @@ impl LauncherView {
                 "hoveredGame": self.art_scenes.hovered,
                 "hoverAmount": self.art_scenes.hovered.as_ref().map_or(0., |id| self.art_scenes.emphasis(id, Instant::now())),
                 "gpuReady": self.gallery_gpu.read(cx).frame().is_some(),
+                "gpuLiquid": self.gallery_gpu.read(cx).frame().and_then(|frame| frame.scene.liquid),
+                "gpuCoverCount": self.gallery_gpu.read(cx).frame().map(|frame| frame.scene.covers.len()),
                 "mosaicReadyPages": self.art_scenes.mosaic_ready_pages,
                 "mosaicPage": self.art_scenes.selected.as_ref().and_then(|id| self.art_scenes.position(id)).map(|index| index / 6)
             },
