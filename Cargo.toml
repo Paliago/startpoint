@@ -16,6 +16,29 @@ serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 thiserror = "2.0"
 
+# Keep the host, component facade and automation driver on identical GPUI types.
+# This revision adds only unavailable native handles for headless TestWindows.
+[patch."https://github.com/zeronsh/zui"]
+collections = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+derive_refineable = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+gpui = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+gpui_linux = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+gpui_macos = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+gpui_macros = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+gpui_platform = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+gpui_shared_string = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+gpui_util = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+gpui_web = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+gpui_wgpu = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+gpui_windows = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+http_client = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+media = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+perf = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+refineable = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+scheduler = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+sum_tree = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+util_macros = { git = "https://github.com/Paliago/zui", rev = "fa44ef75782ec34a0c5490e56541832e7c595921" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

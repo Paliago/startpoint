@@ -7,17 +7,21 @@ This opt-in macOS integration runs the real `LauncherView` inside the normal
 
 The optional dependency is pinned to
 `Paliago/gpui-automation@dbe801f5564e383fe4cf0ca2f9882ecec28fc2d6`.
-Startpoint, the driver and the component library resolve to the same
-`zeronsh/zui@361ff20b919fdfb80199ee6d9aed725300cb7d54` GPUI package.
+Startpoint, the driver and the component library declare the same Zeron API base,
+`361ff20b919fdfb80199ee6d9aed725300cb7d54`. The host's root Cargo patch table
+resolves the matching GPUI packages together to
+`Paliago/zui@fa44ef75782ec34a0c5490e56541832e7c595921`.
 The component revision remains
 `zeronsh/gpui-component@701ca97af7983bf85343d2d1d404ab528b18ec96`.
 
 The driver's dependency-level Cargo patches do **not** propagate to this workspace.
-They were reviewed rather than copied blindly: the documented Paliago GPUI commit
-`827dc2fbbb585f59e95559dbe79d149790dc072e` differs from the existing GPUI revision
-only in `crates/gpui_web/src/window.rs`. No macOS adaptation or GPUI upgrade was
-needed. `cargo tree --locked --features automation,runtime-shaders -i gpui`
-verifies the shared runtime dependency.
+The host explicitly applies the merged headless-window fix from
+[Paliago/zui#1](https://github.com/Paliago/zui/pull/1). Its only difference from the
+existing API base is the two native-handle error returns on `TestWindow`; native
+platform windows and the automation driver are unchanged. The library's original
+documented `827dc2f` patch is a separate web-only change and is not needed here.
+`cargo tree --locked --features automation,runtime-shaders -i gpui` verifies the
+shared runtime dependency. Do not update only one GPUI package and split types.
 
 ## Build and launch
 
@@ -167,17 +171,15 @@ Normal and automation builds/checks passed. The normal build rejected an
 automation launch with exit code 2 without creating a socket. Its normal
 dependency tree does not contain `gpui-automation`.
 
-The unfiltered desktop suite is **not green**: the existing Gallery and Cinematic
-headless tests panic because GPUI TestWindows do not provide a native platform
-window handle. Excluding those two, the automation-enabled workspace suite passed
-161 tests (including an inline write-policy regression check), with three
-existing GPU/live-service tests ignored. No standalone test files were added.
+Both unfiltered workspace suites are green with the adopted fix:
+**162 passed** without automation and **163 passed** with automation, each with
+zero failures and three existing GPU/live-service tests ignored. Neither Gallery
+nor Cinematic requires exclusion. No standalone test files were added.
 
-#### Prepared upstream fix — not applied to the configured dependency
+#### Adopted upstream fix
 
-[`patches/gpui-test-window-native-handles.patch`](../patches/gpui-test-window-native-handles.patch)
-contains the minimal fix against GPUI revision
-`361ff20b919fdfb80199ee6d9aed725300cb7d54`. It replaces the two `unimplemented!`
+[The merged change](https://github.com/Paliago/zui/commit/fa44ef75782ec34a0c5490e56541832e7c595921)
+replaces the two `unimplemented!`
 native-handle methods on `TestWindow` with `Err(HandleError::Unavailable)`.
 `gpui-base` already handles that error and skips the unsupported native autofill
 bridge. Input editing, focus, search and the application test assertions remain
@@ -198,22 +200,25 @@ Validation copies are retained under:
   application/   # isolated host snapshot and its temporary lockfile
 ```
 
-Per review scope, the patch has **not** been pushed, applied to a shared checkout,
-or enabled in this application's manifests/lockfile. The configured unfiltered
-suite therefore still has the two dependency failures until a reviewed upstream
-fix is adopted. All GPUI packages must continue to resolve together when that
-happens; do not patch only one package or add a read-only-input workaround.
+The fix was subsequently merged upstream and pinned in this application's root
+manifest and lockfile. The temporary patch artifact was removed because the
+published commit now provides the fix. No application test assertions were
+removed, no focused input was made read-only, and no shared checkout was edited.
 
-To check the artifact against a fresh disposable checkout of the stated GPUI
-revision, use `git apply --check /absolute/path/to/startpoint/patches/gpui-test-window-native-handles.patch`.
+A post-adoption smoke run against the real root with a fresh, write-denied
+session also verified Unicode command input, UTF-8 byte selection (including a
+selected emoji), focus preservation and Metal capture with `windowActive=false`.
+Its capture is retained at
+`session-c8a3fc88-a0e4-4207-95ed-3eed65f1f877/merged-gpui-smoke.png`
+beneath the validation directory above. This is not a framerate
+or final desktop-compositing qualification.
 
 ```sh
 cargo fmt -p startpoint -p startpoint-core -p startpoint-sdk -- --check
 cargo check --locked --features runtime-shaders
 cargo check --locked --features automation,runtime-shaders
-cargo test --locked --workspace --features automation,runtime-shaders -- \
-  --skip gallery_browses_all_sources_without_panels_and_preserves_launch_and_navigation_context \
-  --skip cinematic_unifies_sources_and_keeps_pointer_search_launch_and_settings_native
+cargo test --locked --workspace --features runtime-shaders
+cargo test --locked --workspace --features automation,runtime-shaders
 ```
 
 Evaluation artifacts were retained privately under:

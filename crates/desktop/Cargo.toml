@@ -16,7 +16,7 @@ startpoint-sdk.workspace = true
 startpoint-core.workspace = true
 serde_json.workspace = true
 chrono = "0.4"
-# Keep renderer and components on the tested, matching Zeron revisions.
+# Matching Zeron API revisions; root patches apply the headless native-handle fix.
 gpui = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54" }
 gpui_platform = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54", features = ["font-kit", "wayland", "x11"] }
 gpui-component = { git = "https://github.com/zeronsh/gpui-component", rev = "701ca97af7983bf85343d2d1d404ab528b18ec96" }
