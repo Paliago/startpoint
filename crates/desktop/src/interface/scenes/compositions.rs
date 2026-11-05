@@ -119,7 +119,7 @@ impl LauncherView {
         }
         let game = &games[index];
         let title = if game.title().chars().count() <= 24 {
-            crate::editorial_collection::tracked(game.title())
+            crate::artwork_motion::tracked(game.title())
         } else {
             game.title().to_string()
         };

@@ -424,10 +424,6 @@ pub struct LauncherView {
     logos: Entity<crate::logo_cache::LogoCache>,
     focus: FocusHandle,
     library_list: ListState,
-    collection_list: ListState,
-    collection_list_key: Option<(usize, u32)>,
-    collection_motion: crate::editorial_collection::HoverMotion,
-    collection_flow: crate::editorial_collection::FlowClock,
     library_list_key: Option<(LibraryGeometry, usize)>,
     library_reveal: Option<usize>,
     favourites_available: bool,
@@ -712,10 +708,6 @@ impl LauncherView {
             logos,
             focus: cx.focus_handle(),
             library_list: ListState::new(1, ListAlignment::Top, px(400.)),
-            collection_list: ListState::new(1, ListAlignment::Top, px(300.)),
-            collection_list_key: None,
-            collection_motion: crate::editorial_collection::HoverMotion::default(),
-            collection_flow: crate::editorial_collection::FlowClock::default(),
             library_list_key: None,
             library_reveal: None,
             favourites_available: false,
@@ -772,8 +764,6 @@ impl LauncherView {
                     if view.tick_art_scenes() {
                         cx.notify();
                         Duration::from_millis(100)
-                    } else if view.tick_ambient_artwork(cx) {
-                        view.design().motion_interval
                     } else if view.advance_carousel(window, cx) {
                         Duration::from_millis(50)
                     } else {
@@ -2383,9 +2373,6 @@ impl LauncherView {
         if self.screen == StartScreen::Library {
             self.library_reveal = Some(index);
         }
-        if self.editorial_active() {
-            self.collection_list.scroll_to_reveal_item(index / 2 + 1);
-        }
         self.focus.focus(window, cx);
     }
 
@@ -2637,9 +2624,6 @@ impl LauncherView {
         });
         if changed {
             self.carousel_tick = None;
-            if paused {
-                self.collection_flow.update(false);
-            }
             crate::diagnostics::record(if paused {
                 "Visual effects suspended"
             } else {
@@ -2686,8 +2670,6 @@ impl LauncherView {
                 self.cinematic_scene = Default::default();
                 self.art_scenes = Default::default();
                 self.gallery_wheel = Default::default();
-                self.collection_motion = Default::default();
-                self.collection_flow = Default::default();
                 self.carousel_transition = None;
                 self.carousel_tick = None;
                 self.carousel_elapsed = Duration::ZERO;
@@ -3946,9 +3928,6 @@ impl LauncherView {
     }
 
     fn recents(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        if self.design().recents == crate::design::RecentPresentation::Organic {
-            return self.editorial_collection(window, cx);
-        }
         let Some(game) = self.selected_game().filter(|_| self.snapshot.ready) else {
             return div()
                 .size_full()
@@ -7998,7 +7977,6 @@ impl Render for LauncherView {
             }
         }
         self.prepare_library(window);
-        self.prepare_collection(window);
         self.prepare_gallery(window, cx);
         self.prepare_cinematic(window, cx);
         self.prepare_art_scenes(window, cx);
@@ -8007,13 +7985,6 @@ impl Render for LauncherView {
                 && self.art_scene_mode() == Some(crate::art_scenes::Mode::Book))
             .then(|| self.book_palette()),
         ));
-        if self.editorial_active()
-            && !self.render_power.paused()
-            && self.collection_motion.animating()
-            && !appearance::reduced_motion()
-        {
-            window.request_animation_frame();
-        }
         let slider_values = [
             (
                 self.appearance.translucency_amount,

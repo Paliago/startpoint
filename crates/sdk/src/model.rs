@@ -307,6 +307,7 @@ impl LibraryLayout {
 pub enum RecentsLayout {
     #[default]
     Carousel,
+    /// Retained only to read older preferences; the interface falls back to Classic.
     Editorial,
     Gallery,
     Cinematic,

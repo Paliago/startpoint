@@ -4,7 +4,7 @@
 use gpui::{App, Global};
 use gpui_component::{ThemeConfig, ThemeMode};
 use startpoint_sdk::{AppearanceSettings, RecentsLayout, StartScreen};
-use std::{rc::Rc, time::Duration};
+use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Shell {
@@ -20,7 +20,6 @@ pub(crate) enum Material {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RecentPresentation {
     Carousel,
-    Organic,
     Gallery,
     Cinematic,
     InfiniteWall,
@@ -57,7 +56,6 @@ pub(crate) struct Profile {
     pub body_font: &'static str,
     pub display_font: &'static str,
     pub ambient_motion: bool,
-    pub motion_interval: Duration,
     pub native_translucency: bool,
     pub sidebar_pages: &'static [StartScreen],
     pub sidebar_in_settings: bool,
@@ -91,7 +89,6 @@ pub(crate) const CLASSIC: Profile = Profile {
     body_font: NATIVE_FONT,
     display_font: NATIVE_FONT,
     ambient_motion: false,
-    motion_interval: Duration::from_millis(50),
     native_translucency: true,
     sidebar_pages: &[
         StartScreen::Recents,
@@ -103,12 +100,12 @@ pub(crate) const CLASSIC: Profile = Profile {
     header_height: crate::window_chrome::HEADER_HEIGHT,
 };
 
-pub(crate) const EDITORIAL: Profile = Profile {
-    name: "Editorial",
+pub(crate) const BOOK_PAPER: Profile = Profile {
+    name: "Art Book",
     shell: Shell::ToolbarIslands,
     material: Material::Paper,
-    recents: RecentPresentation::Organic,
-    recent_count: 6,
+    recents: RecentPresentation::ArtBook,
+    recent_count: usize::MAX,
     palette: PaletteSource::Builtin {
         source: include_str!("../assets/themes/editorial.json"),
         mode: ThemeMode::Light,
@@ -116,7 +113,6 @@ pub(crate) const EDITORIAL: Profile = Profile {
     body_font: EDITORIAL_BODY,
     display_font: EDITORIAL_DISPLAY,
     ambient_motion: true,
-    motion_interval: Duration::from_millis(33),
     native_translucency: false,
     sidebar_pages: &[
         StartScreen::Recents,
@@ -146,7 +142,6 @@ pub(crate) const GALLERY: Profile = Profile {
     body_font: EDITORIAL_BODY,
     display_font: EDITORIAL_DISPLAY,
     ambient_motion: false,
-    motion_interval: Duration::from_millis(16),
     native_translucency: false,
     sidebar_pages: &[],
     sidebar_in_settings: false,
@@ -182,7 +177,7 @@ pub(crate) const ART_BOOK: Profile = Profile {
     recent_count: usize::MAX,
     sidebar_pages: &[],
     ambient_motion: false,
-    ..EDITORIAL
+    ..BOOK_PAPER
 };
 pub(crate) const DIAGONAL: Profile = Profile {
     name: "Diagonal",
@@ -233,7 +228,7 @@ impl Profile {
 pub(crate) fn resolve(settings: &AppearanceSettings) -> &'static Profile {
     match settings.recents_layout {
         RecentsLayout::Carousel => &CLASSIC,
-        RecentsLayout::Editorial => &EDITORIAL,
+        RecentsLayout::Editorial => &CLASSIC,
         RecentsLayout::Gallery => &GALLERY,
         RecentsLayout::Cinematic => &CINEMATIC,
         RecentsLayout::InfiniteWall => &INFINITE_WALL,
@@ -272,35 +267,33 @@ mod tests {
         let saved = settings.clone();
         let profile = resolve(&settings);
         assert_eq!(profile.shell, Shell::ToolbarIslands);
-        assert_eq!(profile.material, Material::Paper);
-        assert_eq!(profile.recent_count, 6);
-        assert!(profile.ambient_motion && !profile.native_translucency);
+        assert_eq!(profile.material, Material::SmokedGlass);
+        assert_eq!(profile.recent_count, 5);
+        assert!(!profile.ambient_motion && profile.native_translucency);
         assert_eq!(settings, saved);
         assert_eq!(resolve(&AppearanceSettings::default()).recent_count, 5);
     }
 
     #[test]
     fn ambient_motion_has_no_hover_or_focus_dependency() {
-        assert!(EDITORIAL.ambient_enabled(true, true, 6, false));
-        assert!(!EDITORIAL.ambient_enabled(true, true, 6, true));
-        assert!(!EDITORIAL.ambient_enabled(false, true, 6, false));
-        assert!(!EDITORIAL.ambient_enabled(true, false, 6, false));
-        assert!(!EDITORIAL.ambient_enabled(true, true, 0, false));
+        assert!(BOOK_PAPER.ambient_enabled(true, true, 6, false));
+        assert!(!BOOK_PAPER.ambient_enabled(true, true, 6, true));
+        assert!(!BOOK_PAPER.ambient_enabled(false, true, 6, false));
+        assert!(!BOOK_PAPER.ambient_enabled(true, false, 6, false));
+        assert!(!BOOK_PAPER.ambient_enabled(true, true, 0, false));
         assert!(!CLASSIC.ambient_enabled(true, true, 5, false));
     }
 
     #[test]
-    fn editorial_uses_classic_island_geometry_without_changing_its_palette() {
-        assert_eq!(EDITORIAL.shell, CLASSIC.shell);
-        let header = EDITORIAL.toolbar_material.unwrap();
+    fn book_paper_uses_classic_island_geometry_without_changing_its_palette() {
+        assert_eq!(BOOK_PAPER.shell, CLASSIC.shell);
+        let header = BOOK_PAPER.toolbar_material.unwrap();
         assert!(header.opacity > 0. && header.opacity < 1.);
         assert!(header.blur_radius > 0.);
         assert_eq!(header.radius, 12.);
-        assert_eq!(EDITORIAL.material, Material::Paper);
-        assert!(!EDITORIAL.native_translucency);
-        assert!(EDITORIAL.sidebar_allowed(StartScreen::Recents, false));
-        assert!(EDITORIAL.sidebar_allowed(StartScreen::Library, false));
-        assert!(!EDITORIAL.sidebar_allowed(StartScreen::Recents, true));
+        assert_eq!(BOOK_PAPER.material, Material::Paper);
+        assert!(!BOOK_PAPER.native_translucency);
+        assert!(!ART_BOOK.sidebar_allowed(StartScreen::Recents, false));
     }
 
     #[test]
@@ -318,7 +311,7 @@ mod tests {
         assert_eq!(profile.header_height, CLASSIC.header_height);
         assert_eq!(
             profile.toolbar_material.unwrap().radius,
-            EDITORIAL.toolbar_material.unwrap().radius
+            ART_BOOK.toolbar_material.unwrap().radius
         );
         assert_eq!(profile.recents, RecentPresentation::Gallery);
         assert_eq!(profile.recent_count, 5);

@@ -359,14 +359,14 @@ mod tests {
     use super::*;
 
     #[::core::prelude::v1::test]
-    fn editorial_toolbar_islands_blur_without_enabling_paper_panel_or_desktop_blur() {
+    fn art_book_toolbar_islands_blur_without_enabling_paper_panel_or_desktop_blur() {
         let mut app = TestApp::new();
         app.update(|cx| {
             gpui_component::init(cx);
             cx.set_global(crate::theme::Catalog::default());
             crate::appearance::apply(
                 &startpoint_sdk::AppearanceSettings {
-                    recents_layout: startpoint_sdk::RecentsLayout::Editorial,
+                    recents_layout: startpoint_sdk::RecentsLayout::ArtBook,
                     window_translucency: false,
                     backdrop_blur: false,
                     ..Default::default()

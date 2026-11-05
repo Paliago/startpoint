@@ -193,7 +193,7 @@ impl LauncherView {
                             .text_color(foreground)
                             .role(Role::Label)
                             .aria_label(title.clone())
-                            .child(crate::editorial_collection::tracked(&title.to_uppercase()))
+                            .child(crate::artwork_motion::tracked(&title.to_uppercase()))
                             .tooltip(move |window, cx| {
                                 Tooltip::new(title.clone()).build(window, cx)
                             }),
@@ -219,7 +219,7 @@ impl LauncherView {
                                         div()
                                             .text_size(px(11.))
                                             .font_weight(FontWeight::MEDIUM)
-                                            .child(crate::editorial_collection::tracked(
+                                            .child(crate::artwork_motion::tracked(
                                                 &action.to_uppercase(),
                                             )),
                                     ),

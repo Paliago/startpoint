@@ -141,7 +141,7 @@ pub(crate) struct State {
     pub underline: Tween,
     pub focus: Option<Focus>,
     pub ambient: crate::cinematic::Scene,
-    pub drift: crate::editorial_collection::FlowClock,
+    pub drift: crate::artwork_motion::FlowClock,
 }
 impl State {
     pub fn refresh_games(&mut self, source: &Arc<Vec<Game>>) {

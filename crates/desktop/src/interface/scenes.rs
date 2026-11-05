@@ -626,7 +626,7 @@ impl LauncherView {
                                 .font_family(self.design().display_font)
                                 .text_size(px(22.))
                                 .text_color(white())
-                                .child(crate::editorial_collection::tracked(
+                                .child(crate::artwork_motion::tracked(
                                     &game.title().to_uppercase(),
                                 )),
                         )
@@ -869,7 +869,7 @@ impl LauncherView {
                         .child(if book {
                             "Play".into()
                         } else {
-                            crate::editorial_collection::tracked("PLAY")
+                            crate::artwork_motion::tracked("PLAY")
                         })
                         .when(book, |label| {
                             label.child(

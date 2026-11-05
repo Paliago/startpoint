@@ -3,6 +3,7 @@
 mod adjustment_slider;
 mod appearance;
 mod art_scenes;
+mod artwork_motion;
 mod automation;
 mod branding;
 mod cinematic;
@@ -11,7 +12,6 @@ mod design;
 mod detail_artwork;
 mod diagnostics;
 mod dithering;
-mod editorial_collection;
 mod gallery;
 mod gallery_gpu;
 mod glass;
