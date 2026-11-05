@@ -260,17 +260,20 @@ impl LauncherView {
             .as_ref()
             .and_then(|id| self.art_scenes.position(id))
             .unwrap_or(0);
+        let page_start = selected / 6 * 6;
+        let page_count = games.len().div_ceil(6);
+        let page_size = (games.len() - page_start).min(6);
         let mut stage = div()
             .id("mosaic-composition")
             .size_full()
             .relative()
             .overflow_hidden()
             .bg(black());
-        for (slot, rect) in composition::mosaic_rects(width, height, games.len())
+        for (slot, rect) in composition::mosaic_rects(width, height, page_size)
             .into_iter()
             .enumerate()
         {
-            let index = (selected + slot) % games.len();
+            let index = page_start + slot;
             let game = &games[index];
             let id = game.id.clone();
             let art = self
@@ -314,13 +317,81 @@ impl LauncherView {
                             .items_center()
                             .gap_5()
                             .child(self.composition_heading(game, logo_width, logo_height, cx))
-                            .when(slot == 0, |caption| {
+                            .when(index == selected, |caption| {
                                 caption.child(self.composition_play(game, false, cx))
                             }),
                     ),
             );
         }
+        if page_count > 1 {
+            stage = stage.child(
+                div().absolute().top(px(58.)).right(px(20.)).child(
+                    toolbar_island("mosaic-pagination", toolbar_rounding(cx))
+                        .child(
+                            icon_button(
+                                "mosaic-previous-screen",
+                                IconName::ChevronLeft,
+                                "Previous screen",
+                                cx,
+                            )
+                            .on_click(cx.listener(
+                                |view, _, window, cx| {
+                                    view.move_mosaic_page(false, window, cx);
+                                },
+                            )),
+                        )
+                        .child(div().px_3().text_sm().text_color(white()).child(format!(
+                            "{} / {}",
+                            selected / 6 + 1,
+                            page_count
+                        )))
+                        .child(
+                            icon_button(
+                                "mosaic-next-screen",
+                                IconName::ChevronRight,
+                                "Next screen",
+                                cx,
+                            )
+                            .on_click(cx.listener(
+                                |view, _, window, cx| {
+                                    view.move_mosaic_page(true, window, cx);
+                                },
+                            )),
+                        ),
+                ),
+            );
+        }
         stage.into_any_element()
+    }
+
+    pub(super) fn move_mosaic_page(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.collection_overlay_open() {
+            return;
+        }
+        let games = self.art_scenes.games();
+        if games.is_empty() {
+            return;
+        }
+        let index = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.art_scenes.position(id))
+            .unwrap_or(0);
+        let pages = games.len().div_ceil(6);
+        let page = index / 6;
+        let next = if forward {
+            (page + 1) % pages
+        } else {
+            (page + pages - 1) % pages
+        };
+        let id = games[next * 6].id.clone();
+        self.art_scenes.composition_pointer = None;
+        self.select_recent_game(id, window, cx);
     }
 
     fn activate_composition(

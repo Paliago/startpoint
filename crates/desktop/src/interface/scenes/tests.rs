@@ -318,7 +318,7 @@ fn three_scenes_keep_identity_reversible_previews_and_single_launch_dispatch() {
             } else {
                 (
                     point(px(width * 0.8), px(height * 0.15)),
-                    games[(current + 1) % games.len()].id.clone(),
+                    games[current / 6 * 6 + 1].id.clone(),
                 )
             }
         });
@@ -348,5 +348,23 @@ fn three_scenes_keep_identity_reversible_previews_and_single_launch_dispatch() {
             Some(&expected),
             "rearranging artwork must not change the double-click target"
         );
+        drop(launched);
+        if layout == RecentsLayout::Mosaic {
+            window.simulate_click(position, MouseButton::Left);
+            window.draw();
+            window.read(|view, _| {
+                assert_eq!(
+                    view.selected.as_ref(),
+                    Some(&expected),
+                    "selecting a tile does not rotate the screen's games"
+                )
+            });
+            window.update(|view, window, cx| view.move_mosaic_page(true, window, cx));
+            window.draw();
+            window.read(|view, _| assert_eq!(view.selected.as_ref().unwrap().0, "scene:6"));
+            window.update(|view, window, cx| view.move_mosaic_page(false, window, cx));
+            window.draw();
+            window.read(|view, _| assert_eq!(view.selected.as_ref().unwrap().0, "scene:0"));
+        }
     }
 }

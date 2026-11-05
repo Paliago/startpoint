@@ -380,7 +380,11 @@ impl LauncherView {
                     view.gallery_wheel
                         .push(f32::from(delta.x), f32::from(delta.y), now)
                 {
-                    view.move_selection(forward, window, cx);
+                    if view.art_scene_mode() == Some(Mode::Mosaic) {
+                        view.move_mosaic_page(forward, window, cx);
+                    } else {
+                        view.move_selection(forward, window, cx);
+                    }
                 }
                 cx.stop_propagation();
             }))
