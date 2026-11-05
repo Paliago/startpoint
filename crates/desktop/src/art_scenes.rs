@@ -132,11 +132,10 @@ pub(crate) struct State {
     pub composition_pointer: Option<GameId>,
     pub scroll: Tween,
     pub hover: Tween,
-    hover_exit: Tween,
+    hover_exits: BTreeMap<GameId, Tween>,
+    shade: Tween,
     pub hovered: Option<GameId>,
-    pub old_hover: Option<GameId>,
     hover_from: f32,
-    old_hover_from: f32,
     pub overview: Tween,
     pub underline: Tween,
     pub focus: Option<Focus>,
@@ -252,44 +251,42 @@ impl State {
             return;
         }
         let new_from = id.as_ref().map_or(0., |id| self.emphasis(id, now));
-        let old_from = self
-            .hovered
-            .as_ref()
-            .map_or(0., |id| self.emphasis(id, now));
-        self.old_hover = self.hovered.take();
+        self.hover_exits.retain(|_, fade| fade.value(now) > 0.0001);
+        if let Some(previous) = self.hovered.take() {
+            let amount = self.hover_from + (1. - self.hover_from) * self.hover.value(now);
+            let mut fade = Tween::default();
+            fade.snap(amount);
+            fade.set(0., Duration::from_millis(160), reduced, now);
+            self.hover_exits.insert(previous, fade);
+        }
         self.hovered = id;
         self.hover_from = new_from;
-        self.old_hover_from = old_from;
         self.hover.snap(0.);
+        let delay = if self.hovered.is_some() && self.shade.value(now) < 0.0001 {
+            Duration::from_millis(180)
+        } else {
+            Duration::ZERO
+        };
         if self.hovered.is_some() {
-            self.hover.set(
-                1.,
-                Duration::from_millis(if reduced { 1 } else { 160 }),
-                false,
-                now + Duration::from_millis(180),
-            );
+            self.hover
+                .set(1., Duration::from_millis(160), reduced, now + delay);
         }
-        self.hover_exit.snap(0.);
-        self.hover_exit
-            .set(1., Duration::from_millis(160), reduced, now);
+        self.shade.set(
+            if self.hovered.is_some() { 1. } else { 0. },
+            Duration::from_millis(160),
+            reduced,
+            now + delay,
+        );
     }
     pub fn emphasis(&self, id: &GameId, now: Instant) -> f32 {
         if self.hovered.as_ref() == Some(id) {
             self.hover_from + (1. - self.hover_from) * self.hover.value(now)
-        } else if self.old_hover.as_ref() == Some(id) {
-            self.old_hover_from * (1. - self.hover_exit.value(now))
         } else {
-            0.
+            self.hover_exits.get(id).map_or(0., |fade| fade.value(now))
         }
     }
     pub fn surrounding_shade(&self, id: &GameId, now: Instant) -> f32 {
-        let strength = self
-            .hovered
-            .iter()
-            .chain(&self.old_hover)
-            .map(|id| self.emphasis(id, now))
-            .fold(0., f32::max);
-        wall_shade((strength - self.emphasis(id, now)).max(0.))
+        wall_shade((self.shade.value(now) - self.emphasis(id, now)).max(0.))
     }
     pub fn pause(&mut self, paused: bool, now: Instant) {
         for tween in [
@@ -297,11 +294,14 @@ impl State {
             &mut self.page,
             &mut self.scroll,
             &mut self.hover,
-            &mut self.hover_exit,
+            &mut self.shade,
             &mut self.overview,
             &mut self.underline,
         ] {
             tween.pause(paused, now);
+        }
+        for fade in self.hover_exits.values_mut() {
+            fade.pause(paused, now);
         }
         if let Some(focus) = &mut self.focus {
             focus.amount.pause(paused, now);
@@ -318,12 +318,13 @@ impl State {
             &self.page,
             &self.scroll,
             &self.hover,
-            &self.hover_exit,
+            &self.shade,
             &self.overview,
             &self.underline,
         ]
         .iter()
         .any(|t| t.active(now))
+            || self.hover_exits.values().any(|fade| fade.active(now))
             || self
                 .focus
                 .as_ref()
@@ -554,6 +555,23 @@ mod tests {
             state.surrounding_shade(&b, settled + Duration::from_millis(160)),
             0.
         );
+        let start = settled + Duration::from_secs(1);
+        state.hover(Some(a.clone()), false, start);
+        let entered = start + Duration::from_millis(400);
+        state.hover(None, false, entered);
+        let leaving = entered + Duration::from_millis(80);
+        let before = state.surrounding_shade(&b, leaving);
+        assert!(before > 0. && before < wall_shade(1.));
+        assert!(state.active(leaving));
+        state.hover(Some(b.clone()), false, leaving);
+        assert!((state.surrounding_shade(&b, leaving) - before).abs() < 0.00001);
+        let moved = leaving + Duration::from_millis(70);
+        let a_before = state.surrounding_shade(&a, moved);
+        state.hover(Some(a.clone()), false, moved);
+        assert!((state.surrounding_shade(&a, moved) - a_before).abs() < 0.00001);
+        let finished = moved + Duration::from_secs(1);
+        assert_eq!(state.surrounding_shade(&a, finished), 0.);
+        assert_eq!(state.surrounding_shade(&b, finished), wall_shade(1.));
         assert!(wall_shade(1.) > 0.);
         assert_eq!(hero_mix(0., 1.), 0.);
         assert_eq!(hero_mix(1., 1.), 1.);
