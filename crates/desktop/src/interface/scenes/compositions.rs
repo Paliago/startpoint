@@ -205,10 +205,13 @@ impl LauncherView {
         let pages = games.len().div_ceil(6);
         let page = index / 6;
         let next = if forward {
-            (page + 1) % pages
+            (page + 1).min(pages - 1)
         } else {
-            (page + pages - 1) % pages
+            page.saturating_sub(1)
         };
+        if next == page {
+            return;
+        }
         let id = games[next * 6].id.clone();
         self.art_scenes.composition_pointer = None;
         self.select_recent_game(id, window, cx);

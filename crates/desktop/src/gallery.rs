@@ -133,6 +133,42 @@ pub(crate) fn relative(index: usize, position: f32, count: usize) -> f32 {
 }
 
 #[derive(Default)]
+pub(crate) struct PageWheel {
+    accumulated: f32,
+    last_event: Option<Instant>,
+    advanced: bool,
+}
+
+impl PageWheel {
+    pub fn push(&mut self, x: f32, y: f32, now: Instant) -> Option<bool> {
+        let delta = if x.abs() > y.abs() { x } else { y };
+        if !delta.is_finite() || delta == 0. {
+            return None;
+        }
+        if self
+            .last_event
+            .is_none_or(|last| now.saturating_duration_since(last) > Duration::from_millis(220))
+        {
+            self.accumulated = 0.;
+            self.advanced = false;
+        }
+        self.last_event = Some(now);
+        if self.advanced {
+            return None;
+        }
+        if delta.signum() != self.accumulated.signum() {
+            self.accumulated = 0.;
+        }
+        self.accumulated += delta;
+        if self.accumulated.abs() < 48. {
+            return None;
+        }
+        self.advanced = true;
+        Some(self.accumulated < 0.)
+    }
+}
+
+#[derive(Default)]
 pub(crate) struct Wheel {
     accumulated: f32,
     last_event: Option<Instant>,
@@ -476,6 +512,31 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn page_wheel_advances_once_until_the_gesture_and_momentum_end() {
+        let now = Instant::now();
+        let mut wheel = PageWheel::default();
+        assert_eq!(wheel.push(0., -24., now), None);
+        assert_eq!(
+            wheel.push(0., -26., now + Duration::from_millis(10)),
+            Some(true)
+        );
+        for elapsed in (30..1600).step_by(30) {
+            assert_eq!(
+                wheel.push(0., -60., now + Duration::from_millis(elapsed)),
+                None
+            );
+        }
+        assert_eq!(
+            wheel.push(60., 0., now + Duration::from_millis(1900)),
+            Some(false)
+        );
+        assert_eq!(
+            wheel.push(f32::NAN, 0., now + Duration::from_millis(2200)),
+            None
+        );
     }
 
     #[test]
