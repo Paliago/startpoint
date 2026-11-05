@@ -3412,6 +3412,7 @@ mod tests {
         assert!(old.backdrop_blur);
         assert_eq!(old.translucency_amount, DEFAULT_TRANSLUCENCY_AMOUNT);
         assert_eq!(old.controls, startpoint_sdk::ControlAppearance::default());
+        assert!(!old.controls.outlines);
         assert_eq!(
             old.dither_recents_strength,
             startpoint_sdk::DEFAULT_DITHER_STRENGTH
@@ -3421,6 +3422,10 @@ mod tests {
             startpoint_sdk::DEFAULT_DITHER_STRENGTH
         );
         for enabled in [false, true] {
+            let explicit: AppearanceSettings = serde_json::from_value(serde_json::json!({
+                "controls": { "outlines": enabled }
+            })).unwrap();
+            assert_eq!(explicit.controls.outlines, enabled);
             let (combined, changed) = restore_appearance_settings(Some(serde_json::json!({
                 "window_translucency": enabled, "theme": "Custom"
             })))

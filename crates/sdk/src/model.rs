@@ -434,7 +434,7 @@ impl Default for ControlAppearance {
             radius: 6.,
             horizontal_padding: 12.,
             outline_strength: 0.65,
-            outlines: true,
+            outlines: false,
             filled_secondary: false,
             compact_launch: true,
         }
