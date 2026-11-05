@@ -431,11 +431,13 @@ pub(crate) fn wall_shade(emphasis: f32) -> f32 {
     emphasis.clamp(0., 1.) * 0.20
 }
 
-pub(crate) fn book_page_positions(width: f32, progress: f32, direction: f32) -> [f32; 2] {
-    [
-        -direction * width * progress,
-        direction * width * (1. - progress),
-    ]
+pub(crate) fn book_tear_front(width: f32, progress: f32, direction: f32) -> f32 {
+    width
+        * if direction >= 0. {
+            1. - progress
+        } else {
+            progress
+        }
 }
 
 pub(crate) fn hero_mix(expansion: f32, decoded: f32) -> f32 {
@@ -447,7 +449,6 @@ pub(crate) struct Paper;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum PaperLayer {
     Sheet,
-    Edge,
     Grain,
 }
 impl gpui::Asset for Paper {

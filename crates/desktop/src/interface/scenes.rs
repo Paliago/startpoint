@@ -27,7 +27,7 @@ impl LauncherView {
     }
     pub(super) fn tick_art_scenes(&mut self) -> bool {
         let running = self.art_scene_active()
-            && self.art_scene_mode() == Some(Mode::Reel)
+            && matches!(self.art_scene_mode(), Some(Mode::Reel | Mode::Book))
             && self.snapshot.ready
             && !self.art_scenes.games().is_empty()
             && !self.render_power.paused()
@@ -656,24 +656,25 @@ impl LauncherView {
             .overflow_hidden()
             .bg(palette.paper);
         let ink = palette.ink;
-        let [previous_x, current_x] =
-            scene::book_page_positions(w, p, self.art_scenes.book_direction);
-        for (index, (game, x)) in [
+        if let Some(game) = &self.art_scenes.current {
+            page = page.child(self.book_figure(game, w, h, window, cx));
+        }
+        for (index, (game, opacity)) in [
             (
                 self.art_scenes.previous.as_ref().filter(|_| p < 0.999),
-                previous_x,
+                1. - p,
             ),
-            (self.art_scenes.current.as_ref(), current_x),
+            (self.art_scenes.current.as_ref(), p),
         ]
         .into_iter()
         .enumerate()
         {
             if let Some(game) = game {
                 page = page.child(
-                    positioned(Rect { x, y: 0., w, h })
+                    positioned(Rect { x: 0., y: 0., w, h })
                         .id(("book-page", index))
+                        .opacity(opacity)
                         .overflow_hidden()
-                        .child(self.book_figure(game, w, h, window, cx))
                         .child(
                             positioned(Rect {
                                 x: w * 0.69,
@@ -784,17 +785,30 @@ impl LauncherView {
     fn book_figure(
         &self,
         game: &Game,
-        w: f32,
-        h: f32,
+        _w: f32,
+        _h: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let art = self
             .scene_art(game, Mode::Book, window, cx)
             .and_then(|a| a.image);
+        let previous = self
+            .art_scenes
+            .previous
+            .as_ref()
+            .filter(|_| self.art_scenes.page.active(Instant::now()))
+            .and_then(|game| self.scene_art(game, Mode::Book, window, cx))
+            .and_then(|art| art.image);
         let paper = self.book_palette().paper;
+        let progress = self.art_scenes.page.value(Instant::now());
+        let direction = self.art_scenes.book_direction;
+        let seconds = if appearance::reduced_motion() {
+            0.
+        } else {
+            self.art_scenes.drift.seconds()
+        };
         let sheet = window.use_asset::<scene::Paper>(&scene::PaperLayer::Sheet, cx);
-        let edge = window.use_asset::<scene::Paper>(&scene::PaperLayer::Edge, cx);
         let grain = window.use_asset::<scene::Paper>(&scene::PaperLayer::Grain, cx);
         div()
             .size_full()
@@ -810,24 +824,9 @@ impl LauncherView {
                         .object_fit(ObjectFit::Fill),
                 )
             })
-            .child(
-                positioned(Rect {
-                    x: 0.,
-                    y: 0.,
-                    w: w * 0.70,
-                    h,
-                })
-                .child(scene_image(art, game, true, cx)),
-            )
-            .when_some(edge, |figure, edge| {
-                figure.child(
-                    img(edge)
-                        .absolute()
-                        .inset_0()
-                        .size_full()
-                        .object_fit(ObjectFit::Fill),
-                )
-            })
+            .child(scene::material::book_artwork(
+                art, previous, progress, direction, seconds, paper,
+            ))
             .when_some(grain, |figure, grain| {
                 figure.child(
                     img(grain)

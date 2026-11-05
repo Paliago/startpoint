@@ -14,11 +14,12 @@ fn book_pages_follow_browsing_direction_and_reverse_without_jumping() {
     state.select(&second, 1, 5, Mode::Book, false, now);
     assert_eq!(state.book_direction, 1.);
     let mid = now + Duration::from_millis(140);
-    let before = scene::book_page_positions(1280., state.page.value(mid), state.book_direction);
+    let before = scene::book_tear_front(1280., state.page.value(mid), state.book_direction);
     state.select(&first, 0, 5, Mode::Book, false, mid);
-    let after = scene::book_page_positions(1280., state.page.value(mid), state.book_direction);
-    assert!((before[0] - after[1]).abs() < 0.001);
-    assert!((before[1] - after[0]).abs() < 0.001);
+    let after = scene::book_tear_front(1280., state.page.value(mid), state.book_direction);
+    assert!((before - after).abs() < 0.001);
+    assert_eq!(scene::book_tear_front(800., 0., 1.), 800.);
+    assert_eq!(scene::book_tear_front(800., 1., 1.), 0.);
     state.select(
         &second,
         4,

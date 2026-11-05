@@ -1,5 +1,6 @@
 //! Cached paper fibers and brush coverage for Art Book.
-use gpui::*;
+use gpui::{prelude::*, *};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct BookPalette {
@@ -68,13 +69,121 @@ pub(crate) fn paper_pixel(x: u32, y: u32, layer: super::PaperLayer) -> [u8; 4] {
     let alpha = match layer {
         super::PaperLayer::Sheet => 255,
         super::PaperLayer::Grain => u8::try_from(paper_noise(x, y) % 17).unwrap_or(0),
-        super::PaperLayer::Edge => {
-            let edge = 936 + paper_field(0, y, 192) / 3 + paper_field(0, y, 43) / 9;
-            let distance = i64::from(x) - edge + paper_field(x, y, 8) / 5 + grain / 10;
-            u8::try_from(((distance + 32) * 255 / 64).clamp(0, 255)).unwrap_or(0)
-        }
     };
     [channel(244), channel(234), channel(215), alpha]
+}
+
+fn tear_edge(y: f32, seconds: f32) -> f32 {
+    0.012 * (y * 9. + seconds * 0.28).sin()
+        + 0.006 * (y * 23. - seconds * 0.19).sin()
+        + 0.002 * (y * 173.).sin()
+}
+
+fn fitted_artwork(bounds: Bounds<Pixels>, image: &RenderImage) -> Bounds<Pixels> {
+    let source = image.size(0);
+    let scale = (f32::from(bounds.size.width) / source.width.0 as f32)
+        .max(f32::from(bounds.size.height) / source.height.0 as f32);
+    let width = source.width.0 as f32 * scale;
+    let height = source.height.0 as f32 * scale;
+    Bounds::new(
+        point(
+            bounds.left() + (bounds.size.width - px(width)) / 2.,
+            bounds.top() + (bounds.size.height - px(height)) / 2.,
+        ),
+        size(px(width), px(height)),
+    )
+}
+
+pub(crate) fn book_artwork(
+    current: Option<Arc<RenderImage>>,
+    previous: Option<Arc<RenderImage>>,
+    progress: f32,
+    direction: f32,
+    seconds: f32,
+    paper: Hsla,
+) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let width = f32::from(bounds.size.width);
+            let height = f32::from(bounds.size.height);
+            let artwork = Bounds::new(bounds.origin, size(px(width * 0.65), bounds.size.height));
+            if let Some(image) = &current {
+                let _ = window.paint_image_fitted(
+                    artwork,
+                    fitted_artwork(artwork, image),
+                    Corners::all(px(0.)),
+                    image.clone(),
+                    0,
+                    false,
+                );
+            }
+            if let Some(image) = &previous {
+                let fitted = fitted_artwork(artwork, image);
+                for row in 0..160 {
+                    let y = row as f32 / 160.;
+                    let front = (super::book_tear_front(width * 0.65, progress, direction)
+                        + width * tear_edge(y, seconds) * (std::f32::consts::PI * progress).sin())
+                    .clamp(0., width * 0.65);
+                    let (x, remaining) = if direction >= 0. {
+                        (0., front)
+                    } else {
+                        (front, width * 0.65 - front)
+                    };
+                    if remaining > 0.5 {
+                        let strip = Bounds::new(
+                            point(bounds.left() + px(x), bounds.top() + px(y * height)),
+                            size(px(remaining), px(height / 160. + 0.5)),
+                        );
+                        let _ = window.paint_image_fitted(
+                            strip,
+                            fitted,
+                            Corners::all(px(0.)),
+                            image.clone(),
+                            0,
+                            false,
+                        );
+                    }
+                    if progress > 0.001 && progress < 0.999 {
+                        let curl = (std::f32::consts::PI * progress).sin();
+                        let shadow = Bounds::new(
+                            point(
+                                bounds.left() + px(front - 5.),
+                                bounds.top() + px(y * height),
+                            ),
+                            size(px(10. + curl * 9.), px(height / 160. + 0.5)),
+                        );
+                        window.paint_quad(fill(shadow, black().alpha(0.16 * curl)));
+                        let fiber = Bounds::new(
+                            point(
+                                bounds.left() + px(front - 2.),
+                                bounds.top() + px(y * height),
+                            ),
+                            size(px(3. + curl * 3.), px(height / 160. + 0.5)),
+                        );
+                        window.paint_quad(fill(fiber, paper.alpha(0.9)));
+                    }
+                }
+            }
+            let mut edge = PathBuilder::fill();
+            edge.move_to(point(bounds.right(), bounds.top()));
+            for row in 0..=160 {
+                let y = row as f32 / 160.;
+                edge.line_to(point(
+                    bounds.left() + px(width * (0.63 + tear_edge(y, seconds))),
+                    bounds.top() + px(height * y),
+                ));
+            }
+            edge.line_to(point(bounds.right(), bounds.bottom()));
+            edge.close();
+            if let Ok(edge) = edge.build() {
+                window.paint_path(edge, paper);
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+    .size_full()
 }
 
 #[cfg(test)]
@@ -83,15 +192,16 @@ mod tests {
     #[::core::prelude::v1::test]
     fn paper_is_warm_textured_repeatable_and_only_covers_the_artwork_at_its_edge() {
         use super::super::PaperLayer;
-        for y in 0..1024 {
-            assert_eq!(paper_pixel(0, y, PaperLayer::Edge)[3], 0);
-            assert_eq!(paper_pixel(1100, y, PaperLayer::Edge)[3], 255);
-        }
         let first = paper_pixel(100, 100, PaperLayer::Sheet);
         assert_eq!(first, paper_pixel(100, 100, PaperLayer::Sheet));
         assert!(first[0] > first[1] && first[1] > first[2]);
         assert!((101..200).any(|x| paper_pixel(x, 100, PaperLayer::Sheet) != first));
-        assert!((870..1000).any(|x| (1..255).contains(&paper_pixel(x, 500, PaperLayer::Edge)[3])));
+        assert_ne!(tear_edge(0.4, 0.), tear_edge(0.4, 8.));
+        for y in 0..100 {
+            let y = y as f32 / 100.;
+            assert!(tear_edge(y, 8.).abs() < 0.025);
+            assert!((tear_edge(y, 8.) - tear_edge(y, 8.001)).abs() < 0.0001);
+        }
     }
     #[::core::prelude::v1::test]
     fn paper_stays_warm_and_readable_over_bright_and_dark_artwork() {
