@@ -427,7 +427,7 @@ impl LauncherView {
                         .absolute()
                         .inset_0()
                         .size_full()
-                        .bg(black().alpha(scene::wall_shade(emphasis))),
+                        .bg(black().alpha(self.art_scenes.surrounding_shade(&game.id, now))),
                 )
                 .on_hover(cx.listener(move |view, hovered, _, cx| {
                     if view.art_scenes.focus.is_some() || view.collection_overlay_open() {

@@ -278,6 +278,15 @@ impl State {
             0.
         }
     }
+    pub fn surrounding_shade(&self, id: &GameId, now: Instant) -> f32 {
+        let strength = self
+            .hovered
+            .iter()
+            .chain(&self.old_hover)
+            .map(|id| self.emphasis(id, now))
+            .fold(0., f32::max);
+        wall_shade((strength - self.emphasis(id, now)).max(0.))
+    }
     pub fn pause(&mut self, paused: bool, now: Instant) {
         for tween in [
             &mut self.index,
@@ -514,11 +523,13 @@ mod tests {
     fn wall_shading_waits_for_dwell_and_cancels_when_the_pointer_leaves() {
         let now = Instant::now();
         let a = GameId("a".into());
+        let b = GameId("b".into());
         let mut state = State::default();
         assert_eq!(wall_shade(state.emphasis(&a, now)), 0.);
         state.hover(Some(a.clone()), false, now);
         let mid = now + Duration::from_millis(75);
         assert_eq!(state.emphasis(&a, mid), 0.);
+        assert_eq!(state.surrounding_shade(&b, mid), 0.);
         let shade = wall_shade(state.emphasis(&a, mid));
         state.hover(None, false, mid);
         assert!((wall_shade(state.emphasis(&a, mid)) - shade).abs() < 0.00001);
@@ -529,9 +540,15 @@ mod tests {
         state.hover(Some(a.clone()), false, mid);
         let settled = mid + Duration::from_millis(500);
         assert_eq!(state.emphasis(&a, settled), 1.);
+        assert_eq!(state.surrounding_shade(&a, settled), 0.);
+        assert!(state.surrounding_shade(&b, settled) > 0.);
         state.hover(None, false, settled);
         assert_eq!(state.emphasis(&a, settled), 1.);
         assert_eq!(state.emphasis(&a, settled + Duration::from_millis(160)), 0.);
+        assert_eq!(
+            state.surrounding_shade(&b, settled + Duration::from_millis(160)),
+            0.
+        );
         assert!(wall_shade(1.) > 0.);
         assert_eq!(hero_mix(0., 1.), 0.);
         assert_eq!(hero_mix(1., 1.), 1.);
