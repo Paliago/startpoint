@@ -4,7 +4,7 @@ use crate::{
     theme::{ThemeDocument, ThemeDraft},
 };
 use rune::{El, FileDialogOptions, Phase, col, el, row};
-use rune_kit::{ButtonVariant, Kit, Switch, TextInput};
+use rune_kit::{ButtonVariant, Kit, Menu, MenuItem, Switch, TextInput};
 use startpoint_sdk::*;
 
 pub fn view(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
@@ -31,12 +31,62 @@ pub fn view(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
         .get("steamgriddb")
         .map(CredentialStatus::label)
         .unwrap_or("No API key supplied");
+    let credential_options = Menu::new("credential-options")
+        .trigger(
+            button("Options")
+                .on_press(|s: &mut State| {
+                    s.open_select = if s.open_select.as_deref() == Some("credential-options") {
+                        None
+                    } else {
+                        Some("credential-options".into())
+                    };
+                })
+                .build(kit)
+                .key("credential-options-button"),
+        )
+        .open(state.open_select.as_deref() == Some("credential-options"))
+        .on_close(|s: &mut State| s.open_select = None)
+        .item(
+            MenuItem::new("Verify / unlock API key")
+                .disabled(state.headless || state.busy())
+                .on_select(|s: &mut State| {
+                    s.open_select = None;
+                    s.verify_artwork();
+                }),
+        )
+        .separator()
+        .item(
+            MenuItem::new("Remove API key…")
+                .danger(true)
+                .disabled(
+                    state.headless
+                        || state.busy()
+                        || !state
+                            .snapshot
+                            .settings
+                            .configured_credentials
+                            .contains("steamgriddb"),
+                )
+                .on_select(|s: &mut State| {
+                    s.open_select = None;
+                    s.confirm(
+                        "Remove API key?",
+                        "Remove the SteamGridDB key from the OS credential store.",
+                        Command::SetArtworkCredential {
+                            provider_id: "steamgriddb".into(),
+                            credential: None,
+                        },
+                    );
+                }),
+        )
+        .build(kit, layers);
     let credential = section("SteamGridDB API key", kit)
         .child(hint(status, kit))
         .child(
             TextInput::new(&state.credential)
                 .secure()
                 .width(None)
+                .height(36.0)
                 .label("SteamGridDB API key")
                 .placeholder("Enter API key")
                 .on_edit(|s: &mut State| &mut s.credential)
@@ -49,46 +99,35 @@ pub fn view(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
                 .gap(8.0)
                 .child(
                     primary("Save API key")
-                        .disabled(state.headless || state.credential.text.trim().is_empty())
+                        .disabled(
+                            state.headless
+                                || state.busy()
+                                || state.credential.text.trim().is_empty(),
+                        )
                         .on_press(|s: &mut State| {
                             s.connect_artwork();
                         })
                         .build(kit),
                 )
-                .child(
-                    button("Verify / unlock")
-                        .disabled(state.headless)
-                        .on_press(|s: &mut State| {
-                            s.verify_artwork();
-                        })
-                        .build(kit),
-                )
-                .child(
-                    button("Remove…")
-                        .disabled(state.headless)
-                        .variant(ButtonVariant::Danger)
-                        .on_press(|s: &mut State| {
-                            s.confirm(
-                                "Remove API key?",
-                                "Remove the SteamGridDB key from the OS credential store.",
-                                Command::SetArtworkCredential {
-                                    provider_id: "steamgriddb".into(),
-                                    credential: None,
-                                },
-                            );
-                        })
-                        .build(kit),
-                ),
+                .child(credential_options),
         )
         .child(
-            button("Get a SteamGridDB API key ↗")
-                .variant(ButtonVariant::Ghost)
-                .on_press(|s: &mut State| s.open_key_page())
-                .build(kit),
+            row().child(
+                button("Get an API key ↗")
+                    .variant(ButtonVariant::Ghost)
+                    .on_press(|s: &mut State| s.open_key_page())
+                    .build(kit),
+            ),
         )
-        .child(primary("Download missing artwork").disabled(state.headless || state.busy() || !state.artwork_connected())
-            .on_press(|s: &mut State| s.fetch_artwork()).build(kit).key("download-artwork"))
-        .child(hint("Connecting fills missing covers, backgrounds and logos automatically. Existing image choices are kept.", kit));
+        .child(
+            row().child(
+                button("Download missing artwork")
+                    .disabled(state.headless || state.busy() || !state.artwork_connected())
+                    .on_press(|s: &mut State| s.fetch_artwork())
+                    .build(kit)
+                    .key("download-artwork"),
+            ),
+        );
     let mut discovery = section("Game discovery", kit);
     for (provider, title, directory) in [
         (
@@ -122,55 +161,45 @@ pub fn view(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
             .unwrap_or_else(|| "Automatic discovery".into());
         let provider = provider.to_owned();
         let reset_provider = provider.clone();
-        discovery = discovery.child(
-            col()
-                .w_full()
+        discovery = discovery.child(setting_row(
+            title,
+            directory
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or(locations),
+            row()
                 .gap(8.0)
-                .child(label(title, 13.0, 500.0, kit))
-                .child(hint(
-                    directory
-                        .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or(locations),
-                    kit,
-                ))
                 .child(
-                    row()
-                        .gap(8.0)
-                        .child(
-                            button("Choose directory…")
-                                .disabled(state.example)
-                                .on_press_tx(move |_: &mut State, tx| {
-                                    let provider = provider.clone();
-                                    tx.open_folder(
-                                        FileDialogOptions {
-                                            title: "Choose discovery directory".into(),
-                                            ..Default::default()
-                                        },
-                                        move |s: &mut State, result, _| match result {
-                                            Ok(Some(directory)) => {
-                                                s.submit(directory_command(
-                                                    &provider,
-                                                    Some(directory),
-                                                ));
-                                            }
-                                            Err(error) => s.error = Some(error.to_string()),
-                                            _ => {}
-                                        },
-                                    );
-                                })
-                                .build(kit),
-                        )
-                        .child(
-                            button("Use automatic")
-                                .disabled(state.example)
-                                .on_press(move |s: &mut State| {
-                                    s.submit(directory_command(&reset_provider, None));
-                                })
-                                .build(kit),
-                        ),
+                    button("Choose…")
+                        .disabled(state.example)
+                        .on_press_tx(move |_: &mut State, tx| {
+                            let provider = provider.clone();
+                            tx.open_folder(
+                                FileDialogOptions {
+                                    title: "Choose discovery directory".into(),
+                                    ..Default::default()
+                                },
+                                move |s: &mut State, result, _| match result {
+                                    Ok(Some(directory)) => {
+                                        s.submit(directory_command(&provider, Some(directory)));
+                                    }
+                                    Err(error) => s.error = Some(error.to_string()),
+                                    _ => {}
+                                },
+                            );
+                        })
+                        .build(kit),
+                )
+                .child(
+                    button("Automatic")
+                        .disabled(state.example || directory.is_none())
+                        .on_press(move |s: &mut State| {
+                            s.submit(directory_command(&reset_provider, None));
+                        })
+                        .build(kit),
                 ),
-        );
+            kit,
+        ));
     }
     discovery = discovery.child(
         row()
@@ -198,22 +227,26 @@ pub fn view(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
         ("Artwork cache", &state.snapshot.paths.cache_directory),
     ] {
         let path = path.clone();
-        storage = storage.child(
-            col()
-                .w_full()
-                .gap(8.0)
-                .child(label(title, 13.0, 500.0, kit))
-                .child(hint(path.display().to_string(), kit))
-                .child(
-                    button("Open directory")
-                        .disabled(state.headless)
-                        .on_press(move |s: &mut State| s.open_path(path.clone()))
-                        .build(kit),
-                ),
-        );
+        storage = storage.child(setting_row(
+            title,
+            path.display().to_string(),
+            button("Open directory")
+                .disabled(state.headless)
+                .on_press(move |s: &mut State| s.open_path(path.clone()))
+                .build(kit),
+            kit,
+        ));
     }
-    col().w_full().gap(30.0)
-        .child(label("Settings", 32.0, 600.0, kit))
+    let mut page = col()
+        .key("settings-page")
+        .w_full()
+        .max_w(920.0)
+        .gap(24.0)
+        .child(label("Settings", 32.0, 600.0, kit));
+    if let Some(error) = &state.error {
+        page = page.child(error_message(error, kit));
+    }
+    page
         .child(section("Startup", kit).child(startup))
         .child(credential).child(discovery).child(storage)
         .child(section("Updates", kit).child(hint(format!("Startpoint Rune {} · Development frontend. Automatic installation and restart are disabled until Rune has its own packaged release channel.", env!("CARGO_PKG_VERSION")), kit)))
@@ -241,12 +274,10 @@ pub fn customize(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
         .child(choice(
             state,
             ("interface-style", "Interface style"),
-            &["Classic", "Gallery", "Cinematic", "Infinite Wall"],
+            &["Classic", "Infinite Wall"],
             style_name(a.recents_layout),
             |s, value, _| {
                 s.appearance.recents_layout = match value {
-                    "Gallery" => RecentsLayout::Gallery,
-                    "Cinematic" => RecentsLayout::Cinematic,
                     "Infinite Wall" => RecentsLayout::InfiniteWall,
                     _ => RecentsLayout::Carousel,
                 };
@@ -406,6 +437,10 @@ pub fn customize(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
     ];
     for (title, settings) in groups {
         let mut group = col()
+            .key(format!(
+                "customization-{}",
+                title.to_lowercase().replace(' ', "-")
+            ))
             .w_full()
             .gap(4.0)
             .child(el().w_full().h(1.0).fill(kit.c.text_base.alpha(0.07)))
@@ -420,6 +455,10 @@ pub fn customize(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
                         s.save_appearance();
                     })
                     .build(kit)
+                    .key(format!(
+                        "customization-{}",
+                        setting.label().to_lowercase().replace(' ', "-")
+                    ))
                     .w_full()
                     .justify_between()
                     .h(32.0),
@@ -451,8 +490,7 @@ pub fn customize(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
 pub fn style_name(style: RecentsLayout) -> &'static str {
     match style {
         RecentsLayout::Carousel => "Classic",
-        RecentsLayout::Gallery => "Gallery",
-        RecentsLayout::Cinematic => "Cinematic",
+        RecentsLayout::Gallery | RecentsLayout::Cinematic => "Classic",
         RecentsLayout::InfiniteWall => "Infinite Wall",
         RecentsLayout::FilmReel | RecentsLayout::Mosaic => "Classic",
     }
@@ -703,14 +741,16 @@ pub fn theme_editor(state: &State, kit: &Kit) -> El {
             kit,
         ))
         .child(
-            primary("Save theme")
-                .on_press(|s: &mut State| match s.theme_draft.resolve() {
-                    Ok(document) => {
-                        s.store_theme(document, Some(s.theme_draft.document.name.clone()));
-                    }
-                    Err(error) => s.error = Some(error),
-                })
-                .build(kit)
-                .key("save-theme"),
+            form_actions().child(
+                primary("Save theme")
+                    .on_press(|s: &mut State| match s.theme_draft.resolve() {
+                        Ok(document) => {
+                            s.store_theme(document, Some(s.theme_draft.document.name.clone()));
+                        }
+                        Err(error) => s.error = Some(error),
+                    })
+                    .build(kit)
+                    .key("save-theme"),
+            ),
         )
 }

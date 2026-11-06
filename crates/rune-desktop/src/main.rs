@@ -1,17 +1,21 @@
+mod activity;
 mod artwork;
 mod commands;
 mod components;
 mod editor;
 mod effects;
 mod icons;
+mod journal;
 mod library;
 mod motion;
 mod settings;
 mod state;
+mod tasks;
 mod theme;
 mod toolbar;
 mod view;
 mod wall;
+mod widgets;
 
 use rune::{AppSpec, Key, KeyEvent, Tx};
 use state::{Overlay, Screen, State};
@@ -62,12 +66,6 @@ fn main() {
             ("add-game", |s| s.show_overlay(Overlay::AddGame)),
             ("commands", |s| s.open_commands(String::new(), false)),
             ("notifications", |s| s.show_overlay(Overlay::Notifications)),
-            ("gallery", |s| {
-                s.preview_style(startpoint_sdk::RecentsLayout::Gallery)
-            }),
-            ("cinematic", |s| {
-                s.preview_style(startpoint_sdk::RecentsLayout::Cinematic)
-            }),
             ("infinite-wall", |s| {
                 s.preview_style(startpoint_sdk::RecentsLayout::InfiniteWall)
             }),

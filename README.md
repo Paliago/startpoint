@@ -38,7 +38,7 @@ An incremental Rune frontend is available without replacing GPUI:
 cargo run --locked --release -p startpoint-rune -- --example-library
 ```
 
-GPUI remains the default executable. Rune uses separate library/cache directories, so both can run at once; records are not synchronized. Rune includes continuous library layouts, native editor sections, artwork workflows, launch settings, journals, provider settings, customization, command search, and Classic, Gallery, Cinematic and Infinite Wall presentations. This is broad functional coverage, not full rendering/platform parity. See [Rune migration](docs/rune-migration.md) for storage/credential boundaries, internal headless checks and the remaining migration work. GPUI remains the production application while that work continues.
+GPUI remains the default executable. Rune uses separate library/cache directories, so both can run at once; records are not synchronized. Rune includes continuous library layouts, native editor sections, artwork workflows, launch settings, a standalone Markdown journal modal with independent per-game to-dos, provider settings, customization, command search, and Classic and Infinite Wall presentations. Gallery and Cinematic remain available in GPUI only. This is broad functional coverage, not full rendering/platform parity. See [Rune migration](docs/rune-migration.md) for storage/credential boundaries, internal headless checks and the remaining migration work. GPUI remains the production application while that work continues.
 
 ## Windows executable
 

@@ -6,7 +6,6 @@ use crate::{
 };
 use rune::{Color, Cx, El, ScrollSpec, Spring, SystemMaterial, Transition, col, el, row};
 use rune_kit::{Dialog, Kit};
-use startpoint_sdk::ArtworkKind;
 
 pub fn view(state: &State, cx: &mut Cx<State>) -> El {
     let kit = state.kit(cx.system_dark());
@@ -30,7 +29,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         Screen::Recents | Screen::Library => {
             crate::library::view(state, cx, &content_kit, &mut layers)
         }
-        Screen::Activity => scroll(crate::library::activity(state, &kit)),
+        Screen::Activity => scroll(crate::activity::view(state, &kit)),
         Screen::Settings => scroll(crate::settings::view(state, &kit, &mut layers)),
     };
     let mut workspace = row()
@@ -77,7 +76,6 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
     }
     workspace = workspace.child(
         el().key("main-content")
-            .instant_changes()
             .transition(Transition::none())
             .grow(1.0)
             .min_w(0.0)
@@ -131,47 +129,26 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
             }))
             .inert(),
     );
-    if artwork_recents {
-        if state.selected_game().is_some() {
-            root = root
-                .child(
-                    scene_background(state, &kit)
-                        .key("immersive-artwork")
-                        .transition(Transition::none())
-                        .absolute(0.0, 0.0)
-                        .w_full()
-                        .h_full()
-                        .inert(),
-                )
-                .child(
-                    el().key("artwork-scrim")
-                        .transition(Transition::none())
-                        .absolute(0.0, 0.0)
-                        .w_full()
-                        .h_full()
-                        .gradient(Color::BLACK.alpha(0.12), Color::BLACK.alpha(0.88))
-                        .inert(),
-                );
-        }
-    } else if let Some(game) = state.selected_game()
-        && let Some(asset) = game.artwork.get(&ArtworkKind::Background)
-        && state.images.contains_key(&asset.image_path)
-    {
-        root = root.child(
-            crate::library::image(state, &asset.image_path, &kit)
-                .key("ambient-artwork")
-                .transition(Transition::none())
-                .absolute(0.0, 0.0)
-                .w_full()
-                .h_full()
-                .opacity(if kit.c.text_base.luminance() > kit.c.page.luminance() {
-                    0.08
-                } else {
-                    0.025
-                })
-                .blur(72.0)
-                .inert(),
-        );
+    if artwork_recents && state.selected_game().is_some() {
+        root = root
+            .child(
+                scene_background(state, &kit)
+                    .key("immersive-artwork")
+                    .transition(Transition::none())
+                    .absolute(0.0, 0.0)
+                    .w_full()
+                    .h_full()
+                    .inert(),
+            )
+            .child(
+                el().key("artwork-scrim")
+                    .transition(Transition::none())
+                    .absolute(0.0, 0.0)
+                    .w_full()
+                    .h_full()
+                    .gradient(Color::BLACK.alpha(0.12), Color::BLACK.alpha(0.88))
+                    .inert(),
+            );
     }
     let frame = col()
         .key("application-frame")
@@ -182,6 +159,11 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .pt(if wall { 0.0 } else { 72.0 })
         .pb(if wall { 0.0 } else { 24.0 })
         .child(workspace);
+    let header = if state.overlay == Overlay::None {
+        header.raise()
+    } else {
+        header
+    };
     root = root
         .child(frame)
         .child(header.pin(Some(12.0), Some(10.0), Some(12.0), None));
@@ -224,6 +206,8 @@ pub fn scene_background(state: &State, kit: &Kit) -> El {
 
 fn scroll(content: El) -> El {
     col()
+        .instant_changes()
+        .transition(Transition::none())
         .w_full()
         .min_h(0.0)
         .scroll(ScrollSpec {
@@ -233,12 +217,26 @@ fn scroll(content: El) -> El {
 }
 
 fn overlays(state: &State, kit: &Kit, size: [f32; 2], layers: &mut Vec<El>) {
+    if state.overlay == Overlay::WallFocus {
+        crate::wall::overlay(state, kit, size, layers);
+        return;
+    }
     if state.overlay == Overlay::Commands {
         crate::commands::overlay(state, kit, size, layers);
         return;
     }
     let (title, body, width) = match state.overlay {
-        Overlay::WallFocus => ("Artwork".into(), crate::wall::focus(state, kit), 420.0),
+        Overlay::Journal => (
+            state
+                .editor
+                .game_id
+                .as_ref()
+                .and_then(|id| state.game(id))
+                .map_or_else(|| "Journal".into(), |game| game.title().to_owned()),
+            crate::journal::view(state, kit).h((size[1] - 212.0).clamp(240.0, 576.0)),
+            940.0,
+        ),
+        Overlay::WallFocus => return,
         Overlay::None => return,
         Overlay::Editor => {
             let title = state
@@ -276,6 +274,25 @@ fn overlays(state: &State, kit: &Kit, size: [f32; 2], layers: &mut Vec<El>) {
             700.0,
         ),
         Overlay::Confirm => {
+            let (action, variant) = match state
+                .confirmation
+                .as_ref()
+                .map(|confirmation| &confirmation.command)
+            {
+                Some(startpoint_sdk::Command::DeleteJournalEntry { .. }) => {
+                    ("Delete entry", rune_kit::ButtonVariant::Danger)
+                }
+                Some(startpoint_sdk::Command::RemoveManualGame { .. }) => {
+                    ("Remove game", rune_kit::ButtonVariant::Danger)
+                }
+                Some(startpoint_sdk::Command::SetArtworkCredential {
+                    credential: None, ..
+                }) => ("Remove API key", rune_kit::ButtonVariant::Danger),
+                Some(startpoint_sdk::Command::ReidentifyGame { .. }) => {
+                    ("Change identity", rune_kit::ButtonVariant::Submit)
+                }
+                _ => ("Confirm", rune_kit::ButtonVariant::Submit),
+            };
             let title = state
                 .confirmation
                 .as_ref()
@@ -289,26 +306,19 @@ fn overlays(state: &State, kit: &Kit, size: [f32; 2], layers: &mut Vec<El>) {
             (
                 title,
                 col().w_full().gap(20.0).child(hint(message, kit)).child(
-                    row()
-                        .gap(10.0)
+                    form_actions()
                         .child(
-                            primary("Confirm")
+                            button("Cancel")
+                                .on_press(|s: &mut State| s.dismiss_overlay())
+                                .build(kit)
+                                .key("confirm-cancel"),
+                        )
+                        .child(
+                            button(action)
+                                .variant(variant)
                                 .on_press(|s: &mut State| s.accept_confirmation())
                                 .build(kit)
                                 .key("confirm-action"),
-                        )
-                        .child(
-                            button("Cancel")
-                                .on_press(|s: &mut State| {
-                                    let overlay = s
-                                        .confirmation
-                                        .take()
-                                        .map_or(Overlay::None, |confirmation| {
-                                            confirmation.return_to
-                                        });
-                                    s.show_overlay(overlay);
-                                })
-                                .build(kit),
                         ),
                 ),
                 480.0,
@@ -317,7 +327,7 @@ fn overlays(state: &State, kit: &Kit, size: [f32; 2], layers: &mut Vec<El>) {
     };
     let mut body = col().w_full().gap(12.0).child(body);
     if let Some(error) = &state.error {
-        body = body.child(hint(error, kit).live_region(rune::LiveRegion::Assertive));
+        body = body.child(error_message(error, kit));
     }
     let maximum = match state.overlay {
         Overlay::Confirm => 240.0,
@@ -326,20 +336,14 @@ fn overlays(state: &State, kit: &Kit, size: [f32; 2], layers: &mut Vec<El>) {
         _ => 600.0,
     };
     let body_height = (size[1] - 180.0).clamp(180.0, maximum);
-    let body = col()
-        .w_full()
-        .max_h(body_height)
-        .min_h(0.0)
-        .padding(24.0)
-        .pt(8.0)
-        .scroll(ScrollSpec {
-            stick_bottom: false,
-        })
-        .child(body);
-    let mut dialog_kit = kit.clone();
-    dialog_kit.c.layer_01 = kit.c.layer_01;
+    let body = modal_body(body, body_height);
     let mut dialog_layers = Vec::new();
-    let mut dialog = Dialog::new("application", title)
+    let key = if state.overlay == Overlay::Journal {
+        "journal"
+    } else {
+        "application"
+    };
+    let mut dialog = Dialog::new(key, title)
         .open(true)
         .fit()
         .width(f32::min(width, size[0] - 48.0))
@@ -349,7 +353,8 @@ fn overlays(state: &State, kit: &Kit, size: [f32; 2], layers: &mut Vec<El>) {
     if state.overlay != Overlay::Confirm {
         dialog = dialog.description(match state.overlay {
             Overlay::Customize => "Appearance, layouts and artwork treatment",
-            Overlay::Editor => "Details, artwork, launch options and journal",
+            Overlay::Editor => "Game details, artwork and launch settings",
+            Overlay::Journal => "Journal and to-dos",
             Overlay::AddGame => "Add a local game or application to your library",
             Overlay::Theme => "Create a personal colour palette",
             Overlay::Commands => "Find games and application actions",
@@ -357,7 +362,7 @@ fn overlays(state: &State, kit: &Kit, size: [f32; 2], layers: &mut Vec<El>) {
             _ => "Background work and recent notifications",
         });
     }
-    dialog.build(&dialog_kit, &mut dialog_layers);
+    dialog.build(kit, &mut dialog_layers);
     dialog_layers.append(layers);
     *layers = dialog_layers;
 }

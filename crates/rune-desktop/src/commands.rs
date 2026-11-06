@@ -254,8 +254,23 @@ pub fn palette(state: &State, kit: &Kit) -> El {
                         .label("Search games and commands")
                         .placeholder("Search games or run a command…")
                         .on_edit(|s: &mut State| &mut s.command_query)
-                        .on_change(|s: &mut State, _| s.command_index = 0)
+                        .on_change(|s: &mut State, _| {
+                            s.command_index = 0;
+                            s.update_images();
+                        })
                         .on_key(|s: &mut State, event, tx| {
+                            if event.key == Key::Escape {
+                                tx.instant();
+                                if s.command_query.text.is_empty() {
+                                    s.close_overlay();
+                                    tx.blur();
+                                } else {
+                                    s.command_query = rune::TextEdit::new("");
+                                    s.command_query.focused = true;
+                                    s.command_index = 0;
+                                }
+                                return true;
+                            }
                             if matches!(event.key, Key::Down | Key::Up) {
                                 tx.instant();
                                 let count = entries(s).len();
@@ -326,6 +341,7 @@ pub fn overlay(state: &State, kit: &Kit, size: [f32; 2], layers: &mut Vec<El>) {
         .child(palette(state, kit))
         .modal(true, |s: &mut State| s.close_overlay())
         .modal_click_outside(true)
+        .focus_return("sidebar-toggle")
         .motion(rune::Spring::new(0.24, 0.0));
     if state.command_pointer {
         panel = panel.matched("command-surface");
@@ -444,12 +460,14 @@ pub fn context_menu(state: &State, kit: &Kit, layers: &mut Vec<El>) {
     let hidden = id.clone();
     let directory = game.install_directory.clone();
     let mut menu = Menu::new("game-context")
+        .min_width(240.0)
         .trigger(el())
         .open(true)
         .at(point.x, point.y)
         .on_close(|s: &mut State| s.context = None)
         .item(
             MenuItem::new("Play")
+                .icon(&icons::PLAY)
                 .disabled(!game.available || game.hidden)
                 .on_select(move |s: &mut State| {
                     s.context = None;
@@ -462,6 +480,7 @@ pub fn context_menu(state: &State, kit: &Kit, layers: &mut Vec<El>) {
             } else {
                 "Add favourite"
             })
+            .icon(&icons::FAVOURITE)
             .on_select(move |s: &mut State| {
                 s.context = None;
                 if let Some(game) = s.game(&favourite) {
@@ -480,10 +499,20 @@ pub fn context_menu(state: &State, kit: &Kit, layers: &mut Vec<El>) {
         ("Journal…", EditorSection::Journal),
     ] {
         let id = id.clone();
-        menu = menu.item(MenuItem::new(title).on_select(move |s: &mut State| {
-            s.context = None;
-            s.open_editor(id.clone(), section);
-        }));
+        let icon = match section {
+            EditorSection::Details => &icons::SETTINGS,
+            EditorSection::Artwork => &icons::GRID,
+            EditorSection::Launch => &icons::PLAY,
+            EditorSection::Journal => &icons::PEN,
+        };
+        menu = menu.item(
+            MenuItem::new(title)
+                .icon(icon)
+                .on_select(move |s: &mut State| {
+                    s.context = None;
+                    s.open_editor(id.clone(), section);
+                }),
+        );
     }
     menu = menu
         .separator()
@@ -493,6 +522,7 @@ pub fn context_menu(state: &State, kit: &Kit, layers: &mut Vec<El>) {
             } else {
                 "Mark completed"
             })
+            .icon(kit.glyph.check)
             .on_select(move |s: &mut State| {
                 s.context = None;
                 if let Some(game) = s.game(&completed) {
@@ -510,6 +540,11 @@ pub fn context_menu(state: &State, kit: &Kit, layers: &mut Vec<El>) {
             } else {
                 "Hide game"
             })
+            .icon(if game.hidden {
+                kit.glyph.eye
+            } else {
+                kit.glyph.eye_off
+            })
             .on_select(move |s: &mut State| {
                 s.context = None;
                 if let Some(game) = s.game(&hidden) {
@@ -522,6 +557,7 @@ pub fn context_menu(state: &State, kit: &Kit, layers: &mut Vec<El>) {
         )
         .item(
             MenuItem::new("Open install directory")
+                .icon(&icons::FOLDER)
                 .disabled(state.headless || game.install_directory.as_os_str().is_empty())
                 .on_select(move |s: &mut State| {
                     s.context = None;
@@ -530,10 +566,11 @@ pub fn context_menu(state: &State, kit: &Kit, layers: &mut Vec<El>) {
         );
     if game.provider_id == "manual" {
         let id = id.clone();
-        menu = menu
-            .separator()
-            .item(MenuItem::new("Remove manual game…").danger(true).on_select(
-                move |s: &mut State| {
+        menu = menu.separator().item(
+            MenuItem::new("Remove manual game…")
+                .icon(&icons::TRASH)
+                .danger(true)
+                .on_select(move |s: &mut State| {
                     s.context = None;
                     s.confirm(
                         "Remove game?",
@@ -542,8 +579,8 @@ pub fn context_menu(state: &State, kit: &Kit, layers: &mut Vec<El>) {
                             game_id: id.clone(),
                         },
                     );
-                },
-            ));
+                }),
+        );
     }
     let _ = menu.build(kit, layers);
 }

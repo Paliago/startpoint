@@ -48,15 +48,10 @@ pub fn fold(tx: &mut Tx) {
     tx.motion_curve(Curve::tween(0.2, Easing::cubic(0.32, 0.72, 0.0, 1.0)));
 }
 
-pub fn image_transition() -> Transition {
-    Transition::opacity().springs(SpringPair::new(Spring::new(0.18, 0.0), Spring::NONE))
+pub fn wall_hover() -> Curve {
+    Curve::tween(0.16, Easing::cubic(1.0 / 3.0, 0.0, 2.0 / 3.0, 1.0))
 }
 
-pub fn presentation_transition() -> Transition {
-    Transition::offset(0.0, 8.0)
-        .combined(Transition::opacity())
-        .springs(SpringPair::new(
-            Spring::new(0.2, 0.0),
-            Spring::new(0.16, 0.0),
-        ))
+pub fn image_transition() -> Transition {
+    Transition::opacity().springs(SpringPair::new(Spring::new(0.18, 0.0), Spring::NONE))
 }

@@ -28,6 +28,7 @@ pub enum Screen {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
+    Journal,
     None,
     Editor,
     AddGame,
@@ -109,6 +110,8 @@ pub struct State {
     pub example: bool,
     pub headless: bool,
     pub images: BTreeMap<PathBuf, Image>,
+    image_changed: Arc<AtomicBool>,
+    image_window: (usize, usize),
     pub sidebar_fold: crate::motion::PanelFold,
     pub overview_fold: crate::motion::PanelFold,
     pub library_start: Arc<AtomicUsize>,
@@ -116,7 +119,6 @@ pub struct State {
     pub dismissed_notifications: Vec<JobId>,
     pub command_index: usize,
     pub command_pointer: bool,
-    ready_images: usize,
     pub presented_background: Option<PathBuf>,
     pub previous_background: Option<PathBuf>,
     pub presented_detail: Option<GameId>,
@@ -233,6 +235,8 @@ impl State {
             example,
             headless,
             images: BTreeMap::new(),
+            image_changed: Arc::new(AtomicBool::new(false)),
+            image_window: (0, 0),
             sidebar_fold: crate::motion::PanelFold::new(false),
             overview_fold: crate::motion::PanelFold::new(true),
             library_start: Arc::new(AtomicUsize::new(0)),
@@ -240,7 +244,6 @@ impl State {
             dismissed_notifications: Vec::new(),
             command_index: 0,
             command_pointer: false,
-            ready_images: 0,
             presented_background: None,
             previous_background: None,
             presented_detail: None,
@@ -286,7 +289,7 @@ impl State {
 
     pub fn setup(state: &mut Self, wake: Waker) {
         state.wake = Some(wake.clone());
-        let image_changed = state.changed.clone();
+        let image_changed = state.image_changed.clone();
         let image_wake = wake.clone();
         state.image_cache = Some(ImageCache::new(Arc::new(move || {
             image_changed.store(true, Ordering::Release);
@@ -356,6 +359,7 @@ impl State {
                 && state.appearance_job.is_none_or(|id| !state.job_active(id))
             {
                 state.appearance = state.snapshot.settings.appearance.clone();
+                state.normalize_recents();
                 state.appearance_job = None;
             }
             if let Some(job) = state.snapshot.jobs.iter().find(|job| {
@@ -401,20 +405,19 @@ impl State {
             state.page = 0;
             dirty = true;
         }
-        dirty |= state.reconcile_selection();
-        state.refresh_library_order();
-        let previous_background = state.presented_background.clone();
-        let previous_detail = state.presented_detail.clone();
-        state.update_images();
-        let ready_images = state
-            .images
-            .values()
-            .filter(|image| image.is_ready())
-            .count();
-        dirty |=
-            ready_images != state.ready_images || previous_background != state.presented_background;
-        dirty |= previous_detail != state.presented_detail;
-        state.ready_images = ready_images;
+        let image_dirty = state.image_changed.swap(false, Ordering::AcqRel);
+        let image_window = (
+            state.library_start.load(Ordering::Relaxed),
+            state.wall_start.load(Ordering::Relaxed),
+        );
+        if dirty {
+            dirty |= state.reconcile_selection();
+        }
+        if dirty || image_dirty || image_window != state.image_window {
+            state.update_images();
+            state.image_window = image_window;
+            dirty = true;
+        }
         if state.artwork_refresh_pending && !state.headless && !state.busy() {
             state.artwork_refresh_pending = false;
             if state.artwork_connected() {
@@ -434,17 +437,13 @@ impl State {
             state.reduced_motion,
             tx,
         );
-        if state.overlay == Overlay::None && state.search.focused {
-            let query = std::mem::replace(&mut state.search, TextEdit::new(""));
-            state.open_commands(query.text.clone(), true);
-            dirty = true;
-        }
         dirty
     }
 
     fn apply_start_screen(&mut self) {
         if self.snapshot.ready && !self.initialized {
             self.appearance = self.snapshot.settings.appearance.clone();
+            self.normalize_recents();
             self.screen = match self.appearance.start_screen {
                 StartScreen::Recents => Screen::Recents,
                 StartScreen::Library => Screen::Library,
@@ -461,6 +460,15 @@ impl State {
     fn handle_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::JobChanged(job)
+                if self.editor.task_job == Some(job.id) && !job.state.active() =>
+            {
+                self.editor.task_job = None;
+                if job.state == JobState::Completed {
+                    self.editor.task = TextEdit::new("");
+                    self.editor.task_edit = None;
+                }
+            }
+            AppEvent::JobChanged(job)
                 if self.credential_job == Some(job.id) && !job.state.active() =>
             {
                 self.credential_job = None;
@@ -474,16 +482,10 @@ impl State {
                 if self.editor.journal_job == Some(job.id) && !job.state.active() =>
             {
                 self.editor.journal_job = None;
-                if job.state == JobState::Completed && self.editor.journal_entry.is_none() {
-                    self.editor.journal_entry = self
-                        .snapshot
-                        .journal
-                        .iter()
-                        .find(|entry| {
-                            Some(&entry.game_id) == self.editor.game_id.as_ref()
-                                && entry.text == self.editor.journal.text.trim()
-                        })
-                        .map(|entry| entry.id.clone());
+                if job.state == JobState::Completed {
+                    self.editor.journal_entry = None;
+                    self.editor.journal = TextEdit::new("");
+                    self.editor.journal_preview = false;
                 }
             }
             AppEvent::JobChanged(job)
@@ -618,6 +620,7 @@ impl State {
         self.table.select(id.0.clone());
         self.selected = Some(id);
         self.detail_closed = false;
+        self.update_images();
     }
 
     pub fn refresh_library_order(&mut self) {
@@ -664,6 +667,7 @@ impl State {
             self.table.select(id.0.clone());
         }
         self.page = self.page.min(last_page);
+        self.refresh_library_order();
         changed
     }
 
@@ -758,6 +762,7 @@ impl State {
     }
 
     fn record_navigation(&mut self, previous: NavigationLocation) {
+        self.update_images();
         if previous == self.navigation_location() {
             return;
         }
@@ -786,19 +791,10 @@ impl State {
         self.detail_closed = location.detail_closed;
         self.reconcile_selection();
         self.refresh_library_order();
+        self.update_images();
         if let Some(id) = &self.selected {
             self.table.select(id.0.clone());
-            if self.screen == Screen::Library
-                && self.appearance.library_layout != LibraryLayout::Compact
-                && self
-                    .visible_games()
-                    .iter()
-                    .skip(self.page * PAGE_SIZE)
-                    .take(PAGE_SIZE)
-                    .any(|game| &game.id == id)
-            {
-                tx.scroll_into_view(format!("game-{}", id.0));
-            }
+            self.reveal_game(id, tx);
         }
     }
 
@@ -927,9 +923,12 @@ impl State {
         self.command_index = 0;
         self.command_pointer = pointer;
         self.show_overlay(Overlay::Commands);
+        self.update_images();
     }
 
     pub fn close_overlay(&mut self) {
+        self.search.focused = false;
+        self.command_query.focused = false;
         self.overlay = Overlay::None;
         self.open_select = None;
         self.error = None;
@@ -946,21 +945,33 @@ impl State {
         }
     }
     pub fn show_overlay(&mut self, overlay: Overlay) {
+        self.wall_hover = None;
         self.overlay = overlay;
         self.open_select = None;
         self.context = None;
         self.error = None;
+        self.update_images();
     }
 
     pub fn preview_style(&mut self, style: RecentsLayout) {
         self.screen = Screen::Recents;
         self.appearance.recents_layout = match style {
-            RecentsLayout::FilmReel | RecentsLayout::Mosaic => RecentsLayout::Carousel,
+            RecentsLayout::Gallery
+            | RecentsLayout::Cinematic
+            | RecentsLayout::FilmReel
+            | RecentsLayout::Mosaic => RecentsLayout::Carousel,
             other => other,
         };
         self.wall_focus = None;
         self.appearance_dirty = true;
         self.reconcile_selection();
+        self.update_images();
+    }
+
+    fn normalize_recents(&mut self) {
+        if self.appearance.recents_layout != RecentsLayout::InfiniteWall {
+            self.appearance.recents_layout = RecentsLayout::Carousel;
+        }
     }
 
     pub fn confirm(&mut self, title: &str, message: &str, command: Command) {
@@ -1165,7 +1176,7 @@ impl State {
         });
     }
 
-    fn update_images(&mut self) {
+    pub(crate) fn update_images(&mut self) {
         let Some(cache) = &self.image_cache else {
             return;
         };
@@ -1274,7 +1285,10 @@ impl State {
                     .filter_map(|candidate| candidate.preview_path.clone()),
             );
         }
-        self.images.retain(|path, _| paths.contains(path));
+        paths.sort();
+        paths.dedup();
+        self.images
+            .retain(|path, _| paths.binary_search(path).is_ok());
         for path in paths {
             let image = self
                 .images

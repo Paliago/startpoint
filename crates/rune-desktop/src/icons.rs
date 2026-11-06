@@ -1,5 +1,16 @@
 use rune::Icon;
 
+pub static PEN: Icon = Icon {
+    name: "startpoint-pen",
+    view: 24.0,
+    body: r#"<path d="m15 4 5 5-11 11H4v-5zM13 6l5 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>"#,
+};
+pub static TRASH: Icon = Icon {
+    name: "startpoint-trash",
+    view: 24.0,
+    body: r#"<path d="M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>"#,
+};
+
 pub static BACK: Icon = Icon {
     name: "startpoint-back",
     view: 24.0,
@@ -65,4 +76,16 @@ pub static PLAY: Icon = Icon {
     name: "startpoint-play",
     view: 24.0,
     body: r#"<path d="M8 5l11 7-11 7z" fill="currentColor"/>"#,
+};
+
+pub static FAVOURITE: Icon = Icon {
+    name: "startpoint-favourite",
+    view: 24.0,
+    body: r#"<path d="m12 3 2.8 5.8 6.4.9-4.6 4.5 1.1 6.3-5.7-3-5.7 3 1.1-6.3L2.8 9.7l6.4-.9z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>"#,
+};
+
+pub static FOLDER: Icon = Icon {
+    name: "startpoint-folder",
+    view: 24.0,
+    body: r#"<path d="M3 7V5h6l2 3h10v12H3V7z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>"#,
 };

@@ -50,6 +50,11 @@ pub struct EditorDraft {
     pub import_job: Option<JobId>,
     pub reload_job: Option<JobId>,
     pub journal_job: Option<JobId>,
+    pub journal_preview: bool,
+    pub journal_tasks_open: bool,
+    pub task: TextEdit,
+    pub task_edit: Option<String>,
+    pub task_job: Option<JobId>,
 }
 
 #[derive(Default)]
@@ -63,6 +68,10 @@ pub struct ManualDraft {
 
 impl State {
     pub fn open_editor(&mut self, id: GameId, section: EditorSection) {
+        if section == EditorSection::Journal {
+            self.open_journal(id);
+            return;
+        }
         let Some(game) = self.game(&id) else {
             self.error = Some("This game is no longer in the library.".into());
             return;
@@ -253,6 +262,13 @@ impl State {
     }
 
     pub fn save_journal(&mut self) {
+        if self
+            .editor
+            .journal_job
+            .is_some_and(|id| self.job_active(id))
+        {
+            return;
+        }
         let Some(game_id) = self.editor.game_id.clone() else {
             return;
         };
@@ -341,7 +357,7 @@ pub fn view(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
         EditorSection::Launch => 2,
         EditorSection::Journal => 3,
     };
-    let tabs = SegmentedControl::new(&["Details", "Artwork", "Launch", "Journal"], Some(index))
+    let tabs = SegmentedControl::new(&["Details", "Artwork", "Launch"], Some(index.min(2)))
         .width(None)
         .on_pick(|state: &mut State, index, _| {
             state.editor.section = match index {
@@ -367,7 +383,7 @@ pub fn view(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
 }
 
 fn details(state: &State, kit: &Kit) -> El {
-    let mut body = col()
+    let body = col()
         .w_full()
         .gap(14.0)
         .child(field(
@@ -400,14 +416,7 @@ fn details(state: &State, kit: &Kit) -> El {
             kit,
         ))
         .child(
-            row()
-                .gap(10.0)
-                .child(
-                    primary("Save details")
-                        .on_press(|s: &mut State| s.save_metadata())
-                        .build(kit)
-                        .key("save-details"),
-                )
+            form_actions()
                 .child(
                     button("Re-identify game…")
                         .on_press(|s: &mut State| {
@@ -415,71 +424,76 @@ fn details(state: &State, kit: &Kit) -> El {
                             s.editor.artwork.identifying = true;
                         })
                         .build(kit),
+                )
+                .child(
+                    primary("Save details")
+                        .on_press(|s: &mut State| s.save_metadata())
+                        .build(kit)
+                        .key("save-details"),
                 ),
+        );
+    let mut organization = col()
+        .w_full()
+        .gap(14.0)
+        .child(field(
+            "Collections (comma-separated)",
+            "editor-collections",
+            &state.editor.collections,
+            |s| &mut s.editor.collections,
+            kit,
+        ))
+        .child(
+            Switch::new(state.editor.completed)
+                .label("Completed")
+                .on_toggle(|s: &mut State| s.editor.completed = !s.editor.completed)
+                .build(kit),
         )
         .child(
-            button("Library organization")
-                .on_press(|s: &mut State| s.editor.organization_open = !s.editor.organization_open)
-                .build(kit),
+            form_actions().child(
+                primary("Save organization")
+                    .on_press(|s: &mut State| s.save_organization())
+                    .build(kit)
+                    .key("save-organization"),
+            ),
+        )
+        .child(
+            button(if state.editor.hidden {
+                "Unhide game"
+            } else {
+                "Hide game"
+            })
+            .on_press(|s: &mut State| {
+                if let Some(id) = s.editor.game_id.clone() {
+                    let hidden = !s.editor.hidden;
+                    s.submit(Command::SetHidden {
+                        game_id: id,
+                        hidden,
+                    });
+                    s.editor.hidden = hidden;
+                }
+            })
+            .build(kit),
         );
-    if state.editor.organization_open {
-        body = body.child(
-            col()
-                .w_full()
-                .gap(14.0)
-                .child(field(
-                    "Collections (comma-separated)",
-                    "editor-collections",
-                    &state.editor.collections,
-                    |s| &mut s.editor.collections,
-                    kit,
-                ))
-                .child(
-                    Switch::new(state.editor.completed)
-                        .label("Completed")
-                        .on_toggle(|s: &mut State| s.editor.completed = !s.editor.completed)
-                        .build(kit),
-                )
-                .child(
-                    primary("Save organization")
-                        .on_press(|s: &mut State| s.save_organization())
-                        .build(kit)
-                        .key("save-organization"),
-                )
-                .child(
-                    button(if state.editor.hidden {
-                        "Unhide game"
-                    } else {
-                        "Hide game"
-                    })
-                    .on_press(|s: &mut State| {
-                        if let Some(id) = s.editor.game_id.clone() {
-                            let hidden = !s.editor.hidden;
-                            s.submit(Command::SetHidden {
-                                game_id: id,
-                                hidden,
-                            });
-                            s.editor.hidden = hidden;
-                        }
-                    })
-                    .build(kit),
-                ),
-        );
-        if state
-            .editor
-            .game_id
-            .as_ref()
-            .and_then(|id| state.game(id))
-            .is_some_and(|game| game.provider_id == "manual")
-        {
-            body = body.child(button("Remove manual game…").variant(ButtonVariant::Danger).on_press(|s: &mut State| {
+    if state
+        .editor
+        .game_id
+        .as_ref()
+        .and_then(|id| state.game(id))
+        .is_some_and(|game| game.provider_id == "manual")
+    {
+        organization = organization.child(button("Remove manual game…").variant(ButtonVariant::Danger).on_press(|s: &mut State| {
                 if let Some(game_id) = s.editor.game_id.clone() {
                     s.confirm("Remove game?", "Remove this manual game from Startpoint. Installed files will not be deleted.", Command::RemoveManualGame { game_id });
                 }
             }).build(kit));
-        }
     }
-    body
+    body.child(divider(kit)).child(
+        rune_kit::Collapsible::new("Library organization", state.editor.organization_open)
+            .on_toggle(|s: &mut State| s.editor.organization_open = !s.editor.organization_open)
+            .child(organization.pt(12.0))
+            .build(kit)
+            .key("library-organization"),
+    )
 }
 
 fn launch(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
@@ -668,91 +682,17 @@ fn launch(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
         }
     }
     body.child(
-        primary("Save launch configuration")
-            .on_press(|s: &mut State| s.save_launch())
-            .build(kit)
-            .key("save-launch"),
+        form_actions().child(
+            primary("Save launch configuration")
+                .on_press(|s: &mut State| s.save_launch())
+                .build(kit)
+                .key("save-launch"),
+        ),
     )
 }
 
 fn journal(state: &State, kit: &Kit) -> El {
-    let mut body = col()
-        .w_full()
-        .gap(16.0)
-        .child(area(
-            "Journal entry",
-            "journal-text",
-            &state.editor.journal,
-            130.0,
-            |s| &mut s.editor.journal,
-            kit,
-        ))
-        .child(
-            row()
-                .gap(8.0)
-                .child(
-                    primary("Save entry")
-                        .disabled(
-                            state
-                                .editor
-                                .journal_job
-                                .is_some_and(|id| state.job_active(id)),
-                        )
-                        .on_press(|s: &mut State| s.save_journal())
-                        .build(kit)
-                        .key("save-journal"),
-                )
-                .child(
-                    button("New entry")
-                        .on_press(|s: &mut State| {
-                            s.editor.journal_entry = None;
-                            s.editor.journal = TextEdit::new("");
-                        })
-                        .build(kit),
-                ),
-        );
-    for entry in state
-        .snapshot
-        .journal
-        .iter()
-        .filter(|entry| Some(&entry.game_id) == state.editor.game_id.as_ref())
-    {
-        let entry_id = entry.id.clone();
-        let text = entry.text.clone();
-        let delete_id = entry.id.clone();
-        body = body.child(
-            col().w_full().gap(8.0).child(hint(&entry.text, kit)).child(
-                row()
-                    .gap(8.0)
-                    .child(
-                        button("Edit")
-                            .on_press(move |s: &mut State| {
-                                s.editor.journal_entry = Some(entry_id.clone());
-                                s.editor.journal = TextEdit::new(&text);
-                            })
-                            .build(kit),
-                    )
-                    .child(
-                        button("Delete…")
-                            .variant(ButtonVariant::Danger)
-                            .on_press(move |s: &mut State| {
-                                if let Some(game_id) = s.editor.game_id.clone() {
-                                    s.confirm(
-                                        "Delete journal entry?",
-                                        "This entry will be permanently removed.",
-                                        Command::DeleteJournalEntry {
-                                            game_id,
-                                            entry_id: delete_id.clone(),
-                                        },
-                                    );
-                                }
-                            })
-                            .build(kit),
-                    ),
-            ),
-        );
-    }
-    body
+    crate::journal::view(state, kit)
 }
 
 pub fn manual_view(state: &State, kit: &Kit) -> El {
@@ -803,15 +743,17 @@ pub fn manual_view(state: &State, kit: &Kit) -> El {
             kit,
         ))
         .child(
-            primary("Add game")
-                .disabled(
-                    state
-                        .manual
-                        .pending_job
-                        .is_some_and(|id| state.job_active(id)),
-                )
-                .on_press(|s: &mut State| s.add_manual_game())
-                .build(kit)
-                .key("add-manual-game"),
+            form_actions().child(
+                primary("Add game")
+                    .disabled(
+                        state
+                            .manual
+                            .pending_job
+                            .is_some_and(|id| state.job_active(id)),
+                    )
+                    .on_press(|s: &mut State| s.add_manual_game())
+                    .build(kit)
+                    .key("add-manual-game"),
+            ),
         )
 }

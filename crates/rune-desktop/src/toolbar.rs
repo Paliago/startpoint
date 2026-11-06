@@ -4,7 +4,7 @@ use crate::{
     state::{Overlay, Screen, State},
 };
 use rune::{Color, Cx, El, el, row};
-use rune_kit::{ButtonVariant, Kit, TextInput};
+use rune_kit::{ButtonVariant, Kit};
 
 pub fn surface(state: &State, kit: &Kit) -> El {
     let mut surface = row()
@@ -99,22 +99,23 @@ pub fn view(state: &State, cx: &mut Cx<State>, kit: &Kit, width: f32) -> El {
     let search = if state.overlay == Overlay::Commands {
         el().w(search_width).h(28.0)
     } else {
-        TextInput::new(&state.search)
-            .plain()
-            .leading_icon(kit.glyph.search)
-            .width(Some(search_width))
-            .height(28.0)
-            .label("Search games and commands")
-            .placeholder("Search or run a command…")
-            .on_edit(|s: &mut State| &mut s.search)
-            .on_change(|s: &mut State, _| {
-                let query = s.search.text.clone();
-                s.open_commands(query, true);
-            })
-            .build(kit)
-            .key("search")
-            .matched("command-surface")
-            .motion(rune::Spring::new(0.24, 0.0))
+        button(if width < 1100.0 {
+            "Search…"
+        } else {
+            "Search or run a command…"
+        })
+        .variant(ButtonVariant::Ghost)
+        .icon(kit.glyph.search)
+        .on_press_tx(|s: &mut State, tx| {
+            tx.animated();
+            s.open_commands(String::new(), true);
+        })
+        .build(kit)
+        .w(search_width)
+        .h(28.0)
+        .key("search")
+        .matched("command-surface")
+        .motion(rune::Spring::new(0.24, 0.0))
     };
     let actions = surface(state, kit)
         .key("action-toolbar")

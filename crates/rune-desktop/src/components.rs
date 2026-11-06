@@ -1,7 +1,7 @@
 use crate::state::State;
-use rune::{El, Icon, TextEdit, TextStyle, col, row, text};
+use rune::{El, Icon, ScrollSpec, TextEdit, TextStyle, col, row, text};
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, Kit, Select, SelectAppearance, TextArea, TextInput,
+    Button, ButtonVariant, ControlSize, Field, Kit, Select, SelectAppearance, TextArea, TextInput,
 };
 
 pub fn label(value: impl Into<String>, size: f32, weight: f32, kit: &Kit) -> El {
@@ -12,6 +12,13 @@ pub fn label(value: impl Into<String>, size: f32, weight: f32, kit: &Kit) -> El 
 
 pub fn hint(value: impl Into<String>, kit: &Kit) -> El {
     text(value).font(kit.ty.ui).color(kit.c.text_muted).wrap()
+}
+
+pub fn error_message(value: impl Into<String>, kit: &Kit) -> El {
+    hint(value, kit)
+        .color(kit.c.danger.fg)
+        .role("alert")
+        .live_region(rune::LiveRegion::Assertive)
 }
 
 pub fn eyebrow(value: impl Into<String>, kit: &Kit) -> El {
@@ -45,7 +52,7 @@ impl ActionButton {
         Self(self.0.on_press_tx(action))
     }
     pub fn build(self, kit: &Kit) -> El {
-        self.0.build(kit).h(34.0).px(14.0).radius(8.0)
+        self.0.build(kit).h(36.0).px(14.0).radius(8.0)
     }
 }
 
@@ -75,11 +82,9 @@ pub fn field(
     access: impl for<'a> Fn(&'a mut State) -> &'a mut TextEdit + 'static,
     kit: &Kit,
 ) -> El {
-    col()
-        .w_full()
-        .gap(6.0)
-        .child(label(title, 12.0, 500.0, kit))
-        .child(
+    Field::new()
+        .label(title)
+        .control(
             TextInput::new(edit)
                 .label(title)
                 .width(None)
@@ -88,6 +93,7 @@ pub fn field(
                 .build(kit)
                 .key(key),
         )
+        .build(kit)
 }
 
 pub fn area(
@@ -98,11 +104,9 @@ pub fn area(
     access: impl for<'a> Fn(&'a mut State) -> &'a mut TextEdit + 'static,
     kit: &Kit,
 ) -> El {
-    col()
-        .w_full()
-        .gap(6.0)
-        .child(label(title, 12.0, 500.0, kit))
-        .child(
+    Field::new()
+        .label(title)
+        .control(
             TextArea::new(edit)
                 .label(title)
                 .width(None)
@@ -112,13 +116,52 @@ pub fn area(
                 .build(kit)
                 .key(key),
         )
+        .build(kit)
 }
 
 pub fn section(title: &str, kit: &Kit) -> El {
     col()
         .w_full()
         .gap(16.0)
-        .child(label(title, 20.0, 600.0, kit))
+        .child(divider(kit).mb(4.0))
+        .child(label(title, 16.0, 600.0, kit))
+}
+
+pub fn divider(kit: &Kit) -> El {
+    rune_kit::Divider::horizontal().build(kit)
+}
+
+pub fn form_actions() -> El {
+    row().w_full().gap(8.0).center_y().justify_end().pt(8.0)
+}
+
+pub fn setting_row(title: &str, description: impl Into<String>, actions: El, kit: &Kit) -> El {
+    row()
+        .w_full()
+        .gap(16.0)
+        .center_y()
+        .child(
+            col()
+                .grow(1.0)
+                .min_w(0.0)
+                .gap(6.0)
+                .child(label(title, 13.0, 500.0, kit))
+                .child(hint(description, kit)),
+        )
+        .child(actions)
+}
+
+pub fn modal_body(content: El, maximum_height: f32) -> El {
+    col()
+        .w_full()
+        .max_h(maximum_height)
+        .min_h(0.0)
+        .padding(16.0)
+        .pt(8.0)
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .child(content)
 }
 
 pub fn choice(
@@ -162,7 +205,7 @@ pub fn choice(
                     choose(state, value, tx);
                 })
                 .build(kit, layers)
-                .h(if key == "library-sort" { 28.0 } else { 34.0 })
+                .h(if key == "library-sort" { 28.0 } else { 36.0 })
                 .max_w(if key == "library-sort" { 164.0 } else { 220.0 })
                 .radius(8.0)
                 .border(

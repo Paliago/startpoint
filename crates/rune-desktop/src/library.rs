@@ -14,7 +14,7 @@ pub fn image(state: &State, path: &Path, kit: &Kit) -> El {
     if let Some(image) = state
         .images
         .get(path)
-        .filter(|image| image.is_ready() && image.error().is_none())
+        .filter(|image| image.error().is_none())
     {
         el().pixels_fit(image.pixels(), SurfaceFit::Fill)
     } else {
@@ -28,7 +28,12 @@ pub fn artwork(state: &State, game: &Game, kind: ArtworkKind, full: bool, kit: &
         .get(&kind)
         .or_else(|| game.artwork.get(&ArtworkKind::Cover))
     {
-        let path = if full && state.images.contains_key(&asset.image_path) {
+        let path = if full
+            && state
+                .images
+                .get(&asset.image_path)
+                .is_some_and(|image| image.is_ready() && image.error().is_none())
+        {
             &asset.image_path
         } else {
             &asset.thumbnail_path
@@ -36,7 +41,7 @@ pub fn artwork(state: &State, game: &Game, kind: ArtworkKind, full: bool, kit: &
         if state
             .images
             .get(path)
-            .is_some_and(|image| image.is_ready() && image.error().is_none())
+            .is_some_and(|image| image.error().is_none())
         {
             let recent = state.screen == Screen::Recents;
             let enabled = if recent {
@@ -89,14 +94,11 @@ pub fn view(state: &State, cx: &mut Cx<State>, kit: &Kit, layers: &mut Vec<El>) 
     if state.screen == Screen::Recents {
         return match state.appearance.recents_layout {
             RecentsLayout::Carousel => classic(state, kit, size),
-            RecentsLayout::Gallery => {
-                gallery(state, kit).transition(crate::motion::presentation_transition())
-            }
-            RecentsLayout::Cinematic => {
-                cinematic(state, kit).transition(crate::motion::presentation_transition())
-            }
             RecentsLayout::InfiniteWall => crate::wall::view(state, kit, width),
-            RecentsLayout::FilmReel | RecentsLayout::Mosaic => classic(state, kit, size),
+            RecentsLayout::Gallery
+            | RecentsLayout::Cinematic
+            | RecentsLayout::FilmReel
+            | RecentsLayout::Mosaic => classic(state, kit, size),
         };
     }
     grid_view(state, kit, layers, width)
@@ -457,19 +459,21 @@ fn grid_view(state: &State, kit: &Kit, layers: &mut Vec<El>, window_width: f32) 
                     )),
             );
         } else {
+            let order: std::sync::Arc<Vec<_>> =
+                std::sync::Arc::new(games.iter().map(|game| game.id.clone()).collect());
+            let keys = order.clone();
             cards = cards.virtual_rows(
-                games.len().div_ceil(column_count),
+                order.len().div_ceil(column_count),
                 card_width * 1.5 + 70.0,
-                move |s: &State, index| {
-                    s.library_order
-                        .get(index * column_count)
-                        .map_or(Cow::Borrowed(""), |id| {
-                            Cow::Owned(format!("library-row-{}", id.0))
-                        })
+                move |_: &State, index| {
+                    keys.get(index * column_count).map_or_else(
+                        || Cow::Owned(format!("library-row-empty-{index}")),
+                        |id| Cow::Owned(format!("library-row-{}", id.0)),
+                    )
                 },
                 move |s: &State, index| {
                     row().w_full().gap(18.0).pb(18.0).items_start().children(
-                        s.library_order
+                        order
                             .iter()
                             .skip(index * column_count)
                             .take(column_count)
@@ -533,7 +537,7 @@ fn grid_view(state: &State, kit: &Kit, layers: &mut Vec<El>, window_width: f32) 
                 ),
         );
     }
-    body
+    body.instant_changes().transition(rune::Transition::none())
 }
 
 fn compact_table(state: &State, kit: &Kit) -> El {
@@ -694,6 +698,7 @@ pub fn details(state: &State, game: &Game, kit: &Kit) -> El {
     let metadata = game.effective_metadata();
     let id = game.id.clone();
     let progress_id = game.id.clone();
+    let journal_id = game.id.clone();
     let mut artwork_kit = kit.clone();
     artwork_kit.c.text_base = Color::WHITE;
     artwork_kit.c.icon_base = Color::WHITE;
@@ -762,37 +767,45 @@ pub fn details(state: &State, game: &Game, kit: &Kit) -> El {
                 ),
         )
         .child(
-            col().w_full().padding(20.0).gap(12.0).child(
-                row()
-                    .w_full()
-                    .gap(8.0)
-                    .child(
-                        primary("Play now")
-                            .icon(&icons::PLAY)
-                            .disabled(game.hidden || !game.available)
-                            .on_press(|s: &mut State| s.launch_selected())
+            col()
+                .w_full()
+                .padding(20.0)
+                .gap(12.0)
+                .child(
+                    label(last_played(game.last_launched), 10.0, 400.0, kit)
+                        .color(kit.c.text_muted),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .gap(8.0)
+                        .child(
+                            primary("Play now")
+                                .icon(&icons::PLAY)
+                                .disabled(game.hidden || !game.available)
+                                .on_press(|s: &mut State| s.launch_selected())
+                                .build(kit)
+                                .grow(1.0)
+                                .h(38.0)
+                                .key("play-selected"),
+                        )
+                        .child(
+                            rune_kit::IconButton::new(if game.favourite {
+                                &rune_kit::glyphs::STAR_FILLED
+                            } else {
+                                &rune_kit::glyphs::STAR
+                            })
+                            .label(if game.favourite {
+                                "Unfavourite"
+                            } else {
+                                "Favourite"
+                            })
+                            .on_press(|s: &mut State| s.toggle_favourite())
                             .build(kit)
-                            .grow(1.0)
-                            .h(38.0)
-                            .key("play-selected"),
-                    )
-                    .child(
-                        rune_kit::IconButton::new(if game.favourite {
-                            &rune_kit::glyphs::STAR_FILLED
-                        } else {
-                            &rune_kit::glyphs::STAR
-                        })
-                        .label(if game.favourite {
-                            "Unfavourite"
-                        } else {
-                            "Favourite"
-                        })
-                        .on_press(|s: &mut State| s.toggle_favourite())
-                        .build(kit)
-                        .size(38.0, 38.0)
-                        .key("favourite-selected"),
-                    ),
-            ),
+                            .size(38.0, 38.0)
+                            .key("favourite-selected"),
+                        ),
+                ),
         )
         .child(
             row()
@@ -801,11 +814,14 @@ pub fn details(state: &State, game: &Game, kit: &Kit) -> El {
                 .gap(8.0)
                 .center_y()
                 .child(
-                    label(last_played(game.last_launched), 10.0, 400.0, kit)
-                        .color(kit.c.text_muted)
+                    button("Journal")
+                        .icon(&icons::PEN)
+                        .on_press(move |s: &mut State| s.open_journal(journal_id.clone()))
+                        .build(kit)
+                        .h(32.0)
                         .grow(1.0)
                         .min_w(0.0)
-                        .wrap(),
+                        .key("journal-selected"),
                 )
                 .child(
                     toolbar_icon(&icons::SETTINGS, "Manage game", kit)
@@ -813,6 +829,7 @@ pub fn details(state: &State, game: &Game, kit: &Kit) -> El {
                             s.open_editor(id.clone(), EditorSection::Details)
                         })
                         .size(32.0, 32.0)
+                        .fill(kit.c.bg_button_neutral)
                         .key("edit-selected"),
                 )
                 .child(
@@ -825,12 +842,11 @@ pub fn details(state: &State, game: &Game, kit: &Kit) -> El {
                         },
                         kit,
                     )
-                    .size(28.0, 28.0)
-                    .opacity(if game.completed { 1.0 } else { 0.45 })
+                    .size(32.0, 32.0)
                     .fill(if game.completed {
                         kit.c.text_accent.alpha(0.12)
                     } else {
-                        Color::TRANSPARENT
+                        kit.c.bg_button_neutral
                     })
                     .on_press(move |s: &mut State| {
                         if let Some(game) = s.game(&progress_id) {
@@ -878,10 +894,26 @@ pub fn details(state: &State, game: &Game, kit: &Kit) -> El {
 
 fn classic(state: &State, kit: &Kit, size: [f32; 2]) -> El {
     let immersive = immersive_recents(state);
+    let enabled_widgets = state.appearance.recents_activity
+        || state.appearance.recents_progress
+        || state.appearance.recents_journal;
+    let games = state.visible_games();
+    let available = size[0]
+        - 48.0
+        - if state.sidebar_open() {
+            state.appearance.sidebar_width.clamp(140.0, 260.0) + 24.0
+        } else {
+            0.0
+        };
+    let count = games.len().to_f32().unwrap_or(1.0).max(1.0);
+    let width = ((available - (count - 1.0) * 14.0) / count).clamp(112.0, 260.0);
+    let rotation_height = (width - 10.0) * 0.6 + 40.0 + 34.0 + 32.0;
+    let prompt_height = if missing_artwork(state) { 76.0 } else { 0.0 };
+    let hero_height = (size[1] - 96.0 - rotation_height - prompt_height).max(210.0);
     let mut artwork_kit = kit.clone();
     artwork_kit.c.text_base = Color::WHITE;
     artwork_kit.c.icon_base = Color::WHITE;
-    let mut content = col().w_full().gap(22.0);
+    let mut content = col().key("classic-content").w_full().gap(16.0);
     if !immersive {
         content = content.child(
             row()
@@ -914,15 +946,11 @@ fn classic(state: &State, kit: &Kit, size: [f32; 2]) -> El {
         );
     }
     if let Some(game) = state.selected_game() {
-        let id = game.id.clone();
         let mut hero = el()
             .key("recents-hero")
             .w_full()
-            .h(if immersive {
-                (size[1] - 380.0).clamp(300.0, 520.0)
-            } else {
-                326.0
-            })
+            .h(hero_height)
+            .min_h(hero_height)
             .radius(14.0)
             .clip_rounded(14.0);
         if !immersive {
@@ -941,23 +969,7 @@ fn classic(state: &State, kit: &Kit, size: [f32; 2]) -> El {
             .pb(if immersive { 16.0 } else { 32.0 })
             .justify_end()
             .gap(12.0)
-            .child(eyebrow("JUMP BACK IN", kit).color(Color::WHITE.alpha(0.75)))
-            .child(hero_title(state, game, kit))
-            .child(
-                row()
-                    .gap(8.0)
-                    .center_y()
-                    .child(el().size(5.0, 5.0).radius(2.5).fill(kit.c.success.fg))
-                    .child(
-                        label(
-                            format!("Ready to play  ·  {}", last_played(game.last_launched)),
-                            11.0,
-                            400.0,
-                            kit,
-                        )
-                        .color(Color::WHITE.alpha(0.75)),
-                    ),
-            );
+            .child(hero_title(state, game, kit));
         if let Some(description) = game.effective_metadata().description {
             narrative = narrative.child(
                 label(
@@ -1004,35 +1016,11 @@ fn classic(state: &State, kit: &Kit, size: [f32; 2]) -> El {
                     .fill(Color::BLACK.alpha(0.35))
                     .on_press(|s: &mut State| s.toggle_favourite())
                     .key("favourite-selected"),
-                )
-                .child(
-                    button("Manage game…")
-                        .variant(rune_kit::ButtonVariant::Ghost)
-                        .on_press(move |s: &mut State| {
-                            s.open_editor(id.clone(), EditorSection::Details)
-                        })
-                        .build(&artwork_kit)
-                        .h(38.0)
-                        .fill(Color::BLACK.alpha(0.4))
-                        .color(Color::WHITE)
-                        .key("edit-selected"),
                 ),
         );
         content = content.child(hero.child(narrative));
     }
     let mut strip = row().gap(14.0);
-    let games = state.visible_games();
-    let available = size[0]
-        - 48.0
-        - if state.appearance.sidebar_visible {
-            state.appearance.sidebar_width.clamp(140.0, 260.0) + 24.0
-        } else {
-            0.0
-        };
-    let count = num_traits::ToPrimitive::to_f32(&games.len())
-        .unwrap_or(1.0)
-        .max(1.0);
-    let width = ((available - (count - 1.0) * 14.0) / count).clamp(112.0, 260.0);
     for game in games {
         strip = strip.child(recent_card(state, game, kit, width));
     }
@@ -1047,22 +1035,50 @@ fn classic(state: &State, kit: &Kit, size: [f32; 2]) -> El {
                 .center_y()
                 .child(eyebrow("ON YOUR ROTATION", kit))
                 .child(
-                    button("View library →")
-                        .variant(rune_kit::ButtonVariant::Ghost)
-                        .on_press(|s: &mut State| s.navigate(Screen::Library))
-                        .build(kit)
-                        .key("view-library"),
+                    row()
+                        .gap(8.0)
+                        .center_y()
+                        .child(
+                            button("Widgets")
+                                .variant(rune_kit::ButtonVariant::Ghost)
+                                .icon(&icons::CUSTOMIZE)
+                                .on_press_tx(|s: &mut State, tx| {
+                                    s.show_overlay(crate::state::Overlay::Customize);
+                                    tx.scroll_into_view("customization-recents-widgets");
+                                })
+                                .build(kit)
+                                .key("recents-widgets-settings"),
+                        )
+                        .child(
+                            button("View library →")
+                                .variant(rune_kit::ButtonVariant::Ghost)
+                                .on_press(|s: &mut State| s.navigate(Screen::Library))
+                                .build(kit)
+                                .key("view-library"),
+                        ),
                 ),
         )
-        .child(col().w_full().scroll_x().child(strip))
-        .child(widgets(state, kit));
-    col()
-        .w_full()
-        .min_h(0.0)
-        .scroll(ScrollSpec {
+        .child(
+            col()
+                .key("recents-rotation")
+                .w_full()
+                .scroll_x()
+                .child(strip),
+        );
+    if enabled_widgets {
+        content = col()
+            .w_full()
+            .gap(24.0)
+            .child(content.min_h((size[1] - 96.0).max(0.0)))
+            .child(widgets(state, kit));
+    }
+    let mut viewport = col().key("classic-recents").w_full().h_full().min_h(0.0);
+    if enabled_widgets {
+        viewport = viewport.scroll(ScrollSpec {
             stick_bottom: false,
-        })
-        .child(content)
+        });
+    }
+    viewport.child(content)
 }
 
 fn recent_card(state: &State, game: &Game, kit: &Kit, width: f32) -> El {
@@ -1110,7 +1126,6 @@ fn recent_card(state: &State, game: &Game, kit: &Kit, width: f32) -> El {
                 ),
         )
         .child(label(game.title(), 12.0, 550.0, kit).w_full().truncate())
-        .child(label(last_played(game.last_launched), 10.0, 400.0, kit).color(kit.c.text_muted))
 }
 
 fn hero_title(state: &State, game: &Game, kit: &Kit) -> El {
@@ -1202,248 +1217,15 @@ pub fn artwork_prompt(state: &State, kit: &Kit) -> El {
         )
 }
 
-fn gallery(state: &State, kit: &Kit) -> El {
-    let games = state.visible_games();
-    let current = games
-        .iter()
-        .position(|game| Some(&game.id) == state.selected.as_ref())
-        .unwrap_or(0);
-    let mut exhibition = row().w_full().grow(1.0).min_h(0.0).gap(28.0).center();
-    let indices = [
-        (games.len() > 1).then(|| (current + games.len() - 1) % games.len()),
-        (!games.is_empty()).then_some(current),
-        (games.len() > 2).then(|| (current + 1) % games.len()),
-    ];
-    for (slot, index) in indices.into_iter().enumerate() {
-        let mut frame = col()
-            .grow(if slot == 1 { 1.4 } else { 1.0 })
-            .min_w(0.0)
-            .h_full()
-            .center();
-        let Some(game) = index.and_then(|index| games.get(index)) else {
-            exhibition = exhibition.child(frame);
-            continue;
-        };
-        let id = game.id.clone();
-        let launch = id.clone();
-        let context = id.clone();
-        frame = frame.child(
-            artwork(state, game, ArtworkKind::Cover, true, kit)
-                .key(format!("gallery-{}", game.id.0))
-                .transition(crate::motion::presentation_transition())
-                .instant_changes()
-                .aspect_fit(2.0 / 3.0)
-                .max_w(if slot == 1 { 240.0 } else { 168.0 })
-                .max_h(if slot == 1 { 360.0 } else { 252.0 })
-                .radius(kit.radius.md)
-                .role("button")
-                .label(game.title())
-                .focusable(true)
-                .cursor(rune::Cursor::Pointer)
-                .on_press(move |s: &mut State| s.select(id.clone()))
-                .on_double_press(move |s: &mut State| s.launch(launch.clone()))
-                .on_secondary_press(move |s: &mut State, point, _| {
-                    s.context = Some((context.clone(), point))
-                }),
-        );
-        exhibition = exhibition.child(frame);
-    }
-    let title = state
-        .selected_game()
-        .map(Game::title)
-        .unwrap_or("Your gallery");
-    col()
-        .w_full()
-        .h_full()
-        .gap(18.0)
-        .child(exhibition)
-        .child(label(title, 30.0, 500.0, kit).self_center())
-        .child(scene_controls(state, kit))
-        .child(widgets(state, kit))
-}
-
-fn cinematic(state: &State, kit: &Kit) -> El {
-    let mut scene = el().w_full().h_full();
-    if let Some(game) = state.selected_game() {
-        scene = scene
-            .child(
-                el().key("cinematic-background")
-                    .w_full()
-                    .h_full()
-                    .radius(kit.radius.lg),
-            )
-            .child(
-                col()
-                    .absolute(0.0, 0.0)
-                    .w_full()
-                    .h_full()
-                    .gradient(kit.c.page.alpha(0.0), kit.c.page.alpha(0.94))
-                    .padding(28.0)
-                    .justify_end()
-                    .gap(18.0)
-                    .child(label(game.title(), 42.0, 600.0, kit).wrap().w_full())
-                    .child(scene_controls(state, kit))
-                    .child(filmstrip(state, kit)),
-            );
-    } else {
-        scene = scene.child(hint(
-            "No visible installed games. Refresh discovery or add a game.",
-            kit,
-        ));
-    }
-    scene
-}
-
-fn scene_controls(state: &State, kit: &Kit) -> El {
-    let games = state.visible_games();
-    let current = games
-        .iter()
-        .position(|game| Some(&game.id) == state.selected.as_ref())
-        .map_or(0, |index| index + 1);
-    row()
-        .w_full()
-        .center()
-        .gap(14.0)
-        .child(
-            button("Previous")
-                .disabled(games.len() < 2)
-                .on_press_tx(|s: &mut State, tx| {
-                    s.move_selection(false, tx);
-                })
-                .build(kit),
-        )
-        .child(
-            primary("Play")
-                .disabled(games.is_empty())
-                .on_press(|s: &mut State| s.launch_selected())
-                .build(kit)
-                .key("play-selected"),
-        )
-        .child(
-            button("Next")
-                .disabled(games.len() < 2)
-                .on_press_tx(|s: &mut State, tx| {
-                    s.move_selection(true, tx);
-                })
-                .build(kit),
-        )
-        .child(label(
-            format!("{current} / {}", games.len()),
-            12.0,
-            400.0,
-            kit,
-        ))
-        .child(
-            button("Manage…")
-                .disabled(games.is_empty())
-                .on_press(|s: &mut State| {
-                    if let Some(game) = s.selected_game() {
-                        s.open_editor(game.id.clone(), EditorSection::Details);
-                    }
-                })
-                .build(kit),
-        )
-}
-
-fn filmstrip(state: &State, kit: &Kit) -> El {
-    let games = state.visible_games();
-    let current = games
-        .iter()
-        .position(|game| Some(&game.id) == state.selected.as_ref())
-        .unwrap_or(0);
-    let mut strip = row().gap(8.0);
-    for game in games.iter().skip(current.saturating_sub(5)).take(11) {
-        let id = game.id.clone();
-        strip = strip.child(
-            artwork(state, game, ArtworkKind::Cover, false, kit)
-                .key(format!("filmstrip-{}", game.id.0))
-                .size(66.0, 96.0)
-                .radius(kit.radius.md)
-                .label(game.title())
-                .role("button")
-                .focusable(true)
-                .border(
-                    if Some(&game.id) == state.selected.as_ref() {
-                        2.0
-                    } else {
-                        0.0
-                    },
-                    kit.c.border_focus,
-                )
-                .on_press(move |s: &mut State| s.select(id.clone())),
-        );
-    }
-    col().w_full().scroll_x().child(strip)
-}
-
 pub fn widgets(state: &State, kit: &Kit) -> El {
-    let mut body = col().w_full().gap(20.0);
-    if state.appearance.recents_activity {
-        let mut days = row().gap(10.0).flex_wrap();
-        for day in state.snapshot.activity.iter().rev().take(7) {
-            let date = day.date.clone();
-            days = days.child(
-                button(&format!("{} · {}", day.date, day.launches))
-                    .on_press(move |s: &mut State| {
-                        s.open_activity_date(date.clone());
-                    })
-                    .build(kit),
-            );
-        }
-        body = body.child(section("Weekly activity", kit).child(days));
-    }
-    if state.appearance.recents_progress {
-        let collections: BTreeSet<_> = state
-            .snapshot
-            .games
-            .iter()
-            .flat_map(|game| game.collections.iter())
-            .collect();
-        let mut progress = section("Collection progress", kit);
-        for collection in collections {
-            let games: Vec<_> = state
-                .snapshot
-                .games
-                .iter()
-                .filter(|game| game.collections.contains(collection))
-                .collect();
-            let completed = games.iter().filter(|game| game.completed).count();
-            let name = collection.clone();
-            progress = progress.child(
-                button(&format!(
-                    "{collection} · {completed}/{} completed",
-                    games.len()
-                ))
-                .on_press(move |s: &mut State| {
-                    s.set_collection(name.clone());
-                })
-                .build(kit),
-            );
-        }
-        body = body.child(progress);
-    }
-    if state.appearance.recents_journal {
-        let mut notes = section("Journal preview", kit);
-        for entry in state.snapshot.journal.iter().take(3) {
-            let id = entry.game_id.clone();
-            notes = notes.child(
-                button(&entry.text.chars().take(100).collect::<String>())
-                    .on_press(move |s: &mut State| {
-                        s.open_editor(id.clone(), EditorSection::Journal)
-                    })
-                    .build(kit),
-            );
-        }
-        body = body.child(notes);
-    }
-    body
+    crate::widgets::view(state, kit)
 }
 
 pub fn activity(state: &State, kit: &Kit) -> El {
     let mut content = col()
         .w_full()
         .gap(24.0)
-        .child(label("Activity", 32.0, 600.0, kit));
+        .child(eyebrow("LAUNCH HISTORY", kit));
     if state.activity_date.is_some() {
         content = content.child(
             button("Show all activity")
@@ -1504,6 +1286,12 @@ pub fn activity(state: &State, kit: &Kit) -> El {
     }
     if state.snapshot.activity.is_empty() {
         content = content.child(hint("No recorded launches yet.", kit));
+    } else if state
+        .activity_date
+        .as_ref()
+        .is_some_and(|date| !state.snapshot.activity.iter().any(|day| &day.date == date))
+    {
+        content = content.child(hint("No launches recorded on this day.", kit));
     }
     content
 }
