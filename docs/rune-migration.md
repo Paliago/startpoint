@@ -98,6 +98,23 @@ These are native Rune compositions, **not rendering-parity claims**. Infinite Wa
 
 ## Internal headless checks
 
+### Developer component effects
+
+The **Component effects** page is a session-local workbench inspired by the Rune showcase: aura glow, liquid metal, charged edges, warm embers, fluted glass, mesh gradients and moulded plastic, alongside a neutral reference. Controls, Surfaces and Data tabs cover buttons, icon buttons, text inputs/areas, switches, checkboxes, segmented controls, Select, Menu, Dialog, Card, Collapsible, Badge, Progress and virtualized Table. Interaction continues through Rune Kit rather than painted imitations of controls.
+
+- Available in debug builds, tooling scenes, or interactive builds explicitly started with `--developer-tools`. Ordinary release sessions hide the settings entry and command and reject navigation to the page.
+- Open **Settings → Developer tools → Component effects**, search **Developer: Component effects**, or start with `--scene component-effects` and developer tools enabled.
+- Material, intensity, speed, corner radius, disabled state and contrast protection are local preview values. Copy configuration copies a text summary; Reset restores the initial preview. The page never dispatches game or appearance mutations.
+- The inspector and specimen surface scroll independently. Text and accessibility controls stay above the GPU material; effects retain Rune's clipping metadata.
+- Pause freezes the effect clock. Reduced motion, inactive windows, menus, dialogs and navigation away stop continuous effect submissions. Resuming preserves phase, and static materials do not request continuous frames.
+
+```sh
+cargo run --locked --release -p startpoint-rune -- --example-library --developer-tools --scene component-effects
+target/debug/startpoint-rune --scene component-effects --snap target/rune-preview/component-effects.png
+```
+
+### Application scenes
+
 ```sh
 cargo build --locked -p startpoint-rune
 mkdir -p target/rune-preview

@@ -246,10 +246,24 @@ pub fn view(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
     if let Some(error) = &state.error {
         page = page.child(error_message(error, kit));
     }
-    page
+    page = page
         .child(section("Startup", kit).child(startup))
         .child(credential).child(discovery).child(storage)
-        .child(section("Updates", kit).child(hint(format!("Startpoint Rune {} · Development frontend. Automatic installation and restart are disabled until Rune has its own packaged release channel.", env!("CARGO_PKG_VERSION")), kit)))
+        .child(section("Updates", kit).child(hint(format!("Startpoint Rune {} · Development frontend. Automatic installation and restart are disabled until Rune has its own packaged release channel.", env!("CARGO_PKG_VERSION")), kit)));
+    if state.developer_tools {
+        page = page.child(
+            section("Developer tools", kit).child(setting_row(
+                "Component effects",
+                "GPU materials and interactive Rune components. Changes remain in this session.",
+                button("Open effects page")
+                    .on_press(|s: &mut State| s.navigate(crate::state::Screen::ComponentEffects))
+                    .build(kit)
+                    .key("open-component-effects"),
+                kit,
+            )),
+        );
+    }
+    page
 }
 
 fn directory_command(provider: &str, directory: Option<std::path::PathBuf>) -> Command {

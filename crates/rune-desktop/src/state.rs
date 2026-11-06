@@ -24,6 +24,7 @@ pub enum Screen {
     Library,
     Activity,
     Settings,
+    ComponentEffects,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -109,6 +110,8 @@ pub struct State {
     pub error: Option<String>,
     pub example: bool,
     pub headless: bool,
+    pub developer_tools: bool,
+    pub effects_preview: crate::component_effects::EffectsPreview,
     pub images: BTreeMap<PathBuf, Image>,
     image_changed: Arc<AtomicBool>,
     image_window: (usize, usize),
@@ -234,6 +237,12 @@ impl State {
             error: None,
             example,
             headless,
+            developer_tools: headless
+                || cfg!(debug_assertions)
+                || rune::tooling::extra_args()
+                    .iter()
+                    .any(|argument| argument == "--developer-tools"),
+            effects_preview: crate::component_effects::EffectsPreview::default(),
             images: BTreeMap::new(),
             image_changed: Arc::new(AtomicBool::new(false)),
             image_window: (0, 0),
@@ -672,6 +681,9 @@ impl State {
     }
 
     pub fn navigate(&mut self, screen: Screen) {
+        if screen == Screen::ComponentEffects && !self.developer_tools {
+            return;
+        }
         let previous = self.navigation_location();
         self.reset_navigation(screen);
         self.reconcile_selection();
@@ -679,6 +691,8 @@ impl State {
     }
 
     fn reset_navigation(&mut self, screen: Screen) {
+        self.effects_preview.menu_open = false;
+        self.effects_preview.dialog_open = false;
         self.screen = screen;
         self.page = 0;
         self.search = TextEdit::new("");
@@ -776,6 +790,8 @@ impl State {
     }
 
     fn restore_navigation(&mut self, location: NavigationLocation, tx: &mut Tx) {
+        self.effects_preview.menu_open = false;
+        self.effects_preview.dialog_open = false;
         self.close_overlay();
         self.screen = location.screen;
         self.filter = location.filter;

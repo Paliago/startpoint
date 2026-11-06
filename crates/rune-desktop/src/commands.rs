@@ -25,6 +25,7 @@ enum Action {
     Launch,
     Journal,
     Favourite,
+    ComponentEffects,
 }
 
 fn actions(state: &State) -> Vec<(&'static str, Action)> {
@@ -42,6 +43,9 @@ fn actions(state: &State) -> Vec<(&'static str, Action)> {
         ),
         ("Show hidden games", Action::Hidden),
     ];
+    if state.developer_tools {
+        actions.push(("Developer: Component effects", Action::ComponentEffects));
+    }
     if state.selected_game().is_some() {
         actions.extend([
             ("Play selected game", Action::Play),
@@ -64,6 +68,7 @@ fn perform(state: &mut State, action: Action) {
         Action::Library => state.navigate(Screen::Library),
         Action::Activity => state.navigate(Screen::Activity),
         Action::Settings => state.navigate(Screen::Settings),
+        Action::ComponentEffects => state.navigate(Screen::ComponentEffects),
         Action::Customize => state.show_overlay(Overlay::Customize),
         Action::Add => {
             state.manual = crate::editor::ManualDraft::default();

@@ -1,6 +1,7 @@
 mod activity;
 mod artwork;
 mod commands;
+mod component_effects;
 mod components;
 mod editor;
 mod effects;
@@ -42,6 +43,9 @@ fn main() {
             ("library", |s| s.navigate(Screen::Library)),
             ("activity", |s| s.navigate(Screen::Activity)),
             ("settings", |s| s.navigate(Screen::Settings)),
+            ("component-effects", |s| {
+                s.navigate(Screen::ComponentEffects)
+            }),
             ("editor", |s| {
                 if let Some(game) = s.selected_game() {
                     s.open_editor(game.id.clone(), editor::EditorSection::Details);

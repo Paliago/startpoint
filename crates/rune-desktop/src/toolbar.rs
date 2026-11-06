@@ -37,6 +37,7 @@ pub fn view(state: &State, cx: &mut Cx<State>, kit: &Kit, width: f32) -> El {
         .child(
             toolbar_icon(&icons::SIDEBAR, "Toggle sidebar", kit)
                 .size(28.0, 28.0)
+                .disabled(state.screen == Screen::ComponentEffects)
                 .on_press_tx(|s: &mut State, tx| {
                     crate::motion::fold(tx);
                     s.appearance.sidebar_visible = !s.appearance.sidebar_visible;

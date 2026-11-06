@@ -31,6 +31,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         }
         Screen::Activity => scroll(crate::activity::view(state, &kit)),
         Screen::Settings => scroll(crate::settings::view(state, &kit, &mut layers)),
+        Screen::ComponentEffects => crate::component_effects::view(state, &kit, &mut layers),
     };
     let mut workspace = row()
         .key("workspace")
@@ -38,7 +39,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .grow(1.0)
         .min_h(0.0)
         .gap(0.0);
-    {
+    if state.screen != Screen::ComponentEffects {
         let mut sidebar_kit = kit.clone();
         if immersive {
             sidebar_kit.c.text_base = Color::WHITE;

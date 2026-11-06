@@ -1,8 +1,14 @@
+use num_traits::ToPrimitive;
 use rune::compose::{Compositor, DeviceKey, Frame};
 use rune::render::{EffectPhase, KIND_EFFECT};
 use rune::{El, effect, el};
-use rune_fx::{DitherParams, DitherPattern, Fx, FxFrame, FxOptions, FxRenderer, FxSlot, Shape};
+use rune_fx::{
+    DitherParams, DitherPattern, ElectricParams, FireParams, FlutedGlassParams, Fx, FxFrame,
+    FxOptions, FxRenderer, FxSlot, GlowParams, GlowStyle, LiquidMetalParams, MeshGradientParams,
+    PlasticParams, Shape,
+};
 
+use crate::component_effects::ComponentEffect;
 use crate::state::State;
 
 const ARTWORK_DITHER: u32 = 1;
@@ -36,6 +42,9 @@ struct Resources {
 pub struct EffectsCompositor {
     resources: Option<Resources>,
     animating: bool,
+    preview_time: f32,
+    preview_last_time: Option<f64>,
+    preview_running: bool,
 }
 
 impl Compositor<State> for EffectsCompositor {
@@ -52,6 +61,23 @@ impl Compositor<State> for EffectsCompositor {
         let paused = (!frame.rt.state.window_focused
             && frame.rt.state.appearance.pause_in_background)
             || frame.rt.state.overlay != crate::state::Overlay::None;
+        let preview_active = frame.rt.state.developer_tools
+            && frame.rt.state.screen == crate::state::Screen::ComponentEffects;
+        let running = preview_active
+            && frame.rt.state.effects_preview.running()
+            && (frame.rt.state.window_focused || frame.rt.state.headless)
+            && frame.rt.state.open_select.is_none()
+            && !reduced
+            && !paused;
+        if running && self.preview_running {
+            let elapsed = self
+                .preview_last_time
+                .map_or(0.0, |previous| (frame.rt.t - previous).clamp(0.0, 0.1));
+            self.preview_time +=
+                elapsed.to_f32().unwrap_or(0.0) * frame.rt.state.effects_preview.rate();
+        }
+        self.preview_last_time = Some(frame.rt.t);
+        self.preview_running = running;
         for (index, instance) in frame.rt.instances.iter().enumerate() {
             if instance.params[1] != KIND_EFFECT {
                 continue;
@@ -84,10 +110,26 @@ impl Compositor<State> for EffectsCompositor {
                     .over()
                     .opacity(amount)
                 }
+                mark if preview_active => {
+                    let Some(style) = ComponentEffect::from_mark(mark) else {
+                        continue;
+                    };
+                    let strength = instance.uv[0];
+                    let Some(effect) = component_effect(style, strength) else {
+                        continue;
+                    };
+                    effect
+                        .on(shape)
+                        .at(self.preview_time)
+                        .reduced(reduced || frame.rt.state.effects_preview.reduced_motion)
+                }
                 _ => continue,
             };
             if let Ok(index) = u32::try_from(index) {
-                self.animating |= layer.is_animating() && !reduced && !paused;
+                self.animating |= layer.is_animating()
+                    && !reduced
+                    && !paused
+                    && (*mark == ARTWORK_DITHER || running);
                 indices.push(index);
                 layers.push(layer);
                 placements.push(
@@ -159,4 +201,41 @@ impl Compositor<State> for EffectsCompositor {
                 }
             });
     }
+}
+
+fn component_effect(style: ComponentEffect, strength: f32) -> Option<Fx> {
+    Some(match style {
+        ComponentEffect::None => return None,
+        ComponentEffect::Aura => Fx::glow(GlowParams {
+            style: GlowStyle::Aura,
+            intensity: strength,
+            radius: 20.0,
+            ..Default::default()
+        }),
+        ComponentEffect::Metal => Fx::fill(LiquidMetalParams {
+            flow: strength,
+            bevel: 10.0,
+            ..LiquidMetalParams::chrome()
+        }),
+        ComponentEffect::Charged => Fx::electric(ElectricParams {
+            intensity: strength,
+            ..ElectricParams::charged()
+        }),
+        ComponentEffect::Fire => Fx::fire(FireParams {
+            intensity: strength,
+            ..FireParams::heat()
+        }),
+        ComponentEffect::Glass => Fx::fill(FlutedGlassParams {
+            refraction: 9.0 * strength,
+            ..FlutedGlassParams::reeded()
+        }),
+        ComponentEffect::Mesh => Fx::fill(MeshGradientParams {
+            warp: strength * 0.4,
+            ..MeshGradientParams::dusk()
+        }),
+        ComponentEffect::Plastic => Fx::fill(PlasticParams {
+            dome: strength * 0.4,
+            ..PlasticParams::glossy()
+        }),
+    })
 }

@@ -40,6 +40,8 @@ cargo run --locked --release -p startpoint-rune -- --example-library
 
 GPUI remains the default executable. Rune uses separate library/cache directories, so both can run at once; records are not synchronized. Rune includes continuous library layouts, native editor sections, artwork workflows, launch settings, a standalone Markdown journal modal with independent per-game to-dos, provider settings, customization, command search, and Classic and Infinite Wall presentations. Gallery and Cinematic remain available in GPUI only. This is broad functional coverage, not full rendering/platform parity. See [Rune migration](docs/rune-migration.md) for storage/credential boundaries, internal headless checks and the remaining migration work. GPUI remains the production application while that work continues.
 
+For the developer-only **Component effects** page, run Rune with `--developer-tools`, then open **Settings → Developer tools → Component effects**, or use the **Developer: Component effects** command. Debug builds enable developer tools automatically. The page applies real Rune FX materials to interactive component samples without saving its settings; see [the effects page](docs/rune-migration.md#developer-component-effects).
+
 ## Windows executable
 
 **Actions → Windows test executable → Run workflow**: choose a branch. For branches without the workflow, run from `main` and fill in `branch`.
