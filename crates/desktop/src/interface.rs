@@ -6298,6 +6298,7 @@ impl LauncherView {
                     .unwrap_or_default()
                     .as_secs();
                 self.snapshot.journal = Arc::new(games.iter().take(3).enumerate().map(|(index, game)| startpoint_sdk::JournalEntry {
+                    author: None,
                     id: format!("interface-stress-note-{index}"), game_id: game.id.clone(), created_at,
                     text: "Reached the northern observatory. The entrance is behind the old library; return with the brass key and check the map before leaving. ".repeat(14),
                 }).collect());

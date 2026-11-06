@@ -22,7 +22,7 @@ impl Store {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(database_error)?;
-        if version > 2 {
+        if version > 4 {
             return Err(ApiError::Storage(
                 "This library was created by a newer application. It has not been modified.".into(),
             ));
@@ -36,9 +36,24 @@ impl Store {
             CREATE TABLE IF NOT EXISTS launch_events (id INTEGER PRIMARY KEY, game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE, launched_at INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS launch_events_timestamp ON launch_events(launched_at);
             CREATE TABLE IF NOT EXISTS journal_entries (id TEXT PRIMARY KEY, game_id TEXT NOT NULL REFERENCES games(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, text TEXT NOT NULL);
-            CREATE INDEX IF NOT EXISTS journal_entries_game ON journal_entries(game_id, created_at);
-            PRAGMA user_version=2;
-            COMMIT;").map_err(database_error)?;
+            CREATE INDEX IF NOT EXISTS journal_entries_game ON journal_entries(game_id, created_at);").map_err(database_error)?;
+        if version < 3 {
+            let columns: u32 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('journal_entries') WHERE name='author'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(database_error)?;
+            if columns == 0 {
+                connection
+                    .execute_batch("ALTER TABLE journal_entries ADD COLUMN author TEXT;")
+                    .map_err(database_error)?;
+            }
+        }
+        connection
+            .execute_batch("PRAGMA user_version=4; COMMIT;")
+            .map_err(database_error)?;
         Ok(Self { connection })
     }
 
@@ -114,7 +129,7 @@ impl Store {
 
     pub fn journal(&self) -> Result<Vec<JournalEntry>, ApiError> {
         let mut statement = self.connection
-            .prepare("SELECT id, game_id, created_at, text FROM journal_entries ORDER BY created_at DESC, id")
+            .prepare("SELECT id, game_id, created_at, text, author FROM journal_entries ORDER BY created_at DESC, rowid DESC")
             .map_err(database_error)?;
         statement
             .query_map([], |row| {
@@ -129,6 +144,7 @@ impl Store {
                         )
                     })?,
                     text: row.get(3)?,
+                    author: row.get(4)?,
                 })
             })
             .map_err(database_error)?
@@ -151,7 +167,7 @@ impl Store {
                 return Err(ApiError::NotFound);
             }
         } else {
-            self.connection.execute("INSERT INTO journal_entries(id, game_id, created_at, text) VALUES (?1, ?2, ?3, ?4)", params![entry.id, entry.game_id.0, timestamp, entry.text]).map_err(database_error)?;
+            self.connection.execute("INSERT INTO journal_entries(id, game_id, created_at, text, author) VALUES (?1, ?2, ?3, ?4, ?5)", params![entry.id, entry.game_id.0, timestamp, entry.text, entry.author]).map_err(database_error)?;
         }
         Ok(())
     }

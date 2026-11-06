@@ -116,6 +116,8 @@ pub struct DiscoveredGame {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Game {
+    #[serde(default)]
+    pub tasks: Vec<GameTask>,
     pub id: GameId,
     pub provider_id: String,
     pub source_game_id: String,
@@ -149,8 +151,18 @@ pub struct ActivityDay {
     pub games: BTreeMap<GameId, u32>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameTask {
+    pub id: String,
+    pub text: String,
+    pub completed: bool,
+    pub created_at: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JournalEntry {
+    /// Local account recorded when created; absent on older entries.
+    pub author: Option<String>,
     pub id: String,
     pub game_id: GameId,
     pub created_at: u64,
@@ -598,6 +610,16 @@ pub enum Command {
         game_id: GameId,
         entry_id: String,
     },
+    SaveGameTask {
+        game_id: GameId,
+        task_id: Option<String>,
+        text: String,
+        completed: bool,
+    },
+    DeleteGameTask {
+        game_id: GameId,
+        task_id: String,
+    },
     SetLaunchOverride {
         game_id: GameId,
         launch: Option<ExecutableLaunch>,
@@ -693,6 +715,8 @@ impl Command {
             Self::ReidentifyGame { .. } => "Re-identifying game",
             Self::SetGameProgress { .. } => "Saving collections and completion",
             Self::SaveJournalEntry { .. } => "Saving journal entry",
+            Self::SaveGameTask { .. } => "Saving game task",
+            Self::DeleteGameTask { .. } => "Deleting game task",
             Self::DeleteJournalEntry { .. } => "Deleting journal entry",
             Self::SetLaunchOverride { .. } => "Saving launch configuration",
             Self::SetSteamLaunch { .. } => "Saving Steam launch configuration",

@@ -704,6 +704,7 @@ impl Shared {
                     LaunchTarget::Executable(launch)
                 };
                 let game = Game {
+                    tasks: Vec::new(),
                     id: id.clone(),
                     provider_id: "manual".into(),
                     source_game_id,
@@ -871,6 +872,10 @@ impl Shared {
                 self.store(|store| {
                     let existing = entry_id.is_some();
                     let entry = JournalEntry {
+                        author: std::env::var("USER")
+                            .or_else(|_| std::env::var("USERNAME"))
+                            .ok()
+                            .filter(|name| !name.trim().is_empty()),
                         id: entry_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                         game_id,
                         created_at: now(),
@@ -887,6 +892,54 @@ impl Shared {
                 })?;
                 self.publish(AppEvent::LibraryChanged);
                 Ok(())
+            }
+            Command::SaveGameTask {
+                game_id,
+                task_id,
+                text,
+                completed,
+            } => {
+                let text = text.trim().to_owned();
+                if text.is_empty() || text.len() > 1_000 || text.contains('\0') {
+                    return Err(ApiError::Validation(
+                        "Tasks must contain 1–1,000 bytes without NUL characters".into(),
+                    ));
+                }
+                self.update_game(&game_id, move |game| {
+                    if let Some(id) = task_id {
+                        let task = game
+                            .tasks
+                            .iter_mut()
+                            .find(|task| task.id == id)
+                            .ok_or(ApiError::NotFound)?;
+                        task.text = text;
+                        task.completed = completed;
+                    } else {
+                        if game.tasks.len() >= 500 {
+                            return Err(ApiError::Validation(
+                                "A game can contain at most 500 tasks".into(),
+                            ));
+                        }
+                        game.tasks.push(GameTask {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            text,
+                            completed,
+                            created_at: now(),
+                        });
+                    }
+                    Ok(())
+                })
+            }
+            Command::DeleteGameTask { game_id, task_id } => {
+                self.update_game(&game_id, move |game| {
+                    let index = game
+                        .tasks
+                        .iter()
+                        .position(|task| task.id == task_id)
+                        .ok_or(ApiError::NotFound)?;
+                    game.tasks.remove(index);
+                    Ok(())
+                })
             }
             Command::DeleteJournalEntry { game_id, entry_id } => {
                 self.store(|store| {
@@ -1452,6 +1505,7 @@ impl Shared {
                     } else {
                         positions.insert(id.clone(), games.len());
                         games.push(Game {
+                            tasks: Vec::new(),
                             id,
                             provider_id: descriptor.id.clone(),
                             source_game_id: discovered.source_game_id,
@@ -3691,7 +3745,7 @@ mod tests {
             .expect("application");
         let events = api.subscribe();
         let executable = std::env::current_exe().expect("test executable");
-        for step in 0..61 {
+        for step in 0..66 {
             let previous_library = api.snapshot().games;
             let game_id = api
                 .snapshot()
@@ -3700,6 +3754,26 @@ mod tests {
                 .map(|game| game.id.clone())
                 .unwrap_or(GameId(String::new()));
             let command = match step {
+                61 | 65 => Command::SaveGameTask {
+                    game_id,
+                    task_id: None,
+                    text: "  Find the north gate.  ".into(),
+                    completed: false,
+                },
+                62 | 63 => Command::SaveGameTask {
+                    game_id,
+                    task_id: Some(api.snapshot().games[0].tasks[0].id.clone()),
+                    text: if step == 63 {
+                        " ".into()
+                    } else {
+                        "Find the east gate.".into()
+                    },
+                    completed: true,
+                },
+                64 => Command::DeleteGameTask {
+                    game_id,
+                    task_id: api.snapshot().games[0].tasks[0].id.clone(),
+                },
                 0 => Command::AddManualGame {
                     title: "Original title".into(),
                     launch: ExecutableLaunch {
@@ -3897,7 +3971,7 @@ mod tests {
                     Ok(AppEvent::JobChanged(job)) if job.id == job_id && !job.state.active() => {
                         assert_eq!(
                             job.state,
-                            if step < 7 || matches!(step, 15..=17 | 21..=27) {
+                            if step < 7 || matches!(step, 15..=17 | 21..=27 | 61..=62 | 64..=65) {
                                 JobState::Completed
                             } else {
                                 JobState::Failed
@@ -3920,6 +3994,15 @@ mod tests {
             }
             if matches!(step, 24..=25) {
                 assert!(api.snapshot().games[0].hidden);
+            }
+            if matches!(step, 62..=63) {
+                let snapshot = api.snapshot();
+                assert_eq!(snapshot.games[0].tasks[0].text, "Find the east gate.");
+                assert!(snapshot.games[0].tasks[0].completed);
+            }
+            if step == 64 {
+                assert!(api.snapshot().games[0].tasks.is_empty());
+                assert_eq!(api.snapshot().journal.len(), 1);
             }
         }
         let saved = api.snapshot().games.first().cloned().expect("saved game");
@@ -4017,7 +4100,7 @@ mod tests {
             .as_object_mut()
             .expect("game object")
             .remove("catalogue_metadata");
-        for field in ["collections", "completed", "hidden"] {
+        for field in ["collections", "completed", "hidden", "tasks"] {
             previous_document
                 .as_object_mut()
                 .expect("game object")
@@ -4029,6 +4112,9 @@ mod tests {
         assert!(previous_game.catalogue_metadata.developer.is_none());
         assert!(previous_game.collections.is_empty() && !previous_game.completed);
         assert!(!previous_game.hidden);
+        assert!(previous_game.tasks.is_empty());
+        assert_eq!(saved.tasks.len(), 1);
+        assert_eq!(saved.tasks[0].text, "Find the north gate.");
         assert!(saved.favourite && saved.available && saved.last_launched.is_some());
         assert!(saved.completed);
         assert_eq!(
@@ -4079,6 +4165,7 @@ mod tests {
             Some("987")
         );
         assert_eq!(loaded.id, saved.id);
+        assert_eq!(loaded.tasks, saved.tasks);
         assert_eq!(loaded.title(), "Edited title");
         assert_eq!(
             loaded.metadata.description.as_deref(),
