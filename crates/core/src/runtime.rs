@@ -13,6 +13,7 @@ use std::{
 
 #[derive(Default)]
 pub struct LauncherBuilder {
+    skip_automatic_metadata: bool,
     discovery: Vec<Arc<dyn DiscoveryProvider>>,
     artwork: Vec<Arc<dyn ArtworkProvider>>,
     #[cfg(feature = "automation")]
@@ -22,6 +23,12 @@ pub struct LauncherBuilder {
 impl LauncherBuilder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Skips automatic catalogue and artwork enrichment after discovery.
+    pub fn without_automatic_metadata(mut self) -> Self {
+        self.skip_automatic_metadata = true;
+        self
     }
 
     /// Prevents automation sessions from reading the user's OS credential store.
@@ -75,6 +82,7 @@ impl LauncherBuilder {
             providers,
         };
         let shared = Arc::new(Shared {
+            skip_automatic_metadata: self.skip_automatic_metadata,
             image_client: reqwest::blocking::Client::builder()
                 .connect_timeout(std::time::Duration::from_secs(5))
                 .timeout(std::time::Duration::from_secs(20))
@@ -173,6 +181,7 @@ struct Launcher {
 }
 
 struct Shared {
+    skip_automatic_metadata: bool,
     #[cfg(feature = "automation")]
     isolated_credentials: bool,
     image_client: reqwest::blocking::Client,
@@ -1582,7 +1591,9 @@ impl Shared {
         if repaired > 0 {
             self.publish(AppEvent::ArtworkCacheChanged);
         }
-        self.populate_library(context, false)?;
+        if !self.skip_automatic_metadata {
+            self.populate_library(context, false)?;
+        }
         credential_check?;
         context.checkpoint()?;
         if !warnings.is_empty() {
@@ -2443,6 +2454,7 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let (sender, events) = async_channel::unbounded();
         let shared = Shared {
+            skip_automatic_metadata: false,
             #[cfg(feature = "automation")]
             isolated_credentials: false,
             image_client: reqwest::blocking::Client::new(),
@@ -2566,6 +2578,7 @@ mod tests {
                 .save_cache("steam/catalogue/2138330", &metadata, now())
                 .unwrap();
             let shared = Shared {
+                skip_automatic_metadata: false,
                 #[cfg(feature = "automation")]
                 isolated_credentials: false,
                 image_client: reqwest::blocking::Client::new(),
@@ -2811,6 +2824,7 @@ mod tests {
                     .unwrap();
             }
             let shared = Shared {
+                skip_automatic_metadata: false,
                 #[cfg(feature = "automation")]
                 isolated_credentials: false,
                 image_client: reqwest::blocking::Client::builder()

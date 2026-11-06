@@ -3,7 +3,7 @@ use startpoint_sdk::{
     LaunchTarget, ProviderDescriptor,
 };
 
-pub(crate) struct ExampleProvider;
+pub struct ExampleProvider;
 
 impl DiscoveryProvider for ExampleProvider {
     fn descriptor(&self) -> ProviderDescriptor {

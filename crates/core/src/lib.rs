@@ -13,6 +13,7 @@ mod storage;
 mod stores;
 mod xbox;
 
+pub use examples::ExampleProvider;
 pub use platform::application_paths;
 pub use runtime::LauncherBuilder;
 pub use steam::SteamProvider;
@@ -56,6 +57,13 @@ pub fn seed_automation_library(
 }
 
 pub fn create_application() -> Result<Application, ApiError> {
+    create_application_at(application_paths()?)
+}
+
+/// Opens the standard providers with caller-selected storage directories.
+pub fn create_application_at(
+    paths: startpoint_sdk::ApplicationPaths,
+) -> Result<Application, ApiError> {
     let builder = LauncherBuilder::new()
         .discovery_provider(SteamProvider)
         .discovery_provider(EpicProvider)
@@ -64,7 +72,7 @@ pub fn create_application() -> Result<Application, ApiError> {
     let builder = builder.discovery_provider(XboxProvider);
     builder
         .artwork_provider(SteamGridDbProvider::new()?)
-        .build(application_paths()?)
+        .build(paths)
 }
 
 /// Opens a separate, persistent 45-game example library. Game launches are simulated.

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/sdk", "crates/core", "crates/desktop"]
+members = ["crates/sdk", "crates/core", "crates/desktop", "crates/rune-desktop"]
 default-members = ["crates/desktop"]
 resolver = "2"
 
