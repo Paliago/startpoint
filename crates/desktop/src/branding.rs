@@ -11,10 +11,10 @@ pub(crate) const APP_ID: &str = if IS_DEV {
     "startpoint"
 };
 
-pub(crate) fn window_title(example_library: bool) -> String {
-    if example_library {
-        format!("{NAME} — Example library")
-    } else {
-        NAME.into()
+pub(crate) fn window_title(example_library: bool) -> &'static str {
+    match (IS_DEV, example_library) {
+        (true, true) => "Startpoint Dev — Example library",
+        (false, true) => "Startpoint — Example library",
+        (_, false) => NAME,
     }
 }

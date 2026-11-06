@@ -73,7 +73,7 @@ Do not overwrite versioned update packages. `SHA256SUMS` and `release-manifest.j
 - Windows x64: `win-x64-stable`; Apple Silicon: `osx-arm64-stable`.
 - The app requests `https://github.com/{repository}/releases/latest/download/releases.{channel}.json` after the window opens (two-second delay), on a dedicated thread. Downloaded full packages are pinned to `/releases/download/v{version}/{filename}` and checked against SHA-256/size.
 - Network checks/downloads never block the UI/library/artwork executor. Velopack's pre-UI startup hook does local housekeeping and can apply a previously downloaded update; zero startup overhead has not been benchmarked.
-- Downloads require user action. Restart uses GPUI shutdown so existing save/flush hooks run. A downloaded update may also apply on the next ordinary launch. No running app is forcibly restarted; no update daemon, periodic polling or telemetry is added.
+- Downloads require user action. Restart uses Rune's orderly quit request after checking active jobs and editors. A downloaded update may also apply on the next ordinary launch. No running app is forcibly restarted; no update daemon, periodic polling or telemetry is added.
 - Partial/corrupt downloads do not become pending updates. A verified pending update remains actionable offline; older releases cannot downgrade an installation. Full packages do not depend on delta chains or older assets.
 
 ## Failures and recovery

@@ -118,6 +118,23 @@ pub fn view(state: &State, cx: &mut Cx<State>, kit: &Kit, width: f32) -> El {
         .matched("command-surface")
         .motion(rune::Spring::new(0.24, 0.0))
     };
+    let notifications = toolbar_icon(&icons::NOTIFICATIONS, "Activity & Notifications", kit)
+        .size(28.0, 28.0)
+        .on_press(|s: &mut State| s.show_overlay(Overlay::Notifications))
+        .key("notifications");
+    #[cfg(feature = "self-update")]
+    let notifications = if let Some(status) = state.updater.notification_status() {
+        notifications.description(status).child(
+            el().size(5.0, 5.0)
+                .radius(2.5)
+                .pin(None, Some(3.0), Some(3.0), None)
+                .fill(kit.c.text_accent)
+                .inert()
+                .a11y_hidden(),
+        )
+    } else {
+        notifications
+    };
     let actions = surface(state, kit)
         .key("action-toolbar")
         .role("toolbar")
@@ -130,12 +147,7 @@ pub fn view(state: &State, cx: &mut Cx<State>, kit: &Kit, width: f32) -> El {
                 .on_press(|s: &mut State| s.show_overlay(Overlay::Customize))
                 .key("customize"),
         )
-        .child(
-            toolbar_icon(&icons::NOTIFICATIONS, "Activity & Notifications", kit)
-                .size(28.0, 28.0)
-                .on_press(|s: &mut State| s.show_overlay(Overlay::Notifications))
-                .key("notifications"),
-        )
+        .child(notifications)
         .child(
             toolbar_icon(&icons::SETTINGS, "Settings", kit)
                 .size(28.0, 28.0)

@@ -1,305 +1,190 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-mod adjustment_slider;
-mod appearance;
-mod art_scenes;
-mod artwork_motion;
-mod automation;
+mod activity;
+mod artwork;
 mod branding;
-mod cinematic;
+mod commands;
+mod component_effects;
 mod components;
-mod design;
-mod detail_artwork;
 mod diagnostics;
-mod dithering;
-mod gallery;
-mod gallery_gpu;
-mod glass;
+mod editor;
+mod effects;
 #[cfg(test)]
 mod icon_tests;
-mod image_cache;
-mod interface;
-mod library_layout;
-mod logo_cache;
-mod recents_fade;
-mod render_power;
-mod rounding;
+mod icons;
+mod journal;
+mod library;
+mod motion;
+mod settings;
+mod state;
+mod tasks;
 mod theme;
-mod theme_editor;
+mod toolbar;
 #[cfg(feature = "self-update")]
 mod updater;
-mod window_chrome;
-mod window_state;
+mod view;
+mod wall;
+mod widgets;
 
-use gpui::{prelude::*, *};
-use gpui_component::Root;
-use std::borrow::Cow;
-
-struct LauncherAssets;
-
-impl AssetSource for LauncherAssets {
-    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        let bytes: Option<&'static [u8]> = match path {
-            "icons/refresh.svg" => Some(include_bytes!("../assets/refresh.svg")),
-            "icons/pause.svg" => Some(include_bytes!("../assets/pause.svg")),
-            "icons/play.svg" => Some(include_bytes!("../assets/play.svg")),
-            "icons/star-filled.svg" => Some(include_bytes!("../assets/star-filled.svg")),
-            "icons/cinematic-play.svg" => {
-                Some(include_bytes!("../assets/icons/cinematic-play.svg"))
-            }
-            _ => None,
-        };
-        match bytes {
-            Some(bytes) => Ok(Some(Cow::Borrowed(bytes))),
-            None => gpui_component_assets::Assets.load(path),
-        }
-    }
-
-    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut assets = gpui_component_assets::Assets.list(path)?;
-        assets.extend(
-            [
-                "icons/refresh.svg",
-                "icons/pause.svg",
-                "icons/play.svg",
-                "icons/star-filled.svg",
-                "icons/cinematic-play.svg",
-            ]
-            .into_iter()
-            .filter(|asset| asset.starts_with(path))
-            .map(SharedString::from),
-        );
-        Ok(assets)
-    }
-}
-
-#[cfg(test)]
-#[::core::prelude::v1::test]
-fn cinematic_icons_are_embedded_in_the_native_asset_source() {
-    let assets = LauncherAssets;
-    let listed = assets.list("icons/").unwrap();
-    for path in ["icons/cinematic-play.svg"] {
-        assert!(listed.iter().any(|listed| listed.as_ref() == path));
-        let bytes = assets.load(path).unwrap().expect("native packaged icon");
-        resvg::usvg::Tree::from_data(&bytes, &resvg::usvg::Options::default()).expect("valid SVG");
-    }
-}
+use rune::{AppSpec, Key, KeyEvent, Tx};
+use state::{Overlay, Screen, State};
 
 fn main() {
-    if std::env::args().any(|argument| argument.starts_with("--automation")) {
-        #[cfg(all(feature = "automation", target_os = "macos"))]
-        if let Err(error) = automation::run() {
-            eprintln!("Automation startup failed: {error}");
-            std::process::exit(2);
-        }
-        #[cfg(not(all(feature = "automation", target_os = "macos")))]
-        {
-            eprintln!("Automation requires macOS and the optional automation feature");
-            std::process::exit(2);
-        }
-        #[cfg(all(feature = "automation", target_os = "macos"))]
-        return;
-    }
-    // Handle installer hooks before diagnostics, database initialization or UI.
-    // This performs local housekeeping only; online checks start after the window opens.
+    let headless = rune::tooling::headless_run().is_some();
+    let example = std::env::args().any(|argument| argument == "--example-library");
     #[cfg(feature = "self-update")]
     velopack::VelopackApp::build()
         .set_auto_apply_on_startup(
             updater::supported_platform()
                 && !branding::IS_DEV
-                && !std::env::args()
-                    .any(|arg| matches!(arg.as_str(), "--example-library" | "--diagnostics")),
+                && !headless
+                && !example
+                && !std::env::args().any(|argument| {
+                    matches!(argument.as_str(), "--developer-tools" | "--diagnostics")
+                }),
         )
         .run();
-    let _diagnostics = diagnostics::initialize();
-    let example_library = std::env::args().any(|argument| argument == "--example-library");
-    let application = if example_library {
-        startpoint_core::create_example_application()
+    let _diagnostics = if headless {
+        None
     } else {
-        startpoint_core::create_application()
-    };
-    let api = match application {
-        Ok(api) => api,
-        Err(error) => {
-            diagnostics::record("application initialization failed");
-            eprintln!("Startpoint could not start: {error}");
-            return;
-        }
+        diagnostics::initialize()
     };
     if std::env::args().any(|argument| argument == "--diagnostics") {
-        let events = api.subscribe();
-        let command = if std::env::args().any(|argument| argument == "--refresh-metadata") {
-            startpoint_sdk::Command::RefreshMetadata
-        } else {
-            startpoint_sdk::Command::RefreshLibrary
-        };
-        match api.submit(command) {
-            Ok(id) => {
-                while let Ok(event) = events.recv_blocking() {
-                    if let startpoint_sdk::AppEvent::JobChanged(job) = event
-                        && job.id == id
-                        && !job.state.active()
-                    {
-                        let snapshot = api.snapshot();
-                        println!(
-                            "Data: {}\nCache: {}\nInstalled games: {}\nRefresh: {:?}\nSteamGridDB: {}",
-                            snapshot.paths.data_directory.display(),
-                            snapshot.paths.cache_directory.display(),
-                            snapshot.games.iter().filter(|game| game.available).count(),
-                            job.state,
-                            snapshot
-                                .settings
-                                .credential_status
-                                .get("steamgriddb")
-                                .map(|status| status.label())
-                                .unwrap_or("Not configured")
-                        );
-                        if let Some(error) = job.error {
-                            eprintln!("{error}");
-                        }
-                        return;
-                    }
-                    if let Some(error) = api.snapshot().initialization_error {
-                        eprintln!("{error}");
-                        return;
-                    }
-                }
-            }
-            Err(error) => eprintln!("{error}"),
-        }
+        diagnostics::run();
         return;
     }
-    gpui_platform::application()
-        .with_assets(LauncherAssets)
-        .run(move |cx| {
-            initialize_interface(&api, cx);
-            cx.set_menus(vec![
-                Menu {
-                    name: "Startpoint".into(),
-                    disabled: false,
-                    items: vec![
-                        MenuItem::action("Settings…", interface::OpenSettings),
-                        MenuItem::separator(),
-                        MenuItem::action("Quit Startpoint", interface::Quit),
-                    ],
-                },
-                Menu {
-                    name: "Edit".into(),
-                    disabled: false,
-                    items: vec![
-                        MenuItem::os_action("Undo", gpui_component::input::Undo, OsAction::Undo),
-                        MenuItem::os_action("Redo", gpui_component::input::Redo, OsAction::Redo),
-                        MenuItem::separator(),
-                        MenuItem::os_action("Cut", gpui_component::input::Cut, OsAction::Cut),
-                        MenuItem::os_action("Copy", gpui_component::input::Copy, OsAction::Copy),
-                        MenuItem::os_action("Paste", gpui_component::input::Paste, OsAction::Paste),
-                        MenuItem::os_action(
-                            "Select All",
-                            gpui_component::input::SelectAll,
-                            OsAction::SelectAll,
-                        ),
-                    ],
-                },
-                Menu {
-                    name: "Library".into(),
-                    disabled: false,
-                    items: vec![
-                        MenuItem::action("Find a game", interface::FocusSearch),
-                        MenuItem::action("Actions…", interface::OpenCommands),
-                        MenuItem::action("Toggle sidebar", interface::ToggleSidebar),
-                        MenuItem::action("Refresh installed games", interface::RefreshLibrary),
-                    ],
-                },
-            ]);
-            let bounds = window_state::restore(&api.snapshot().paths.data_directory, cx);
-            if let Err(error) = cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(bounds),
-                    window_min_size: Some(size(px(960.), px(620.))),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some(branding::window_title(example_library).into()),
-                        appears_transparent: true,
-                        traffic_light_position: Some(point(px(18.), px(14.))),
-                    }),
-                    window_background: appearance::background(cx),
-                    app_id: Some(branding::APP_ID.into()),
-                    ..Default::default()
-                },
-                move |window, cx| {
-                    appearance::configure_window(window);
-                    let view = cx.new(|cx| interface::LauncherView::new(api, window, cx));
-                    // LauncherView owns the window tint; an opaque Root would hide
-                    // Acrylic/vibrancy and stacking two tints would flatten the glass.
-                    cx.new(|cx| Root::new(view, window, cx).bg(gpui::transparent_black()))
-                },
-            ) {
-                diagnostics::record("window creation failed");
-                eprintln!("Could not open the Startpoint window: {error}");
-                cx.quit();
-            }
-            cx.on_window_closed(|cx, _| {
-                if cx.windows().is_empty() {
-                    cx.quit();
+    if !headless {
+        let icon = if branding::IS_DEV {
+            include_bytes!("../assets/icons/startpoint-dev.png").to_vec()
+        } else {
+            include_bytes!("../assets/icons/startpoint.png").to_vec()
+        };
+        let _ = rune::set_app_icon(icon);
+    }
+    rune::prewarm_gpu();
+    rune::tooling::set_app_id(branding::APP_ID);
+    rune::App::new(AppSpec {
+        setup: Some(State::setup),
+        poll: Some(State::poll),
+        on_key: Some(on_key),
+        min_size: Some((900.0, 640.0)),
+        families: (
+            if cfg!(target_os = "macos") {
+                "Avenir Next, Inter"
+            } else if cfg!(target_os = "windows") {
+                "Bahnschrift, Segoe UI, Inter"
+            } else {
+                "Inter"
+            },
+            "ui-monospace",
+        ),
+        scenes: &[
+            ("library", |s| s.navigate(Screen::Library)),
+            ("activity", |s| s.navigate(Screen::Activity)),
+            ("settings", |s| s.navigate(Screen::Settings)),
+            ("component-effects", |s| {
+                s.navigate(Screen::ComponentEffects)
+            }),
+            ("editor", |s| {
+                if let Some(game) = s.selected_game() {
+                    s.open_editor(game.id.clone(), editor::EditorSection::Details);
                 }
-            })
-            .detach();
-            cx.activate(true);
-        });
+            }),
+            ("artwork", |s| {
+                if let Some(game) = s.selected_game() {
+                    s.open_editor(game.id.clone(), editor::EditorSection::Artwork);
+                }
+            }),
+            ("launch", |s| {
+                if let Some(game) = s.selected_game() {
+                    s.open_editor(game.id.clone(), editor::EditorSection::Launch);
+                }
+            }),
+            ("journal", |s| {
+                if let Some(game) = s.selected_game() {
+                    s.open_editor(game.id.clone(), editor::EditorSection::Journal);
+                }
+            }),
+            ("customize", |s| s.show_overlay(Overlay::Customize)),
+            ("add-game", |s| s.show_overlay(Overlay::AddGame)),
+            ("commands", |s| s.open_commands(String::new(), false)),
+            ("notifications", |s| s.show_overlay(Overlay::Notifications)),
+            ("infinite-wall", |s| {
+                s.preview_style(startpoint_sdk::RecentsLayout::InfiniteWall)
+            }),
+            ("compact", |s| {
+                s.navigate(Screen::Library);
+                s.appearance.library_layout = startpoint_sdk::LibraryLayout::Compact;
+                s.appearance_dirty = true;
+                s.refresh_library_order();
+            }),
+        ],
+        ..AppSpec::new(
+            branding::window_title(example),
+            (1280.0, 840.0),
+            State::new,
+            view::view,
+        )
+    })
+    .window_options(rune::WindowOptions {
+        transparent: true,
+        ..Default::default()
+    })
+    .chrome(rune::Chrome {
+        full_size_content: true,
+        traffic_lights: Some((18.0, 21.0)),
+        drag_regions: true,
+    })
+    .compositor(effects::EffectsCompositor::default())
+    .on_focus(|state: &mut State, focused, _| state.window_focused = focused)
+    .run();
 }
 
-fn initialize_interface(api: &startpoint_sdk::Application, cx: &mut App) {
-    if branding::IS_DEV {
-        cx.set_app_identity(branding::APP_ID, branding::NAME);
+fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {
+    tx.instant();
+    if state.overlay != Overlay::None {
+        return false;
     }
-    gpui_component::init(cx);
-    cx.set_global(theme::Catalog::default());
-    appearance::apply(&api.snapshot().settings.appearance, None, cx);
-    cx.bind_keys([
-        KeyBinding::new("cmd-q", interface::Quit, None),
-        KeyBinding::new("ctrl-q", interface::Quit, None),
-        KeyBinding::new("cmd-f", interface::FocusSearch, Some("Startpoint")),
-        KeyBinding::new("ctrl-f", interface::FocusSearch, Some("Startpoint")),
-        KeyBinding::new("cmd-k", interface::OpenCommands, Some("Startpoint")),
-        KeyBinding::new("ctrl-k", interface::OpenCommands, Some("Startpoint")),
-        KeyBinding::new("cmd-p", interface::OpenCommands, Some("Startpoint")),
-        KeyBinding::new("ctrl-p", interface::OpenCommands, Some("Startpoint")),
-        KeyBinding::new("cmd-b", interface::ToggleSidebar, Some("Startpoint")),
-        KeyBinding::new("ctrl-b", interface::ToggleSidebar, Some("Startpoint")),
-        KeyBinding::new("cmd-r", interface::RefreshLibrary, Some("Startpoint")),
-        KeyBinding::new("ctrl-r", interface::RefreshLibrary, Some("Startpoint")),
-        KeyBinding::new("escape", interface::DismissPanel, Some("Startpoint")),
-        KeyBinding::new(
-            "/",
-            interface::FocusSearch,
-            Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
-        ),
-        KeyBinding::new(
-            "down",
-            interface::SelectNext,
-            Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
-        ),
-        KeyBinding::new(
-            "right",
-            interface::SelectNext,
-            Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
-        ),
-        KeyBinding::new(
-            "left",
-            interface::SelectPrevious,
-            Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
-        ),
-        KeyBinding::new(
-            "up",
-            interface::SelectPrevious,
-            Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
-        ),
-        KeyBinding::new(
-            "enter",
-            interface::LaunchSelected,
-            Some("Startpoint && !Input && !SidebarResize && !AppearanceAdjustment"),
-        ),
-        KeyBinding::new("cmd-,", interface::OpenSettings, Some("Startpoint")),
-        KeyBinding::new("ctrl-,", interface::OpenSettings, Some("Startpoint")),
-    ]);
-    cx.on_action(|_: &interface::Quit, cx| cx.quit());
+    if event.is_command('[')
+        || (!cfg!(target_os = "macos") && event.mods.alt && event.key == Key::Left)
+    {
+        state.go_back(tx);
+        return true;
+    }
+    if event.is_command(']')
+        || (!cfg!(target_os = "macos") && event.mods.alt && event.key == Key::Right)
+    {
+        state.go_forward(tx);
+        return true;
+    }
+    if event.is_command('f') {
+        state.open_commands(String::new(), false);
+        return true;
+    }
+    if event.is_command('p') || event.is_command('k') {
+        state.open_commands(String::new(), false);
+        return true;
+    }
+    if event.is_command('b') {
+        state.appearance.sidebar_visible = !state.appearance.sidebar_visible;
+        state.save_appearance();
+        return true;
+    }
+    if state.search.focused {
+        if event.key == Key::Escape {
+            state.search = rune::TextEdit::new("");
+            tx.blur();
+            return true;
+        }
+        return false;
+    }
+    match event.key {
+        Key::Left => state.move_selection(false, tx),
+        Key::Right => state.move_selection(true, tx),
+        Key::Enter if matches!(state.screen, Screen::Recents | Screen::Library) => {
+            state.launch_selected();
+            true
+        }
+        _ => false,
+    }
 }

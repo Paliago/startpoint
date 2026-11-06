@@ -18,6 +18,27 @@ use startpoint_sdk::*;
 
 pub const PAGE_SIZE: usize = 24;
 
+fn application_paths(example: bool) -> Result<ApplicationPaths, ApiError> {
+    let mut paths = startpoint_core::application_paths()?;
+    let legacy_data = paths.data_directory.join(if example {
+        "rune-preview/examples"
+    } else {
+        "rune-preview"
+    });
+    if legacy_data.join("library.sqlite3").is_file() {
+        paths.data_directory = legacy_data;
+        paths.cache_directory = paths.cache_directory.join(if example {
+            "rune-preview/examples"
+        } else {
+            "rune-preview"
+        });
+    } else if example {
+        paths.data_directory = paths.data_directory.join("examples");
+        paths.cache_directory = paths.cache_directory.join("examples");
+    }
+    Ok(paths)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Recents,
@@ -82,6 +103,8 @@ pub struct Confirmation {
 }
 
 pub enum HostEvent {
+    #[cfg(feature = "self-update")]
+    Update(crate::updater::Event),
     Result(Result<String, String>),
     Themes(Vec<ThemeDocument>),
     ThemeSaved(Result<(ThemeDocument, Option<String>), String>),
@@ -139,6 +162,8 @@ pub struct State {
     pub system_dark: bool,
     pub reduced_motion: bool,
     pub window_focused: bool,
+    #[cfg(feature = "self-update")]
+    pub updater: crate::updater::Updater,
     credential_job: Option<JobId>,
     artwork_refresh_pending: bool,
     pub activity_date: Option<String>,
@@ -162,7 +187,7 @@ pub struct State {
 impl State {
     pub fn new() -> Self {
         Self::try_new().unwrap_or_else(|error| {
-            eprintln!("Startpoint Rune could not start: {error}");
+            eprintln!("Startpoint could not start: {error}");
             std::process::exit(1);
         })
     }
@@ -178,18 +203,10 @@ impl State {
         } else {
             None
         };
-        let mut paths = startpoint_core::application_paths()?;
+        let mut paths = application_paths(example)?;
         if let Some(directory) = &temporary_directory {
             paths.data_directory = directory.path().join("data");
             paths.cache_directory = directory.path().join("cache");
-        } else {
-            let name = if example {
-                "rune-preview/examples"
-            } else {
-                "rune-preview"
-            };
-            paths.data_directory = paths.data_directory.join(name);
-            paths.cache_directory = paths.cache_directory.join(name);
         }
         let api = if example {
             let builder = startpoint_core::LauncherBuilder::new()
@@ -270,6 +287,16 @@ impl State {
             system_dark: true,
             reduced_motion: false,
             window_focused: true,
+            #[cfg(feature = "self-update")]
+            updater: crate::updater::Updater::new(
+                crate::updater::supported_platform()
+                    && !crate::branding::IS_DEV
+                    && !headless
+                    && !example
+                    && !rune::tooling::extra_args().iter().any(|argument| {
+                        matches!(argument.as_str(), "--developer-tools" | "--diagnostics")
+                    }),
+            ),
             credential_job: None,
             artwork_refresh_pending: false,
             activity_date: None,
@@ -298,6 +325,10 @@ impl State {
 
     pub fn setup(state: &mut Self, wake: Waker) {
         state.wake = Some(wake.clone());
+        #[cfg(feature = "self-update")]
+        state
+            .updater
+            .check(state.host_sender.clone(), wake.clone(), true);
         let image_changed = state.image_changed.clone();
         let image_wake = wake.clone();
         state.image_cache = Some(ImageCache::new(Arc::new(move || {
@@ -309,7 +340,7 @@ impl State {
             let pending = state.pending_events.clone();
             let event_wake = wake.clone();
             std::thread::Builder::new()
-                .name("startpoint-rune-events".into())
+                .name("startpoint-events".into())
                 .spawn(move || {
                     while let Ok(event) = events.recv_blocking() {
                         pending
@@ -328,7 +359,7 @@ impl State {
         if !state.headless {
             let directory = state.snapshot.paths.data_directory.join("themes");
             let sender = state.host_sender.clone();
-            state.spawn("startpoint-rune-themes", move || {
+            state.spawn("startpoint-themes", move || {
                 let mut themes = Vec::new();
                 if let Ok(entries) = std::fs::read_dir(directory) {
                     for entry in entries.flatten().take(128) {
@@ -386,6 +417,12 @@ impl State {
         while let Ok(event) = state.host_events.try_recv() {
             dirty = true;
             match event {
+                #[cfg(feature = "self-update")]
+                HostEvent::Update(event) => {
+                    if state.updater.handle(event) {
+                        tx.quit();
+                    }
+                }
                 HostEvent::Result(Ok(message)) => state.status = message,
                 HostEvent::Result(Err(error)) => state.error = Some(error),
                 HostEvent::Themes(themes) => {
@@ -1119,7 +1156,7 @@ impl State {
         }
         let directory = self.snapshot.paths.data_directory.join("themes");
         let sender = self.host_sender.clone();
-        self.spawn("startpoint-rune-save-theme", move || {
+        self.spawn("startpoint-save-theme", move || {
             let result = (|| {
                 document.validate()?;
                 std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
@@ -1170,7 +1207,7 @@ impl State {
             return;
         }
         let sender = self.host_sender.clone();
-        self.spawn("startpoint-rune-open-path", move || {
+        self.spawn("startpoint-open-path", move || {
             let result = open::that(path)
                 .map(|_| "Opened folder".into())
                 .map_err(|error| error.to_string());
@@ -1184,7 +1221,7 @@ impl State {
             return;
         }
         let sender = self.host_sender.clone();
-        self.spawn("startpoint-rune-open-website", move || {
+        self.spawn("startpoint-open-website", move || {
             let result = open::that("https://www.steamgriddb.com/profile/preferences/api")
                 .map(|_| "Opened SteamGridDB".into())
                 .map_err(|error| error.to_string());

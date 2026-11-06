@@ -18,6 +18,61 @@ struct SessionLogger {
 
 pub(crate) struct Session;
 
+pub(crate) fn run() {
+    let state = crate::state::State::new();
+    let events = state.api.subscribe();
+    let wait = |id| -> Option<startpoint_sdk::JobStatus> {
+        loop {
+            if let Some(job) = state
+                .api
+                .snapshot()
+                .jobs
+                .iter()
+                .find(|job| job.id == id && !job.state.active())
+            {
+                return Some(job.clone());
+            }
+            events.recv_blocking().ok()?;
+        }
+    };
+    let Some(mut job) = state.last_job.and_then(wait) else {
+        return;
+    };
+    if job.state == startpoint_sdk::JobState::Completed
+        && std::env::args().any(|argument| argument == "--refresh-metadata")
+    {
+        match state.api.submit(startpoint_sdk::Command::RefreshMetadata) {
+            Ok(id) => {
+                let Some(result) = wait(id) else {
+                    return;
+                };
+                job = result;
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                return;
+            }
+        }
+    }
+    let snapshot = state.api.snapshot();
+    println!(
+        "Data: {}\nCache: {}\nInstalled games: {}\nRefresh: {:?}\nSteamGridDB: {}",
+        snapshot.paths.data_directory.display(),
+        snapshot.paths.cache_directory.display(),
+        snapshot.games.iter().filter(|game| game.available).count(),
+        job.state,
+        snapshot
+            .settings
+            .credential_status
+            .get("steamgriddb")
+            .map(|status| status.label())
+            .unwrap_or("Not configured")
+    );
+    if let Some(error) = job.error {
+        eprintln!("{error}");
+    }
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         record("session ended normally");
@@ -33,8 +88,8 @@ pub(crate) fn initialize() -> Option<Session> {
 }
 
 pub(crate) fn initialize_at(directory: &Path) -> Option<Session> {
-    fs::create_dir_all(&directory).ok()?;
-    prune_logs(&directory);
+    fs::create_dir_all(directory).ok()?;
+    prune_logs(directory);
     let name = format!(
         "session-{}-{}.log",
         chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
@@ -115,7 +170,8 @@ fn write_record(message: &str, critical: bool) {
 
 impl log::Log for SessionLogger {
     fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        metadata.level() <= log::Level::Warn && metadata.target().starts_with("gpui")
+        metadata.level() <= log::Level::Warn
+            && (metadata.target().starts_with("rune") || metadata.target().starts_with("wgpu"))
     }
 
     fn log(&self, entry: &log::Record<'_>) {

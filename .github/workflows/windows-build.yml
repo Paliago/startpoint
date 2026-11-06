@@ -31,12 +31,9 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install "$env:RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
 
-      - name: Configure Windows SDK
+      - name: Record build environment
         id: environment
         run: |
-          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\fxc.exe" -File -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $fxc) { throw "Windows SDK shader compiler fxc.exe was not found." }
-          "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
           "compiler=$(rustc --version)" >> $env:GITHUB_OUTPUT
           git log -1 --format="%H %s"
 

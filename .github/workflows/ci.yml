@@ -51,11 +51,6 @@ jobs:
         run: |
           rustup toolchain install "$env:RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
           "compiler=$(rustc --version)" >> $env:GITHUB_OUTPUT
-      - name: Configure Windows shader compiler
-        run: |
-          $fxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\fxc.exe" -File | Select-Object -First 1
-          if (-not $fxc) { throw 'Windows SDK shader compiler not found.' }
-          "GPUI_FXC_PATH=$($fxc.FullName)" >> $env:GITHUB_ENV
       - name: Cache Rust dependencies and test builds
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

@@ -1,5 +1,7 @@
 # Artwork launcher designs — reference and implementation plans
 
+> Historical design archive. These plans describe the retired frontend and are not the current feature list or implementation instructions. The sole Rune application supports Classic and Infinite Wall; see [desktop architecture](../desktop.md). Original reference images are retained for future design work.
+
 Saved before implementation. These are three **additional selectable designs**, not replacements for Classic, Editorial, Gallery or Cinematic.
 
 ## Non-negotiable shared behavior

@@ -405,6 +405,15 @@ pub fn notifications(state: &State, kit: &Kit) -> El {
                     .key("notifications-clear"),
             ),
     );
+    #[cfg(feature = "self-update")]
+    if state.updater.notification_status().is_some() {
+        content = col()
+            .w_full()
+            .gap(16.0)
+            .child(section("Startpoint update", kit).child(crate::updater::settings(state, kit)))
+            .child(divider(kit))
+            .child(content);
+    }
     for job in &visible {
         let id = job.id;
         let mut entry = col()

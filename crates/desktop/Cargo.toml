@@ -2,52 +2,45 @@
 name = "startpoint"
 version.workspace = true
 edition.workspace = true
-rust-version = "1.89"
+rust-version.workspace = true
+publish = false
 default-run = "startpoint"
 
 [features]
 dev-icon = []
-runtime-shaders = ["gpui_platform/runtime_shaders"]
 self-update = ["dep:velopack", "dep:semver"]
-automation = ["dep:gpui-automation", "startpoint-core/automation"]
 
 [dependencies]
+startpoint-core = { workspace = true, features = ["automation"] }
 startpoint-sdk.workspace = true
-startpoint-core.workspace = true
-serde_json.workspace = true
-chrono = "0.4"
-# Matching Zeron API revisions; root patches apply the headless native-handle fix.
-gpui = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54" }
-gpui_platform = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54", features = ["font-kit", "wayland", "x11"] }
-gpui-component = { git = "https://github.com/zeronsh/gpui-component", rev = "701ca97af7983bf85343d2d1d404ab528b18ec96" }
-gpui-component-assets = { git = "https://github.com/zeronsh/gpui-component", rev = "701ca97af7983bf85343d2d1d404ab528b18ec96" }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
-raw-window-handle = "0.6"
-log = "=0.4.34"
 async-channel.workspace = true
-wgpu = { version = "=29.0.4", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
-bytemuck = { version = "1", features = ["derive"] }
-pollster = "0.4"
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+num-traits = "0.2"
+chrono = "0.4.45"
+wgpu = { version = "~30.0.1", default-features = false }
+tempfile = "3.27"
+open = "5.3"
+uuid = { version = "1.18", features = ["v4"] }
+log = "=0.4.34"
 semver = { version = "1.0", optional = true }
 velopack = { version = "=1.2.161", features = ["public-utils"], optional = true }
+rune = { git = "https://github.com/anomalyco/rune", rev = "781e2b6d87cd5f32d6f4365956fad4baaf24ee50", default-features = false, features = ["accessibility", "embedded-fonts", "metal-backend", "native-file-dialog", "svg"] }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "781e2b6d87cd5f32d6f4365956fad4baaf24ee50", features = ["markdown"] }
+rune-fx = { git = "https://github.com/anomalyco/rune", rev = "781e2b6d87cd5f32d6f4365956fad4baaf24ee50" }
 
 [build-dependencies]
 embed-resource = "=3.0.11"
 
 [dev-dependencies]
-# Headless layout/input regression tests; not enabled in the application build.
-gpui = { git = "https://github.com/zeronsh/zui", rev = "361ff20b919fdfb80199ee6d9aed725300cb7d54", features = ["test-support"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 resvg = { version = "=0.45.1", default-features = false }
-tempfile = "3.27"
 zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-gpui-automation = { git = "https://github.com/Paliago/gpui-automation", rev = "dbe801f5564e383fe4cf0ca2f9882ecec28fc2d6", optional = true }
-objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["NSApplication", "NSAppearance", "NSWorkspace", "NSRunningApplication", "NSAccessibility", "NSEvent", "NSView", "NSWindow"] }
-core-foundation = "0.10"
-core-graphics = "0.24"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
-
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Diagnostics_Debug", "Win32_System_LibraryLoader"] }
+wgpu = { version = "~30.0.1", default-features = false, features = ["dx12"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug", "Win32_System_LibraryLoader"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { version = "~30.0.1", default-features = false, features = ["vulkan", "gles"] }

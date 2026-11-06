@@ -246,10 +246,22 @@ pub fn view(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
     if let Some(error) = &state.error {
         page = page.child(error_message(error, kit));
     }
+    #[cfg(feature = "self-update")]
+    let updates = crate::updater::settings(state, kit);
+    #[cfg(not(feature = "self-update"))]
+    let updates = hint(
+        format!(
+            "Startpoint {} · Automatic updates require a packaged build with self-update enabled.",
+            env!("CARGO_PKG_VERSION")
+        ),
+        kit,
+    );
     page = page
         .child(section("Startup", kit).child(startup))
-        .child(credential).child(discovery).child(storage)
-        .child(section("Updates", kit).child(hint(format!("Startpoint Rune {} · Development frontend. Automatic installation and restart are disabled until Rune has its own packaged release channel.", env!("CARGO_PKG_VERSION")), kit)));
+        .child(credential)
+        .child(discovery)
+        .child(storage)
+        .child(section("Updates", kit).child(updates));
     if state.developer_tools {
         page = page.child(
             section("Developer tools", kit).child(setting_row(
@@ -358,7 +370,7 @@ pub fn customize(state: &State, kit: &Kit, layers: &mut Vec<El>) -> El {
                                 |s: &mut State, result, _| match result {
                                     Ok(Some(path)) => {
                                         let sender = s.host_sender.clone();
-                                        s.spawn("startpoint-rune-import-theme", move || {
+                                        s.spawn("startpoint-import-theme", move || {
                                             let result = (|| {
                                                 let metadata = std::fs::metadata(&path)
                                                     .map_err(|error| error.to_string())?;

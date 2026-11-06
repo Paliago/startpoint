@@ -1,8 +1,11 @@
 //! Release builds opt in with `self-update`. All network/package work uses dedicated
 //! threads, never the UI thread or the executor shared with library/artwork loading.
-use crate::components::{button, hint};
-use gpui::{prelude::*, *};
-use gpui_component::{ActiveTheme, Disableable, button::ButtonVariants};
+use crate::{
+    components::{button, hint},
+    state::{HostEvent, State},
+};
+use rune::{El, Waker, col};
+use rune_kit::Kit;
 use std::{path::Path, sync::mpsc, time::Duration};
 use velopack::{UpdateCheck, UpdateInfo, UpdateManager, VelopackAsset};
 
@@ -26,8 +29,10 @@ fn release_channel() -> Option<&'static str> {
 }
 
 pub enum Event {
-    RestartRequested,
-    RestartPrepared,
+    Checked(Result<(UpdateManager, Outcome), CheckFailure>),
+    Progress(i16),
+    Downloaded(VelopackAsset, bool),
+    RestartPrepared(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,26 +74,8 @@ pub struct Updater {
     unavailable_reason: &'static str,
 }
 
-impl EventEmitter<Event> for Updater {}
-
 impl Updater {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let enabled = supported_platform()
-            && !cfg!(debug_assertions)
-            && !std::env::args()
-                .any(|arg| matches!(arg.as_str(), "--example-library" | "--diagnostics"));
-        if enabled {
-            cx.spawn_in(window, async move |updater, cx| {
-                cx.background_executor().timer(STARTUP_DELAY).await;
-                let _ = updater.update_in(cx, |updater, window, cx| {
-                    // A manual check may have run before the startup timer fired.
-                    if updater.phase == Phase::Idle && updater.error.is_none() {
-                        updater.check(window, cx);
-                    }
-                });
-            })
-            .detach();
-        }
+    pub fn new(enabled: bool) -> Self {
         Self {
             phase: if enabled {
                 Phase::Idle
@@ -104,58 +91,24 @@ impl Updater {
         }
     }
 
-    fn check(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn check(&mut self, sender: async_channel::Sender<HostEvent>, wake: Waker, delayed: bool) {
         if self.phase.busy() || matches!(self.phase, Phase::Unavailable | Phase::Ready) {
             return;
         }
-        let Ok(result) = worker(check_for_update) else {
+        if !dispatch(sender, wake, move |_, _| {
+            if delayed {
+                std::thread::sleep(STARTUP_DELAY);
+            }
+            Event::Checked(check_for_update())
+        }) {
             self.error = Some("Could not start the update checker. Try again.");
-            cx.notify();
             return;
-        };
+        }
         self.phase = Phase::Checking;
         self.error = None;
-        cx.notify();
-        cx.spawn_in(window, async move |updater, cx| {
-            let result = result.recv().await.unwrap_or(Err(CheckFailure::Network));
-            let _ = updater.update_in(cx, |updater, _, cx| {
-                match result {
-                    Ok((manager, outcome)) => {
-                        updater.manager = Some(manager);
-                        updater.available = None;
-                        updater.pending = None;
-                        match outcome {
-                            Outcome::Current => updater.phase = Phase::Current,
-                            Outcome::Available(update) => {
-                                updater.available = Some(update);
-                                updater.phase = Phase::Available;
-                            }
-                            Outcome::Pending(asset) => {
-                                updater.pending = Some(asset);
-                                updater.phase = Phase::Ready;
-                            }
-                        }
-                    }
-                    Err(CheckFailure::Unavailable(reason)) => {
-                        updater.phase = Phase::Unavailable;
-                        updater.unavailable_reason = reason;
-                    }
-                    Err(CheckFailure::Network) => {
-                        // Startup failures stay quiet: no notification, dialog or retry loop.
-                        updater.phase = Phase::Idle;
-                        updater.error = Some(
-                            "Could not check for updates. Check your connection and try again.",
-                        );
-                        crate::diagnostics::record("update check failed");
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
     }
 
-    fn download(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn download(&mut self, sender: async_channel::Sender<HostEvent>, wake: Waker) {
         if self.phase != Phase::Available {
             return;
         }
@@ -163,99 +116,115 @@ impl Updater {
             return;
         };
         let asset = update.TargetFullRelease.clone();
-        let (progress, progress_rx) = mpsc::channel();
-        let Ok(result) = worker(move || manager.download_updates(&update, Some(progress)).is_ok())
-        else {
+        if !dispatch(sender, wake, move |sender, wake| {
+            let (progress, receiver) = mpsc::channel();
+            let sender = sender.clone();
+            let wake = wake.clone();
+            let _ = std::thread::Builder::new()
+                .name("startpoint-update-progress".into())
+                .spawn(move || {
+                    for value in receiver {
+                        post(&sender, &wake, Event::Progress(value));
+                    }
+                });
+            let success = manager.download_updates(&update, Some(progress)).is_ok();
+            Event::Downloaded(asset, success)
+        }) {
             self.error = Some("Could not start the download. Try again.");
-            cx.notify();
             return;
-        };
+        }
         self.phase = Phase::Downloading;
         self.progress = 0;
         self.error = None;
-        cx.notify();
-        cx.spawn_in(window, async move |updater, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(200))
-                    .await;
-                let percent = progress_rx.try_iter().last();
-                let running = updater.update_in(cx, |updater, _, cx| {
-                    if let Some(percent) = percent {
-                        updater.progress = percent.clamp(0, 100);
-                        cx.notify();
-                    }
-                    updater.phase == Phase::Downloading
-                });
-                if !matches!(running, Ok(true)) {
-                    break;
-                }
-            }
-        })
-        .detach();
-        cx.spawn_in(window, async move |updater, cx| {
-            let success = result.recv().await.unwrap_or(false);
-            let _ = updater.update_in(cx, |updater, _, cx| {
-                if success {
-                    updater.pending = Some(asset);
-                    updater.phase = Phase::Ready;
-                    crate::diagnostics::record("update downloaded and verified");
-                } else {
-                    updater.phase = Phase::Available;
-                    updater.error = Some("Download or verification failed. Your current installation is unchanged; try again.");
-                    crate::diagnostics::record("update download failed");
-                }
-                cx.notify();
-            });
-        })
-        .detach();
     }
 
     /// Called by the launcher only after checking for open editors and active jobs.
-    pub fn restart(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn restart(&mut self, sender: async_channel::Sender<HostEvent>, wake: Waker) {
         if self.phase != Phase::Ready {
             return;
         }
         let (Some(manager), Some(asset)) = (self.manager.clone(), self.pending.clone()) else {
             return;
         };
-        let Ok(result) = worker(move || {
-            // Do not use apply_updates_and_restart: it calls process::exit and skips
-            // GPUI's quit handlers (including saving the window placement).
-            manager
-                .wait_exit_then_apply_updates(&asset, false, true, Vec::<String>::new())
-                .is_ok()
-        }) else {
+        if !dispatch(sender, wake, move |_, _| {
+            Event::RestartPrepared(
+                manager
+                    .wait_exit_then_apply_updates(&asset, false, true, Vec::<String>::new())
+                    .is_ok(),
+            )
+        }) {
             self.error = Some("Could not start the updater. Try again.");
-            cx.notify();
             return;
-        };
+        }
         self.phase = Phase::Restarting;
         self.error = None;
-        cx.notify();
-        cx.spawn_in(window, async move |updater, cx| {
-            let success = result.recv().await.unwrap_or(false);
-            let _ = updater.update_in(cx, |updater, _, cx| {
-                if success {
-                    cx.emit(Event::RestartPrepared);
-                } else {
-                    updater.phase = Phase::Ready;
-                    updater.error = Some("Could not apply the update. Close other Startpoint instances and try again.");
-                    crate::diagnostics::record("update restart failed");
-                }
-                cx.notify();
-            });
-        })
-        .detach();
     }
 
-    fn action(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn action(
+        &mut self,
+        sender: async_channel::Sender<HostEvent>,
+        wake: Waker,
+        restart_allowed: bool,
+    ) {
         match self.phase {
-            Phase::Available => self.download(window, cx),
-            Phase::Ready => cx.emit(Event::RestartRequested),
-            Phase::Idle | Phase::Current => self.check(window, cx),
+            Phase::Available => self.download(sender, wake),
+            Phase::Ready if restart_allowed => self.restart(sender, wake),
+            Phase::Idle | Phase::Current => self.check(sender, wake, false),
             _ => {}
         }
+    }
+
+    pub fn handle(&mut self, event: Event) -> bool {
+        match event {
+            Event::Checked(Ok((manager, outcome))) => {
+                self.manager = Some(manager);
+                self.available = None;
+                self.pending = None;
+                self.phase = match outcome {
+                    Outcome::Current => Phase::Current,
+                    Outcome::Available(update) => {
+                        self.available = Some(update);
+                        Phase::Available
+                    }
+                    Outcome::Pending(asset) => {
+                        self.pending = Some(asset);
+                        Phase::Ready
+                    }
+                };
+            }
+            Event::Checked(Err(CheckFailure::Unavailable(reason))) => {
+                self.phase = Phase::Unavailable;
+                self.unavailable_reason = reason;
+            }
+            Event::Checked(Err(CheckFailure::Network)) => {
+                self.phase = Phase::Idle;
+                self.error =
+                    Some("Could not check for updates. Check your connection and try again.");
+                crate::diagnostics::record("update check failed");
+            }
+            Event::Progress(progress) if self.phase == Phase::Downloading => {
+                self.progress = progress.clamp(0, 100)
+            }
+            Event::Progress(_) => {}
+            Event::Downloaded(asset, true) => {
+                self.pending = Some(asset);
+                self.phase = Phase::Ready;
+            }
+            Event::Downloaded(_, false) => {
+                self.phase = Phase::Available;
+                self.error = Some(
+                    "Download or verification failed. Your current installation is unchanged; try again.",
+                );
+            }
+            Event::RestartPrepared(true) => return true,
+            Event::RestartPrepared(false) => {
+                self.phase = Phase::Ready;
+                self.error = Some(
+                    "Could not apply the update. Close other Startpoint instances and try again.",
+                );
+            }
+        }
+        false
     }
 
     fn version(&self) -> &str {
@@ -300,87 +269,76 @@ impl Updater {
     pub fn notification_status(&self) -> Option<String> {
         self.phase.notification_visible().then(|| self.status())
     }
-
-    /// Update actions belong in the bell's notification panel, not the toolbar.
-    pub fn notification(&self, restart_allowed: bool, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .id("update-notification")
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_3()
-            .rounded(crate::rounding::Rounding::of(cx).surface)
-            .bg(cx.theme().accent)
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("Startpoint update"),
-            )
-            .child(self.settings(restart_allowed, cx))
-            .into_any_element()
-    }
-
-    pub fn settings(&self, restart_allowed: bool, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(hint(&self.status()))
-            .when_some(self.error, |section, error| section.child(hint(error)))
-            .when(self.phase != Phase::Unavailable, |section| {
-                section.child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_3()
-                        .child(
-                            button("update-action", cx)
-                                .flex_shrink_0()
-                                .secondary()
-                                .h(px(32.))
-                                .px_3()
-                                .label(self.action_label())
-                                .disabled(self.phase.action_disabled(restart_allowed))
-                                .on_click(
-                                    cx.listener(|updater, _, window, cx| {
-                                        updater.action(window, cx)
-                                    }),
-                                ),
-                        )
-                        .when(self.phase == Phase::Ready && !restart_allowed, |row| {
-                            row.child(hint(
-                                "Finish active jobs and close editors before restarting.",
-                            ))
-                        }),
-                )
-            })
-            .into_any_element()
-    }
 }
 
-fn worker<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-) -> std::io::Result<async_channel::Receiver<T>> {
-    let (sender, receiver) = async_channel::bounded(1);
+pub fn settings(state: &State, kit: &Kit) -> El {
+    let updater = &state.updater;
+    let restart_allowed = !state.busy()
+        && matches!(
+            state.overlay,
+            crate::state::Overlay::None | crate::state::Overlay::Notifications
+        );
+    let mut body = col().w_full().gap(12.0).child(hint(updater.status(), kit));
+    if let Some(error) = updater.error {
+        body = body.child(crate::components::error_message(error, kit));
+    }
+    if updater.phase != Phase::Unavailable {
+        body = body.child(
+            crate::components::form_actions().child(
+                button(&updater.action_label())
+                    .disabled(updater.phase.action_disabled(restart_allowed))
+                    .on_press(|s: &mut State| {
+                        if let Some(wake) = s.wake.clone() {
+                            let allowed = !s.busy()
+                                && matches!(
+                                    s.overlay,
+                                    crate::state::Overlay::None
+                                        | crate::state::Overlay::Notifications
+                                );
+                            s.updater.action(s.host_sender.clone(), wake, allowed);
+                        }
+                    })
+                    .build(kit)
+                    .key("update-action"),
+            ),
+        );
+    }
+    if updater.phase == Phase::Ready && !restart_allowed {
+        body = body.child(hint(
+            "Finish active jobs and close editors before restarting.",
+            kit,
+        ));
+    }
+    body
+}
+
+fn post(sender: &async_channel::Sender<HostEvent>, wake: &Waker, event: Event) {
+    let _ = sender.send_blocking(HostEvent::Update(event));
+    wake();
+}
+
+fn dispatch(
+    sender: async_channel::Sender<HostEvent>,
+    wake: Waker,
+    work: impl FnOnce(&async_channel::Sender<HostEvent>, &Waker) -> Event + Send + 'static,
+) -> bool {
     std::thread::Builder::new()
         .name("startpoint-update".into())
         .spawn(move || {
-            let _ = sender.send_blocking(work());
-        })?;
-    Ok(receiver)
+            let event = work(&sender, &wake);
+            post(&sender, &wake, event);
+        })
+        .is_ok()
 }
 
-enum Outcome {
+pub enum Outcome {
     Current,
     Available(Box<UpdateInfo>),
     Pending(VelopackAsset),
 }
 
 #[derive(Debug)]
-enum CheckFailure {
+pub enum CheckFailure {
     Unavailable(&'static str),
     Network,
 }
@@ -513,7 +471,9 @@ fn validate_asset(asset: &VelopackAsset) -> Result<(), velopack::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{APP_ID, Outcome, Phase, Updater, query_manager, valid_repository, validate_asset};
+    use super::{
+        APP_ID, Event, Outcome, Phase, Updater, query_manager, valid_repository, validate_asset,
+    };
     use std::{
         io::Write,
         path::{Path, PathBuf},
@@ -646,12 +606,15 @@ mod tests {
             Some("Downloading 0.2.0 — 42%")
         );
         assert_eq!(updater.action_label(), "Downloading 42%");
-        updater.phase = Phase::Ready;
+        assert!(!updater.handle(Event::Progress(57)));
+        assert_eq!(updater.action_label(), "Downloading 57%");
+        assert!(!updater.handle(Event::Downloaded(asset(), true)));
         assert_eq!(
             updater.notification_status().as_deref(),
             Some("Startpoint 0.2.0 is ready. Restart to finish updating.")
         );
         assert_eq!(updater.action_label(), "Restart to update");
+        assert!(updater.handle(Event::RestartPrepared(true)));
         updater.phase = Phase::Idle;
         updater.error = Some("Network failure");
         assert!(updater.notification_status().is_none());
