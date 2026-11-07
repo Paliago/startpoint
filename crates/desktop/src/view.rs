@@ -9,6 +9,11 @@ use rune_kit::{Dialog, Kit};
 
 pub fn view(state: &State, cx: &mut Cx<State>) -> El {
     let kit = state.kit(cx.system_dark());
+    let window_radius = if crate::window_chrome::is_maximized(state) {
+        0.0
+    } else {
+        12.0
+    };
     let size = cx.layout_size("startpoint").unwrap_or([1280.0, 840.0]);
     let wall = state.screen == Screen::Recents
         && state.appearance.recents_layout == startpoint_sdk::RecentsLayout::InfiniteWall;
@@ -95,8 +100,8 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
         .key("startpoint")
         .w_full()
         .h_full()
-        .radius(12.0)
-        .clip_rounded(12.0)
+        .radius(window_radius)
+        .clip_rounded(window_radius)
         .continuous_corners()
         .motion(Spring::NONE)
         .transition(Transition::none())
@@ -112,7 +117,7 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
                 .absolute(0.0, 0.0)
                 .w_full()
                 .h_full()
-                .radius(12.0)
+                .radius(window_radius)
                 .system_material(SystemMaterial::Glass)
                 .inert(),
         );
@@ -165,9 +170,12 @@ pub fn view(state: &State, cx: &mut Cx<State>) -> El {
     } else {
         header
     };
-    root = root
-        .child(frame)
-        .child(header.pin(Some(12.0), Some(10.0), Some(12.0), None));
+    root = root.child(frame).child(header.pin(
+        Some(toolbar::SIDE),
+        Some(toolbar::TOP),
+        Some(toolbar::SIDE),
+        None,
+    ));
     overlays(state, &kit, size, &mut layers);
     crate::commands::context_menu(state, &kit, &mut layers);
     rune_kit::root(root, layers)

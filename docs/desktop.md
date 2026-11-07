@@ -23,6 +23,12 @@ Headless runs always replace the paths with a temporary example database and dis
 
 ## Presentations and interaction
 
+The top bar uses a leading navigation/search/settings island, adjacent screen tabs and a trailing application-action island. On Windows, minimize, maximize/restore and close share the trailing island; there is no second title strip. Close has a red hover treatment and uses Rune's orderly window-close request. macOS retains its own traffic lights and their reserved leading space.
+
+`window_chrome.rs` adapts the existing resizable Windows window through Rune's per-window native-handle callback. It removes the non-client caption without removing system-menu/resize/minimize/maximize styles, preserves DPI-aware edge/corner resizing and the maximized monitor work area, and exposes the maximize hit target to Windows Snap Layouts. Native handles are borrowed only on the UI thread; the subclass is removed when the window is destroyed. Rune owns drag regions and title-bar double-click behavior. Caption painting and native hit testing use the same logical geometry. Maximized content has square outer corners.
+
+Isolated Rune layout/input tests cover 900–1600px widths, 100–200% scales, left/right grouping, caption hit-target alignment, control clicks versus dragging, double-click requests, orderly close and macOS traffic-light reservation. Windows native drag/resize, Snap Layouts, maximize/restore, taskbar and accessibility behavior still require interactive acceptance; headless layout checks do not prove those OS behaviors.
+
 Classic and Infinite Wall are the supported Recents presentations. Retired SDK presentation values remain readable for stored-document compatibility and normalize to Classic; their old implementations are removed.
 
 Classic keeps its rotation at the bottom of the first viewport and optional widgets below it. The Library is continuously scrollable and virtualized, with one captured ordering shared by each grid's count, keys and contents. Compact mode uses Rune Kit Table. Nearby artwork is prefetched; complete backgrounds remain visible while replacements decode. Other screens omit the former large blurred ambient artwork layer.
@@ -47,7 +53,7 @@ Pause freezes the local effect clock. Reduced motion, inactive windows, menus, d
 
 ## Packaging and updates
 
-The application keeps its existing `startpoint` binary name, icons, Windows resource manifest, installer identity, Velopack channels and package validation. Windows explicitly enables DX12, macOS uses Rune's Metal backend, and Linux enables Vulkan/GLES. Native Windows acceptance remains a platform check; a macOS build does not prove it.
+The application keeps its existing `startpoint` binary name, Windows resource manifest, installer identity, Velopack channels and package validation. Rune branding uses a blue published-release icon and an amber local-development icon, without changing the play-mark design or storage locations. Ordinary local builds (debug or optimized) use development branding; GitHub packaging explicitly opts into `production-branding`. Windows sets a separate development AppUserModelID before window creation and applies the matching embedded small/large icons to every new native window; Rune's app-icon helper supplies the macOS Dock icon. The older green/violet assets remain intact. Windows explicitly enables DX12, macOS uses Rune's Metal backend, and Linux enables Vulkan/GLES. Native Windows acceptance remains a platform check; a macOS build does not prove it.
 
 The `self-update` feature uses dedicated workers for checks, verified downloads and update preparation. Results and progress wake Rune through host events. Settings and the notification panel expose actions; development/example/headless/developer-tool sessions disable automatic checks. Restart requests use Rune's orderly quit after backend work and editor guards, not `process::exit`.
 

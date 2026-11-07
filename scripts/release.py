@@ -230,14 +230,14 @@ def package(args):
     with tempfile.TemporaryDirectory(prefix="startpoint-package-") as temp:
         stage = Path(temp)
         binary = ROOT / "target/release" / ("startpoint.exe" if args.platform == "win-x64" else "startpoint")
-        require(binary.is_file(), "Build the release executable with --features self-update first.")
+        require(binary.is_file(), "Build the release executable with --features self-update,production-branding first.")
         keychain = None
         try:
             if args.platform == "win-x64":
                 pack_dir = stage / "app"
                 pack_dir.mkdir()
                 shutil.copy2(binary, pack_dir / "startpoint.exe")
-                icon = ROOT / "crates/desktop/assets/icons/startpoint.ico"
+                icon = ROOT / "crates/desktop/assets/icons/startpoint-rune.ico"
                 extra = ["--mainExe", "startpoint.exe", "--icon", icon]
                 if signed:
                     metadata_file = stage / "signing.json"
@@ -247,7 +247,7 @@ def package(args):
                 require(os.uname().sysname == "Darwin", "macOS packages must be built on a Mac.")
                 # -verify_arch consumes the remaining arguments as architecture names.
                 run("lipo", binary, "-verify_arch", "arm64")
-                pack_dir = mac_bundle(stage, binary, ROOT / "crates/desktop/assets/icons/startpoint.png", args.version)
+                pack_dir = mac_bundle(stage, binary, ROOT / "crates/desktop/assets/icons/startpoint-rune.png", args.version)
                 # Native Rust needs no JIT/unsigned-memory/App Sandbox entitlements.
                 # Velopack validates the suffix, even though the contents are a plist.
                 entitlements = stage / "startpoint.entitlements"

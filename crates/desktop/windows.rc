@@ -1,6 +1,6 @@
-// GPUI loads the app icon from resource 1. Windows also uses it for shortcuts.
+// Windows Explorer, shortcuts and the native Rune window use resource 1.
 #ifdef STARTPOINT_DEV_ICON
-1 ICON "assets/icons/startpoint-dev.ico"
+1 ICON "assets/icons/startpoint-rune-dev.ico"
 #else
-1 ICON "assets/icons/startpoint.ico"
+1 ICON "assets/icons/startpoint-rune.ico"
 #endif

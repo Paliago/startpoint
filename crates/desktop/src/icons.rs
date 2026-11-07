@@ -1,5 +1,30 @@
 use rune::Icon;
 
+#[cfg(target_os = "windows")]
+pub static MINIMIZE: Icon = Icon {
+    name: "window-minimize",
+    view: 16.0,
+    body: r#"<path d="M3 8.5h10" fill="none" stroke="currentColor"/>"#,
+};
+#[cfg(target_os = "windows")]
+pub static MAXIMIZE: Icon = Icon {
+    name: "window-maximize",
+    view: 16.0,
+    body: r#"<path d="M3.5 3.5h9v9h-9z" fill="none" stroke="currentColor"/>"#,
+};
+#[cfg(target_os = "windows")]
+pub static RESTORE: Icon = Icon {
+    name: "window-restore",
+    view: 16.0,
+    body: r#"<path d="M5.5 5.5v-2h7v7h-2m-7-5h7v7h-7z" fill="none" stroke="currentColor" stroke-linejoin="miter"/>"#,
+};
+#[cfg(target_os = "windows")]
+pub static CLOSE: Icon = Icon {
+    name: "window-close",
+    view: 16.0,
+    body: r#"<path d="m4 4 8 8m0-8-8 8" fill="none" stroke="currentColor"/>"#,
+};
+
 pub static PEN: Icon = Icon {
     name: "startpoint-pen",
     view: 24.0,

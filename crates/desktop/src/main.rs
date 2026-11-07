@@ -3,6 +3,7 @@
 mod activity;
 mod artwork;
 mod branding;
+mod build_branding;
 mod commands;
 mod component_effects;
 mod components;
@@ -25,6 +26,7 @@ mod updater;
 mod view;
 mod wall;
 mod widgets;
+mod window_chrome;
 
 use rune::{AppSpec, Key, KeyEvent, Tx};
 use state::{Overlay, Screen, State};
@@ -54,16 +56,12 @@ fn main() {
         return;
     }
     if !headless {
-        let icon = if branding::IS_DEV {
-            include_bytes!("../assets/icons/startpoint-dev.png").to_vec()
-        } else {
-            include_bytes!("../assets/icons/startpoint.png").to_vec()
-        };
-        let _ = rune::set_app_icon(icon);
+        branding::configure_native_identity();
+        let _ = rune::set_app_icon(branding::ICON_PNG.to_vec());
     }
     rune::prewarm_gpu();
     rune::tooling::set_app_id(branding::APP_ID);
-    rune::App::new(AppSpec {
+    let app = rune::App::new(AppSpec {
         setup: Some(State::setup),
         poll: Some(State::poll),
         on_key: Some(on_key),
@@ -136,8 +134,29 @@ fn main() {
         drag_regions: true,
     })
     .compositor(effects::EffectsCompositor::default())
-    .on_focus(|state: &mut State, focused, _| state.window_focused = focused)
-    .run();
+    .on_focus(|state: &mut State, focused, _| {
+        state.window_focused = focused;
+        #[cfg(target_os = "windows")]
+        if !focused {
+            state.window_close_hovered = false;
+        }
+    });
+    #[cfg(target_os = "windows")]
+    let app = {
+        let handle = app.handle();
+        app.on_window(move |window| {
+            branding::configure_window_icon(window);
+            if let Err(error) = window_chrome::install(window) {
+                log::error!("Could not integrate Windows title bar: {error}");
+            }
+            let window = window.clone();
+            handle.update(move |state, tx| {
+                state.native_window = Some(window);
+                tx.instant();
+            });
+        })
+    };
+    app.run();
 }
 
 fn on_key(state: &mut State, event: &KeyEvent, tx: &mut Tx) -> bool {

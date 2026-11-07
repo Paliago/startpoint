@@ -96,22 +96,91 @@ fn dev_icon_is_only_a_recolor_of_the_regular_design() {
 }
 
 #[test]
-fn dev_branding_is_opt_in_for_optimized_builds() {
+fn local_builds_default_to_rune_dev_and_production_is_explicit() {
     use crate::branding;
     assert_eq!(
         branding::IS_DEV,
-        cfg!(any(debug_assertions, feature = "dev-icon"))
+        crate::build_branding::is_development(
+            cfg!(debug_assertions),
+            cfg!(feature = "dev-icon"),
+            cfg!(feature = "production-branding")
+        )
     );
     let (name, id) = if branding::IS_DEV {
-        ("Startpoint Dev", "startpoint.dev")
+        ("Startpoint Rune Dev", "startpoint.dev")
     } else {
         ("Startpoint", "startpoint")
     };
     assert_eq!(branding::NAME, name);
     assert_eq!(branding::APP_ID, id);
+    assert_eq!(
+        branding::ICON_PNG,
+        if branding::IS_DEV {
+            include_bytes!("../assets/icons/startpoint-rune-dev.png").as_slice()
+        } else {
+            include_bytes!("../assets/icons/startpoint-rune.png").as_slice()
+        }
+    );
+    #[cfg(target_os = "windows")]
+    assert_eq!(
+        branding::WINDOWS_APP_ID,
+        if branding::IS_DEV {
+            "Paliago.Startpoint.Rune.Dev"
+        } else {
+            "Paliago.Startpoint.App"
+        }
+    );
     assert_eq!(branding::window_title(false), name);
     assert_eq!(
         branding::window_title(true),
         format!("{name} — Example library")
     );
+}
+
+#[test]
+fn rune_release_icon_exports_match_the_blue_svg() {
+    check_exports(
+        include_bytes!("../assets/icons/startpoint-rune.svg"),
+        include_bytes!("../assets/icons/startpoint-rune.ico"),
+        include_bytes!("../assets/icons/startpoint-rune.png"),
+    );
+}
+
+#[test]
+fn rune_dev_icon_exports_match_the_amber_svg() {
+    check_exports(
+        include_bytes!("../assets/icons/startpoint-rune-dev.svg"),
+        include_bytes!("../assets/icons/startpoint-rune-dev.ico"),
+        include_bytes!("../assets/icons/startpoint-rune-dev.png"),
+    );
+}
+
+#[test]
+fn rune_icons_are_distinct_recolors_without_changing_the_play_mark() {
+    let legacy = include_str!("../assets/icons/startpoint.svg").replace("\r\n", "\n");
+    let release = include_str!("../assets/icons/startpoint-rune.svg").replace("\r\n", "\n");
+    let dev = include_str!("../assets/icons/startpoint-rune-dev.svg").replace("\r\n", "\n");
+    assert_eq!(
+        legacy
+            .replace("Startpoint", "Startpoint Rune")
+            .replace("#17665e", "#2563eb"),
+        release
+    );
+    assert_eq!(
+        release
+            .replace("Startpoint Rune", "Startpoint Rune Dev")
+            .replace("#2563eb", "#b86a16"),
+        dev
+    );
+    for size in [16, 32, 48, 256] {
+        let release = render_source(release.as_bytes(), size);
+        let dev = render_source(dev.as_bytes(), size);
+        assert_ne!(release, dev);
+        for (release, dev) in release.pixels().zip(dev.pixels()) {
+            assert_eq!(release[3], dev[3], "matching transparency and silhouette");
+            if release.0 == [246, 245, 241, 255] {
+                assert_eq!(release, dev);
+            }
+        }
+    }
 }

@@ -165,14 +165,35 @@ class ReleaseTests(unittest.TestCase):
         with patch.object(release, "ROOT", self.root), \
                 patch.object(release.os, "uname", create=True, return_value=argparse.Namespace(sysname="Darwin")), \
                 patch.object(release, "signing_ready", return_value=False), \
-                patch.object(release, "mac_bundle", return_value=self.root / "Startpoint.app"), \
+                patch.object(release, "mac_bundle", return_value=self.root / "Startpoint.app") as bundle, \
                 patch.object(release, "run", side_effect=command) as run:
             release.package(args)
             self.assertEqual(run.call_args_list[0].args, ("lipo", binary, "-verify_arch", "arm64"))
+            self.assertEqual(bundle.call_args.args[2], self.root / "crates/desktop/assets/icons/startpoint-rune.png")
         manifest = release.read_json(self.output / "build.osx-arm64-stable.json")
         self.assertEqual(manifest["platform"], "osx-arm64")
         self.assertEqual(manifest["commit"], COMMIT)
         self.assertFalse(manifest["signed"])
+
+    def test_windows_packaging_uses_the_production_rune_icon(self):
+        fixture = self.fixture("win-x64")
+        binary = self.root / "target/release/startpoint.exe"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"fixture binary")
+        args = argparse.Namespace(platform="win-x64", version="0.1.0", commit=COMMIT,
+                                  policy="testing", vpk=str(self.root / "vpk"), output=str(self.output))
+
+        def command(*arguments, **kwargs):
+            self.assertEqual(arguments[arguments.index("--icon") + 1],
+                             self.root / "crates/desktop/assets/icons/startpoint-rune.ico")
+            for path in release.validate_packages(fixture, "win-x64", "0.1.0"):
+                (self.output / path.name).write_bytes(path.read_bytes())
+
+        with patch.object(release, "ROOT", self.root), \
+                patch.object(release, "signing_ready", return_value=False), \
+                patch.object(release, "run", side_effect=command):
+            release.package(args)
+        self.assertTrue((self.output / "build.win-x64-stable.json").is_file())
 
     def test_failed_mac_architecture_check_stops_before_bundling(self):
         binary = self.root / "target/release/startpoint"

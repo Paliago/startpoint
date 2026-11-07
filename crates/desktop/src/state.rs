@@ -162,6 +162,10 @@ pub struct State {
     pub system_dark: bool,
     pub reduced_motion: bool,
     pub window_focused: bool,
+    #[cfg(target_os = "windows")]
+    pub native_window: Option<rune::WindowHandle>,
+    #[cfg(target_os = "windows")]
+    pub window_close_hovered: bool,
     #[cfg(feature = "self-update")]
     pub updater: crate::updater::Updater,
     credential_job: Option<JobId>,
@@ -193,7 +197,15 @@ impl State {
     }
 
     fn try_new() -> Result<Self, Box<dyn std::error::Error>> {
-        let headless = rune::tooling::headless_run().is_some();
+        Self::try_new_session(rune::tooling::headless_run().is_some())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self::try_new_session(true).expect("isolated example library")
+    }
+
+    fn try_new_session(headless: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let example = headless
             || rune::tooling::extra_args()
                 .iter()
@@ -287,6 +299,10 @@ impl State {
             system_dark: true,
             reduced_motion: false,
             window_focused: true,
+            #[cfg(target_os = "windows")]
+            native_window: None,
+            #[cfg(target_os = "windows")]
+            window_close_hovered: false,
             #[cfg(feature = "self-update")]
             updater: crate::updater::Updater::new(
                 crate::updater::supported_platform()

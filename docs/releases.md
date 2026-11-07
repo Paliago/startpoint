@@ -2,6 +2,8 @@
 
 The **Release** workflow builds Windows x64 and macOS Apple Silicon from the **same commit**. Intel Macs are not supported. Velopack **1.2.161** packages installers, portable apps and full update packages. Python 3.12 and .NET 8 are CI tools only; end users need neither.
 
+Release packaging explicitly enables `self-update,production-branding`: published Rune builds use the blue icon and existing installer/application identity. Ordinary local builds, even optimized `--release` builds, use the amber **Startpoint Rune Dev** icon and a separate Windows taskbar group. The `dev-icon` compatibility flag always forces development branding. A Cargo optimization profile alone does not select production branding; local builds never acquire automatic update checks by accident.
+
 ## Flow
 
 - **Push/merge to `main`:** the **CI** workflow runs formatting and release-tooling tests on Linux, then Windows workspace/updater tests in the debug profile. Dependency/test-build caches are reused. Superseded CI runs are cancelled. No macOS job, release build, packaging SDK, installer generation or artifact upload runs automatically on main.
@@ -89,8 +91,8 @@ On the target OS, install Python 3.11+, Rust/MSVC or Xcode tools, and .NET SDK; 
 
 ```sh
 dotnet tool install vpk --version 1.2.161 --tool-path .local-vpk
-cargo test --locked --workspace --features self-update
-cargo build --locked --release --features self-update
+cargo test --locked --workspace --features self-update,production-branding
+cargo build --locked --release --features self-update,production-branding
 python scripts/release.py package --platform win-x64 --version 0.1.0 --commit <40-character-source-commit> --policy testing --vpk .local-vpk/vpk --output target/distribution/0.1.0-win-x64
 ```
 

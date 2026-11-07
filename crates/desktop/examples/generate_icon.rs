@@ -6,8 +6,16 @@ use std::{
 const SIZES: [u32; 9] = [16, 20, 24, 32, 40, 48, 64, 128, 256];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/icons");
-    for name in ["startpoint", "startpoint-dev"] {
+    let directory = std::env::args_os()
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/icons"));
+    for name in [
+        "startpoint",
+        "startpoint-dev",
+        "startpoint-rune",
+        "startpoint-rune-dev",
+    ] {
         generate(&directory, name)?;
     }
     Ok(())

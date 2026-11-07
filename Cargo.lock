@@ -3866,6 +3866,7 @@ dependencies = [
  "log",
  "num-traits",
  "open",
+ "raw-window-handle",
  "resvg",
  "rune",
  "rune-fx",

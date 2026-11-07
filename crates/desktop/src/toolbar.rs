@@ -6,11 +6,17 @@ use crate::{
 use rune::{Color, Cx, El, el, row};
 use rune_kit::{ButtonVariant, Kit};
 
+pub const HEIGHT: f32 = 36.0;
+pub const TOP: f32 = 10.0;
+pub const SIDE: f32 = 12.0;
+pub const INSET: f32 = 4.0;
+pub const GAP: f32 = 2.0;
+
 pub fn surface(state: &State, kit: &Kit) -> El {
     let mut surface = row()
         .center_y()
-        .padding(4.0)
-        .gap(2.0)
+        .padding(INSET)
+        .gap(GAP)
         .radius(12.0)
         .continuous_corners()
         .fill(kit.c.page.alpha(if state.appearance.window_translucency {
@@ -28,12 +34,15 @@ pub fn surface(state: &State, kit: &Kit) -> El {
 
 pub fn view(state: &State, cx: &mut Cx<State>, kit: &Kit, width: f32) -> El {
     let reserve = (cx.titlebar_inset() - 10.0).max(0.0);
-    let controls = surface(state, kit)
+    let mut controls = surface(state, kit)
         .key("window-toolbar")
         .role("toolbar")
         .label("Window and navigation controls")
-        .window_drag()
-        .child(el().key("native-window-controls").w(reserve).h(28.0))
+        .window_drag();
+    if reserve > 0.0 {
+        controls = controls.child(el().key("native-window-controls").w(reserve).h(28.0));
+    }
+    controls = controls
         .child(
             toolbar_icon(&icons::SIDEBAR, "Toggle sidebar", kit)
                 .size(28.0, 28.0)
@@ -60,6 +69,28 @@ pub fn view(state: &State, cx: &mut Cx<State>, kit: &Kit, width: f32) -> El {
                 .opacity(if state.can_go_forward() { 1.0 } else { 0.3 })
                 .on_press_tx(|s: &mut State, tx| s.go_forward(tx))
                 .key("navigate-forward"),
+        )
+        .child(if state.overlay == Overlay::Commands {
+            el().w(28.0).h(28.0)
+        } else {
+            toolbar_icon(kit.glyph.search, "Search or run a command", kit)
+                .size(28.0, 28.0)
+                .on_press_tx(|s: &mut State, tx| {
+                    tx.animated();
+                    s.open_commands(String::new(), true);
+                })
+                .key("search")
+                .matched("command-surface")
+                .motion(rune::Spring::new(0.24, 0.0))
+        })
+        .child(
+            toolbar_icon(&icons::SETTINGS, "Settings", kit)
+                .size(28.0, 28.0)
+                .on_press_tx(|s: &mut State, tx| {
+                    tx.instant();
+                    s.navigate(Screen::Settings);
+                })
+                .key("settings"),
         );
     let mut navigation = row().w_full().gap(2.0).role("tablist").focus_group();
     for (key, title, screen) in [
@@ -96,28 +127,6 @@ pub fn view(state: &State, cx: &mut Cx<State>, kit: &Kit, width: f32) -> El {
         .w(navigation_width)
         .window_drag()
         .child(navigation);
-    let search_width = if width < 1100.0 { 150.0 } else { 210.0 };
-    let search = if state.overlay == Overlay::Commands {
-        el().w(search_width).h(28.0)
-    } else {
-        button(if width < 1100.0 {
-            "Search…"
-        } else {
-            "Search or run a command…"
-        })
-        .variant(ButtonVariant::Ghost)
-        .icon(kit.glyph.search)
-        .on_press_tx(|s: &mut State, tx| {
-            tx.animated();
-            s.open_commands(String::new(), true);
-        })
-        .build(kit)
-        .w(search_width)
-        .h(28.0)
-        .key("search")
-        .matched("command-surface")
-        .motion(rune::Spring::new(0.24, 0.0))
-    };
     let notifications = toolbar_icon(&icons::NOTIFICATIONS, "Activity & Notifications", kit)
         .size(28.0, 28.0)
         .on_press(|s: &mut State| s.show_overlay(Overlay::Notifications))
@@ -135,33 +144,61 @@ pub fn view(state: &State, cx: &mut Cx<State>, kit: &Kit, width: f32) -> El {
     } else {
         notifications
     };
-    let actions = surface(state, kit)
+    #[allow(unused_mut)]
+    let mut actions = surface(state, kit)
         .key("action-toolbar")
         .role("toolbar")
         .label("Application actions")
-        .child(search)
-        .child(el().w(1.0).h(14.0).fill(kit.c.text_base.alpha(0.1)))
+        .window_drag()
         .child(
             toolbar_icon(&icons::CUSTOMIZE, "Customize", kit)
                 .size(28.0, 28.0)
                 .on_press(|s: &mut State| s.show_overlay(Overlay::Customize))
                 .key("customize"),
         )
-        .child(notifications)
         .child(
-            toolbar_icon(&icons::SETTINGS, "Settings", kit)
+            toolbar_icon(&icons::REFRESH, "Refresh installed games", kit)
                 .size(28.0, 28.0)
-                .on_press_tx(|s: &mut State, tx| {
-                    tx.instant();
-                    s.navigate(Screen::Settings);
+                .on_press(|s: &mut State| {
+                    s.submit(startpoint_sdk::Command::RefreshLibrary);
                 })
-                .key("settings"),
-        );
-    el().key("toolbar")
-        .w(width - 24.0)
-        .h(36.0)
+                .key("refresh-library"),
+        )
+        .child(
+            toolbar_icon(&icons::ADD, "Add a game", kit)
+                .size(28.0, 28.0)
+                .on_press(|s: &mut State| {
+                    s.manual = crate::editor::ManualDraft::default();
+                    s.show_overlay(Overlay::AddGame);
+                })
+                .key("add-game"),
+        )
+        .child(notifications);
+    #[cfg(target_os = "windows")]
+    {
+        actions = actions
+            .child(el().w(1.0).h(14.0).fill(kit.c.text_base.alpha(0.1)))
+            .child(crate::window_chrome::controls(state, kit));
+    }
+    row()
+        .key("toolbar")
+        .w(width - 2.0 * SIDE)
+        .h(HEIGHT)
+        .gap(12.0)
+        .center_y()
         .window_drag()
-        .child(controls.absolute(0.0, 0.0))
-        .child(navigation.absolute((width - 24.0 - navigation_width) * 0.5, 0.0))
-        .child(actions.pin(None, Some(0.0), Some(0.0), None))
+        .child(controls)
+        .child(navigation)
+        .child(
+            el().key("titlebar-drag")
+                .grow(1.0)
+                .min_w(24.0)
+                .h_full()
+                .window_drag(),
+        )
+        .child(actions)
 }
+
+#[cfg(test)]
+#[path = "toolbar_tests.rs"]
+mod tests;
