@@ -65,6 +65,21 @@ class ReleaseTests(unittest.TestCase):
             feed = self.output / f"releases.{channel}.json"
             self.assertIn(release.sha256(feed), sums)
 
+    def test_versioned_release_notes_preserve_unsigned_warning_and_source_marker(self):
+        notes = self.root / "docs/release-notes/0.1.5.md"
+        notes.parent.mkdir(parents=True)
+        notes.write_text("## What's new\n\nRune migration. Back up schema 4 libraries.\n", encoding="utf-8")
+        manifest = {"version": "0.1.5", "commit": COMMIT, "builds": {
+            "win-x64": {"signed": False}, "osx-arm64": {"signed": False},
+        }}
+        with patch.object(release, "ROOT", self.root):
+            body = release.release_notes(manifest, "owner/app")
+        self.assertIn("Unsigned testing release", body)
+        self.assertIn("Rune migration. Back up schema 4 libraries.", body)
+        self.assertIn(f"<!-- startpoint-release:{COMMIT} -->", body)
+        self.assertIn("Windows x64", body)
+        self.assertIn("macOS Apple Silicon", body)
+
     def test_missing_platform_cannot_assemble(self):
         self.fixture("win-x64")
         with self.assertRaises(release.ReleaseError):

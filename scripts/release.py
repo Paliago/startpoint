@@ -364,13 +364,16 @@ class GitHub:
 
 def release_notes(manifest, source_repository):
     version, commit = manifest["version"], manifest["commit"]
+    version_tuple(version)
+    notes_path = ROOT / "docs/release-notes" / f"{version}.md"
+    changes = notes_path.read_text(encoding="utf-8").strip() + "\n\n" if notes_path.is_file() else ""
     signed = all(build["signed"] for build in manifest["builds"].values())
     warning = "" if signed else (
         "**Unsigned testing release — not a signed/notarized production distribution.**\n\n"
         "Windows may show SmartScreen warnings. macOS requires an explicit Gatekeeper approval; "
         "see [installation instructions](https://github.com/" + source_repository + "/blob/" + commit + "/docs/releases.md#install-and-test-010).\n\n"
     )
-    return (f"<!-- startpoint-release:{commit} -->\n# Startpoint {version}\n\n" + warning +
+    return (f"<!-- startpoint-release:{commit} -->\n# Startpoint {version}\n\n" + warning + changes +
             "One release includes **Windows x64** and **macOS Apple Silicon (arm64)**. Intel Macs are not supported.\n\n"
             "- Windows: download the `win-x64-stable-Setup.exe`, or extract the entire portable ZIP.\n"
             "- macOS: download your architecture's `.pkg`, or extract its portable ZIP and move `Startpoint.app` into `~/Applications`. macOS 14+ is required.\n"

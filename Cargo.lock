@@ -3857,7 +3857,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "startpoint"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-channel",
  "chrono",
@@ -3887,7 +3887,7 @@ dependencies = [
 
 [[package]]
 name = "startpoint-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-channel",
  "directories",
@@ -3911,7 +3911,7 @@ dependencies = [
 
 [[package]]
 name = "startpoint-sdk"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-channel",
  "serde",
